@@ -157,6 +157,7 @@ targets:
     deploymentTarget: "14.0"
     sources:
       - MacTests
+      - Mac/ControlFramePolicy.swift
       - Mac/DisplayArrangement.swift
       - Mac/Log.swift
       - Mac/LogPolicies.swift
