@@ -90,3 +90,63 @@ final class DaemonSupervisor {
         childPid = nil
     }
 }
+
+/// The environment the daemon child is spawned with.
+///
+/// ai.cst.2 set `SERVER_HOST=0.0.0.0` here so the iPad could reach the daemon over the LAN.
+/// Design Canvas carries the annotation on the OpenDisplay connection instead, so the daemon
+/// binds `127.0.0.1` and ignores `SERVER_HOST` entirely. Stripping an inherited value is belt
+/// and braces on top of that: it makes "nothing this app launches can be told to listen on the
+/// LAN" a property of the launcher, testable without a daemon.
+enum DaemonEnvironment {
+    static func make(base: [String: String], port: Int) -> [String: String] {
+        var env = base
+        env["SERVER_PORT"] = String(port)
+        env.removeValue(forKey: "SERVER_HOST")
+        return env
+    }
+}
+
+/// Production runner: spawns `node <serverEntry> --http`. Manual-verified.
+@MainActor
+final class NodeProcessRunner: ProcessRunning {
+    private let nodePath: String
+    private let serverEntry: String
+    private let port: Int
+    private var process: Process?
+
+    var pid: Int32? {
+        guard let process, process.isRunning else { return nil }
+        return process.processIdentifier
+    }
+
+    init(nodePath: String, serverEntry: String, port: Int = 47100) {
+        self.nodePath = nodePath
+        self.serverEntry = serverEntry
+        self.port = port
+    }
+
+    func start(onExit: @escaping (Int32) -> Void) {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: nodePath)
+        p.arguments = [serverEntry, "--http"]
+        p.environment = DaemonEnvironment.make(base: ProcessInfo.processInfo.environment, port: port)
+        p.terminationHandler = { [weak self] proc in
+            let status = proc.terminationStatus
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    self?.process = nil
+                    onExit(status)
+                }
+            }
+        }
+        try? p.run()
+        process = p
+    }
+
+    func stop() {
+        process?.terminationHandler = nil
+        process?.terminate()
+        process = nil
+    }
+}
