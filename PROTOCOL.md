@@ -701,15 +701,19 @@ Field types, exactly as implemented (`DesignCanvas/Shared/CanvasMessages.swift`)
   `t` (number, as above).
 * **`agentReply`** (sender to receiver): `annotationId` (string); `status`
   (string, one of `queued`, `sent`, `applied`, `failed`, `needs_input`);
-  `message` (string, optional); `prUrl` (string, optional); `t` (number,
-  as above).
+  `message` (string, optional, at most 2048 UTF-8 bytes — the sender
+  truncates it to that limit, cut on a Character boundary with nothing
+  appended, immediately before building this message); `prUrl` (string,
+  optional); `t` (number, as above).
 * **`rounds`** (sender to receiver): `rounds` (array, newest first; each
   entry an object with `annotationId` (string), `createdAt` (string, ISO
   8601), `status` (string, as in `agentReply`), `message` (string,
-  optional), `prUrl` (string, optional), `note` (string, optional)). Sent
-  after every `hello`, including a rotation re-`hello`, so a reconnecting
-  receiver is stateless and a status change that landed while it was
-  disconnected still shows up.
+  optional, also at most 2048 UTF-8 bytes on arrival — the same limit as
+  `agentReply.message` above, independent of the further 256-byte shrink
+  in section 11.4), `prUrl` (string, optional), `note` (string,
+  optional)). Sent after every `hello`, including a rotation re-`hello`,
+  so a reconnecting receiver is stateless and a status change that
+  landed while it was disconnected still shows up.
 
 ### 11.3 `ping` additions
 
@@ -748,8 +752,14 @@ The official sender enforces this by refusing — and logging, never
 crashing or retrying — any canvas JSON payload of 32768 bytes or more
 before it is ever queued for the wire, the same refusal point that guards
 every other outbound control message. A `rounds` snapshot that would not
-otherwise fit is shrunk before sending (message and note text cut, then
-oldest rounds dropped) rather than sent oversize or dropped outright.
+otherwise fit is shrunk before sending, in steps: first the full
+snapshot; if that is still too large, every entry's `message` and `note`
+are cut from their 2048-byte baseline down to 256 bytes each; if it still
+does not fit, the oldest rounds (the tail, since `rounds` is newest-first)
+are dropped one at a time until it does. The 256-byte cut is a
+last-resort shrink under size pressure, separate from — and tighter than
+— the 2048-byte limit `message` already carries on both `agentReply` and
+every `rounds` entry (section 11.2).
 
 ### 11.5 No input on a canvas session
 
