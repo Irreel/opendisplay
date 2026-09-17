@@ -38,3 +38,9 @@ fastlane/test_output/
 node_modules/
 dist-ssr/
 docs/
+
+# Design Canvas
+DesignCanvas/server/dist/
+DesignCanvas/Mac/Info.plist
+DesignCanvas/iOS/Info.plist
+.superpowers/

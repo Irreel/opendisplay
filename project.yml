@@ -27,6 +27,13 @@ schemes:
     build:
       targets:
         OpenSidecarMacReceiver: all
+  DesignCanvas:
+    build:
+      targets:
+        DesignCanvasTests: [test]
+    test:
+      targets:
+        - DesignCanvasTests
 # DEVELOPMENT_TEAM comes from the environment (see generate.sh / .env) so no
 # personal team ID lives in the repo. Unset = unsigned, fine for CI.
 settings:
@@ -192,3 +199,16 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.peetzweg.opensidecar.ios
         TARGETED_DEVICE_FAMILY: "1,2"
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+  DesignCanvasTests:
+    type: bundle.unit-test
+    platform: macOS
+    deploymentTarget: "14.0"
+    sources:
+      - DesignCanvas/Tests
+      - DesignCanvas/Shared
+    settings:
+      base:
+        TEST_HOST: ""
+        BUNDLE_LOADER: ""
+        GENERATE_INFOPLIST_FILE: "YES"
+        PRODUCT_BUNDLE_IDENTIFIER: com.designcanvas.tests
