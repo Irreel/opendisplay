@@ -209,9 +209,13 @@ targets:
     sources:
       - DesignCanvas/Tests
       - DesignCanvas/Shared
+      - DesignCanvas/Mac/Engine
+      - Mac/Log.swift
+      - Mac/LogPolicies.swift
     settings:
       base:
         TEST_HOST: ""
         BUNDLE_LOADER: ""
         GENERATE_INFOPLIST_FILE: "YES"
         PRODUCT_BUNDLE_IDENTIFIER: com.designcanvas.tests
+        SWIFT_OBJC_BRIDGING_HEADER: Mac/OpenSidecarMac-Bridging-Header.h
