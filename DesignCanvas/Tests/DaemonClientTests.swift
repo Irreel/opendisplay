@@ -330,6 +330,40 @@ final class DaemonClientTests: XCTestCase {
         XCTAssertEqual(queryItems.first(where: { $0.name == "limit" })?.value, "5")
     }
 
+    /// M6: one entry this build cannot read must not cost the device the whole
+    /// list — the same rule PROTOCOL.md section 6 applies to unknown types.
+    func test_rounds_skipsAnUnreadableEntry_andReturnsTheRest() async throws {
+        let roundsJSON = """
+        {"rounds":[
+            {"annotationId":"a1","createdAt":"2026-01-01T00:00:00.000Z","status":"queued"},
+            {"annotationId":"a2","status":"sent"},
+            {"annotationId":"a3","createdAt":"2026-01-01T00:00:02.000Z","status":"invented_later"},
+            {"annotationId":"a4","createdAt":"2026-01-01T00:00:03.000Z","status":"applied","message":"done"}
+        ]}
+        """
+        StubURLProtocol.scripts = [.init(body: Data(roundsJSON.utf8))]
+        let client = makeClient()
+
+        let rounds = try await client.rounds(deviceID: "dev-1", limit: 20)
+
+        XCTAssertEqual(rounds.map(\.annotationId), ["a1", "a4"])
+        XCTAssertEqual(rounds.last?.message, "done")
+    }
+
+    func test_rounds_stillThrowsWhenTheRoundsKeyIsMissing() async {
+        StubURLProtocol.scripts = [.init(body: Data(#"{"nope":[]}"#.utf8))]
+        let client = makeClient()
+
+        do {
+            _ = try await client.rounds(deviceID: "dev-1", limit: 20)
+            XCTFail("expected a throw")
+        } catch let error as DaemonClientError {
+            XCTAssertEqual(error, .undecodable)
+        } catch {
+            XCTFail("expected DaemonClientError, got \(error)")
+        }
+    }
+
     // MARK: - roundUpdates()
 
     /// `URLRequest.timeoutInterval` is an *idle* timer, and its 60 s default

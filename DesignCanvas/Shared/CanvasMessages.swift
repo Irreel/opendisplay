@@ -306,15 +306,15 @@ struct RoundsMessage: Equatable {
 }
 
 extension RoundsMessage {
+    /// An entry this build cannot read — a status invented later, a field gone
+    /// missing — is skipped rather than failing the whole snapshot (M6): the
+    /// readable entries are still this device's round history, and skipping
+    /// what cannot be understood is the rule PROTOCOL.md section 6 already
+    /// applies to unknown types and fields. A missing or non-array `rounds`
+    /// key is still not a snapshot at all.
     init?(json: [String: Any]) {
         guard let roundsJSON = json["rounds"] as? [[String: Any]] else { return nil }
-        var parsed: [CanvasRound] = []
-        parsed.reserveCapacity(roundsJSON.count)
-        for roundJSON in roundsJSON {
-            guard let round = CanvasRound(json: roundJSON) else { return nil }
-            parsed.append(round)
-        }
-        self.rounds = parsed
+        self.rounds = roundsJSON.compactMap(CanvasRound.init(json:))
     }
 
     var json: [String: Any] {

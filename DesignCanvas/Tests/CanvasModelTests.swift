@@ -552,7 +552,6 @@ final class CanvasModelTests: XCTestCase {
         model.canvasMessage(type: CanvasWire.frozen, object: [:])
         model.canvasMessage(type: CanvasWire.frozen, object: ["ok": "yes"])
         model.canvasMessage(type: CanvasWire.rounds, object: ["rounds": "nope"])
-        model.canvasMessage(type: CanvasWire.rounds, object: ["rounds": [["annotationId": "x"]]])
         model.canvasMessage(type: CanvasWire.agentReply, object: ["annotationId": "a"])
         model.canvasMessage(type: CanvasWire.agentReply,
                             object: ["annotationId": "a", "status": "shipped", "t": wallMs])
@@ -560,5 +559,19 @@ final class CanvasModelTests: XCTestCase {
 
         XCTAssertEqual(model.drawState, .freezing(deadline: 102))
         XCTAssertEqual(model.rounds, [round("a", .queued)])
+    }
+
+    /// M6: a snapshot with one unreadable entry is not a malformed message —
+    /// the readable entries are still this device's round history.
+    func test_rounds_snapshotWithOneUnreadableEntry_keepsTheOthers() {
+        let model = makeModel()
+        model.canvasMessage(type: CanvasWire.rounds, object: ["rounds": [
+            round("a", .queued).json,
+            ["annotationId": "broken"],
+            round("b", .applied, message: "done").json,
+        ]])
+
+        XCTAssertEqual(model.rounds.map(\.annotationId), ["a", "b"])
+        XCTAssertEqual(model.rounds.last?.message, "done")
     }
 }

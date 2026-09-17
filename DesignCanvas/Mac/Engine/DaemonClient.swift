@@ -248,11 +248,13 @@ final class DaemonClient: DaemonAPI {
         guard let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
               let roundsJSON = object["rounds"] as? [[String: Any]] else { throw DaemonClientError.undecodable }
 
-        var rounds: [CanvasRound] = []
-        rounds.reserveCapacity(roundsJSON.count)
-        for json in roundsJSON {
-            guard let round = CanvasRound(json: json) else { throw DaemonClientError.undecodable }
-            rounds.append(round)
+        // An entry this build cannot read is skipped, not fatal (M6): one
+        // unreadable round must not cost the device the whole snapshot the next
+        // hello sends. A missing `rounds` key above is still undecodable — that
+        // is not a rounds response at all.
+        let rounds = roundsJSON.compactMap(CanvasRound.init(json:))
+        if rounds.count != roundsJSON.count {
+            Log.info("DaemonClient: skipped \(roundsJSON.count - rounds.count) unreadable round(s)")
         }
         return rounds
     }

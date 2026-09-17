@@ -370,9 +370,25 @@ final class CanvasMessagesTests: XCTestCase {
         XCTAssertNil(RoundsMessage(json: [:]))
     }
 
-    func test_roundsMessage_nilWhenAnElementIsInvalid() {
-        let json: [String: Any] = ["rounds": [makeRound(0).json, ["bad": "round"]]]
-        XCTAssertNil(RoundsMessage(json: json))
+    /// M6: one entry this build cannot read — a status added later, a field
+    /// gone missing — used to cost the device its whole round history. Skipping
+    /// it is the same rule PROTOCOL.md section 6 already applies to unknown
+    /// types and fields.
+    func test_roundsMessage_skipsAnInvalidElement_andKeepsTheRest() {
+        let json: [String: Any] = ["rounds": [
+            makeRound(0).json,
+            ["bad": "round"],
+            ["annotationId": "id-2", "createdAt": "t", "status": "invented_later"],
+            makeRound(1, message: "hi").json,
+        ]]
+        let decoded = RoundsMessage(json: json)
+        XCTAssertEqual(decoded?.rounds.map(\.annotationId), ["id-0", "id-1"])
+        XCTAssertEqual(decoded?.rounds.last?.message, "hi")
+    }
+
+    func test_roundsMessage_stillNilWhenTheRoundsKeyIsNotAnArrayOfObjects() {
+        XCTAssertNil(RoundsMessage(json: ["rounds": "nope"]))
+        XCTAssertNil(RoundsMessage(json: ["rounds": 42]))
     }
 
     func test_roundsMessage_emptyListRoundTrips() {
