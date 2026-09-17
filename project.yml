@@ -285,6 +285,12 @@ targets:
       # The receiver-side canvas state StreamReceiver owns (Task 11). Pure and
       # Foundation-only, so it is unit-tested here rather than through a socket.
       - Shared/CanvasReceiverState.swift
+      # The receiver itself, so the canvas seams can be exercised over a real
+      # loopback socket. Protocol.swift and AppStore.swift are the only two
+      # things it names beyond Foundation and Mac/Log.swift.
+      - Shared/StreamReceiver.swift
+      - Shared/Protocol.swift
+      - Shared/AppStore.swift
     settings:
       base:
         TEST_HOST: ""
