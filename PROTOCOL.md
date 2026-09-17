@@ -632,6 +632,9 @@ Mechanics at a glance (the policy behind them lives in COMPATIBILITY.md):
   and degrade below it.
 * **Breaking changes are two-phase** (support both, saturate, then raise
   the floor and drop the old path). Never silent.
+* **Design Canvas is a worked example.** Section 11 documents a real
+  additive extension — five new message types plus two new `ping` fields —
+  that ships with no `pv` bump at all, per the rule above.
 
 ### State of the wire
 
@@ -642,6 +645,134 @@ Mechanics at a glance (the policy behind them lives in COMPATIBILITY.md):
 | 3 | `pencil`, `proximity`; below pv 3 the receiver degrades stylus to `touch` |
 | 3 (additive) | `hello.cursorPort` and the UDP cursor side channel (6.3); optional, no bump |
 | 4 (reserved) | Typed frame header replacing the section 4 demux heuristic (two-phase migration) |
+
+## 11. Design Canvas extension (additive, no `pv` bump)
+
+Design Canvas (`DesignCanvas/`) is a separate pair of apps built on this
+protocol's sender and receiver code: a Mac menu-bar app and an iPad app
+that turn a live mirror into a sketch-and-reply loop with a coding agent.
+It adds five new control message types, two new `ping` fields, and a wider
+receiver-to-sender frame cap. All of it is additive per sections 6 and 10:
+new types and new optional fields that an implementation predating them
+MUST already ignore, so none of it needs a `pv` bump. **An OpenDisplay
+sender or receiver that predates this section, or that never advertises
+`canvas`, ignores every byte of it and keeps working exactly as before; a
+Design Canvas peer talking to a plain OpenDisplay peer never sends any of
+it.**
+
+### 11.1 Capability gate
+
+Every message in this section is exchanged only on a connection whose
+`welcome` carried the additive `canvas: true` field (`welcome`'s `pv` and
+`min` fields, section 6.2, are unchanged). A receiver MUST NOT send
+`freeze` or `annotation` unless the sender's most recent `welcome` set
+`canvas: true`; a sender MUST NOT send `frozen`, `agentReply`, or `rounds`
+unless it has itself sent `welcome.canvas: true` on that connection. Any of
+these five types arriving where the local end never announced or received
+`canvas` is treated as an unknown `type`, per section 6 — logged at most
+once, never fatal.
+
+### 11.2 New control messages
+
+| `type` | Direction | Fields | Purpose |
+|---|---|---|---|
+| `freeze` | receiver to sender | `captureMs`, `zoomRect`, `t` | Enter Draw Mode: hold the frame captured at `captureMs` |
+| `frozen` | sender to receiver | `ok` | Whether that frame was still available |
+| `annotation` | receiver to sender | `sketch`, `zoomRect`, `viewport`, `note`?, `t` | The finished sketch (strokes only, no background) |
+| `agentReply` | sender to receiver | `annotationId`, `status`, `message`?, `prUrl`?, `t` | One round's live status, or the agent's outcome |
+| `rounds` | sender to receiver | `rounds[]` | Snapshot of the last 20 rounds for this device |
+
+Field types, exactly as implemented (`DesignCanvas/Shared/CanvasMessages.swift`):
+
+* **`freeze`** (receiver to sender): `captureMs` (integer, milliseconds —
+  the same clock as the video telemetry prefix's `cap`, section 5.1);
+  `zoomRect` (object `{x, y, w, h}`, numbers, normalized 0..1, top-left
+  origin — the region the receiver had zoomed into, or the full frame);
+  `t` (number, milliseconds since the Unix epoch on the receiver's clock,
+  as in `touch.t`).
+* **`frozen`** (sender to receiver): `ok` (bool). `true` when the sender
+  still held a frame for `captureMs`; `false` only when it did not.
+* **`annotation`** (receiver to sender): `sketch` (string, base64-encoded
+  PNG, transparent — the drawn strokes only; the sender composites this
+  over its own clean frame, so no background image crosses the wire);
+  `zoomRect` (object, as above); `viewport` (object `{w, h, scale}`: `w`
+  and `h` integers, `scale` a number — the receiver's panel size and UI
+  scale at the time); `note` (string, optional — the user's typed note);
+  `t` (number, as above).
+* **`agentReply`** (sender to receiver): `annotationId` (string); `status`
+  (string, one of `queued`, `sent`, `applied`, `failed`, `needs_input`);
+  `message` (string, optional); `prUrl` (string, optional); `t` (number,
+  as above).
+* **`rounds`** (sender to receiver): `rounds` (array, newest first; each
+  entry an object with `annotationId` (string), `createdAt` (string, ISO
+  8601), `status` (string, as in `agentReply`), `message` (string,
+  optional), `prUrl` (string, optional), `note` (string, optional)). Sent
+  after every `hello`, including a rotation re-`hello`, so a reconnecting
+  receiver is stateless and a status change that landed while it was
+  disconnected still shows up.
+
+### 11.3 `ping` additions
+
+`ping` (sender to receiver, section 6.2) gains two additive string fields,
+sent only on a canvas session:
+
+* `channel` — one of `attached`, `detached`, `none`: whether a local
+  agent-channel process is currently subscribed on the sender's machine.
+* `project` — the selected project folder's name; absent when none is
+  selected.
+
+Both are informational, exactly like the sender's other `ping` health
+fields, and follow the same rule as everything else on the wire: an
+unknown field on a known type MUST be ignored.
+
+### 11.4 Frame size policy
+
+Section 3 caps a receiver-to-sender payload at `1` to `2^20 - 1` bytes. On
+a canvas session that cap widens to `1` to `2^24 - 1` bytes (16 MiB,
+16777216), so one `annotation` sketch fits in a single frame. The payload
+is read in 256 KiB (262144-byte) chunks rather than one pass, and every
+chunk that lands refreshes the liveness timestamp the 5 s watchdog
+(section 8.2) checks — so a slow upload's watchdog never redials out from
+under it merely because no single read occupied 5 s on its own. A frame
+whose declared length is `0` or `>= 2^24` closes the link outright (the
+same "declare death, let redial policy decide" path as any other fatal
+receive error): the payload boundary is unknown once a declared length is
+rejected, so re-arming the read would misparse the next frame as this
+one's body. A plain OpenDisplay session (no `canvas: true` in that
+connection's `welcome`) keeps the unmodified 1 MiB cap from section 3.
+
+Canvas messages sent sender to receiver (`frozen`, `agentReply`, `rounds`)
+are ordinary control frames and MUST satisfy the existing section 4 demux
+rule unchanged: a sender MUST NOT emit one that is 32768 bytes or longer.
+The official sender enforces this by refusing — and logging, never
+crashing or retrying — any canvas JSON payload of 32768 bytes or more
+before it is ever queued for the wire, the same refusal point that guards
+every other outbound control message. A `rounds` snapshot that would not
+otherwise fit is shrunk before sending (message and note text cut, then
+oldest rounds dropped) rather than sent oversize or dropped outright.
+
+### 11.5 No input on a canvas session
+
+A canvas session carries no input messages in either direction: the
+receiver never sends `touch`, `scroll`, `pencil`, or `proximity` (its
+pinch-to-zoom is view-only, applied to its own decoded video, never sent
+anywhere), and a canvas-mode sender drops any of those four types on
+arrival without acting on them, before the latency accounting an
+OpenDisplay session applies to them. This is a deliberate
+application-level choice, not a wire restriction — the message types and
+their fields (section 6.1) are unchanged and remain fully valid on a
+plain OpenDisplay session.
+
+### 11.6 Discovery and port
+
+A Design Canvas receiver listens on TCP port **9100**, not 9000, and
+advertises Bonjour type `_designcanvas._tcp` (with a UDP cursor listener,
+when offered, on 9101, per the `port + 1` convention of section 6.3) — a
+separate port and service type from OpenDisplay's, so an OpenDisplay
+sender and a Design Canvas receiver never dial each other, on WiFi or
+USB. Everything else in sections 1–9 (framing, Bonjour TXT keys, the USB
+binding, video, clock sync, liveness) applies to a Design Canvas
+connection exactly as written.
 
 ---
 
@@ -696,3 +827,4 @@ This file is versioned by git; the authoritative change log is
 |---|---|
 | 2026-08-19 | Initial specification, written against `pv` 3 |
 | 2026-08-26 | Additive: `hello.cursorPort` and the UDP cursor side channel (section 6.3) |
+| 2026-09-17 | Additive: Design Canvas extension (section 11) — `freeze`/`frozen`/`annotation`/`agentReply`/`rounds`, `ping.channel`/`ping.project`, the 16 MiB canvas frame cap |
