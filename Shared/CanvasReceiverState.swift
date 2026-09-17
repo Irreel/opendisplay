@@ -61,10 +61,22 @@ struct CanvasReceiverState: Equatable {
     }
 
     /// The Mac identified itself. Canvas is enabled only for a JSON `true`:
-    /// a missing key, `false`, or the string `"true"` all leave it off, so a
-    /// plain OpenDisplay Mac can never accidentally open the canvas path.
+    /// a missing key, `false`, the number `1` and the string `"true"` all
+    /// leave it off, so a plain OpenDisplay Mac can never accidentally open
+    /// the canvas path.
     mutating func handleWelcome(_ object: [String: Any]) {
-        macSupportsCanvas = (object["canvas"] as? Bool) == true
+        macSupportsCanvas = Self.isJSONTrue(object["canvas"])
+    }
+
+    /// True only for a JSON boolean `true`. `as? Bool` is not enough:
+    /// JSONSerialization boxes both `true` and `1` as NSNumber and the cast
+    /// accepts either, so the test goes to the CoreFoundation type instead —
+    /// a JSON boolean arrives as a CFBoolean, a JSON number never does.
+    private static func isJSONTrue(_ value: Any?) -> Bool {
+        guard let value else { return false }
+        let object = value as AnyObject
+        guard CFGetTypeID(object) == CFBooleanGetTypeID() else { return false }
+        return (object as? Bool) == true
     }
 
     /// The Mac's liveness ping, which a canvas sender merges its channel and

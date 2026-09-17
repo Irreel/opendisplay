@@ -34,6 +34,13 @@ final class CanvasReceiverStateTests: XCTestCase {
         XCTAssertFalse(state.macSupportsCanvas)
     }
 
+    func test_welcomeWithCanvasAsTheNumberOne_leavesCanvasOff() throws {
+        var state = CanvasReceiverState()
+        state.handleWelcome(try wire(#"{"type":"welcome","pv":3,"min":1,"canvas":1}"#))
+        XCTAssertFalse(state.macSupportsCanvas,
+                       "the gate is a JSON true, and JSONSerialization boxes 1 as the same NSNumber")
+    }
+
     func test_welcomeWithCanvasAsString_leavesCanvasOff() throws {
         var state = CanvasReceiverState()
         state.handleWelcome(try wire(#"{"type":"welcome","pv":3,"min":1,"canvas":"true"}"#))

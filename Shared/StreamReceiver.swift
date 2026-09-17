@@ -420,13 +420,21 @@ final class StreamReceiver: ObservableObject {
     /// Mutate the state and publish the result, but only when it actually
     /// changed: `route` runs per inbound message and usually changes nothing,
     /// and a needless `@Published` write would redraw the UI for it.
+    ///
+    /// The publish is enqueued while the lock is still held, so main applies
+    /// snapshots in the order they were taken. Two threads mutate this state
+    /// — the receiver queue for `adopt`/`welcome`/`ping`, main for
+    /// `setFrozen` and `suppressesInput` — and publishing after the unlock
+    /// let a descheduled thread deliver its older snapshot last, leaving the
+    /// mirror disagreeing with the truth until the next changing mutation.
+    /// `async` only enqueues: it neither blocks nor re-enters the lock.
     @discardableResult
     private func mutateCanvas<T>(_ body: (inout CanvasReceiverState) -> T) -> T {
         canvasLock.lock()
+        defer { canvasLock.unlock() }
         let before = canvasState
         let result = body(&canvasState)
         let after = canvasState
-        canvasLock.unlock()
         if after != before {
             DispatchQueue.main.async { self.canvas = after }
         }
@@ -437,13 +445,18 @@ final class StreamReceiver: ObservableObject {
     /// Freezing takes effect on this call: every frame parsed after it is
     /// dropped before the display layer, so the last one stays put. Frames
     /// already inside the layer or the decode session may still land — that
-    /// is the tolerance the freeze handshake is built around. Thawing asks
-    /// the Mac for a keyframe the way `setRenderingPaused(false)` does, and
-    /// deliberately does NOT flush: the frozen picture should stay up until
-    /// a live frame replaces it rather than blink to black.
+    /// is the tolerance the freeze handshake is built around.
+    ///
+    /// Thawing does exactly what `setRenderingPaused(false)` does: drop the
+    /// samples still queued behind the freeze and ask the Mac for a keyframe
+    /// so the picture re-syncs at once. `flush()` discards queued samples and
+    /// leaves the displayed image alone — `flushAndRemoveImage()` is the one
+    /// that would blank the screen — so the frozen frame stays up until a
+    /// live one replaces it.
     func setFrozen(_ frozen: Bool) {
         guard mutateCanvas({ $0.setFrozen(frozen) }) else { return }
         queue.async {
+            self.displayLayer.flush()
             guard self.connection?.state == .ready else { return }
             self.sendControl(["type": "kf"])
         }
@@ -745,8 +758,14 @@ final class StreamReceiver: ObservableObject {
         pendingConnections.removeAll()
         resetStreamState()
         // Whatever the previous Mac was says nothing about this one: a Mac
-        // that is not a canvas sender puts the capability back to false.
-        mutateCanvas { $0.connectionReset() }
+        // that is not a canvas sender puts the capability back to false, and
+        // the stamp of the frame the dead session left on screen must not be
+        // handed to the new one. Both under the one hold, so nothing can
+        // observe a fresh session paired with a stale timestamp.
+        mutateCanvas { state in
+            state.connectionReset()
+            self.lastEnqueuedCaptureMs = nil
+        }
         lastCursorSeq = 0   // the sender restarts its cursor sequence per session
         cursorPortAnnounced = false
         // Hide the previous sender's cursor: replayed into a fresh video view
