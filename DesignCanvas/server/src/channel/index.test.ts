@@ -196,3 +196,32 @@ test('notifyAnnotation delivers one notifications/claude/channel notification wi
     await client.close();
   }
 });
+
+test('notifyAnnotation delivers content equal to the template for a zoomed annotation too', async () => {
+  const compositePath = await makeCompositePath();
+  const { client, channel } = await connectedPair(async () => ({ ok: true }));
+  const received: Notification[] = [];
+  client.fallbackNotificationHandler = async (notification) => {
+    received.push(notification);
+  };
+  try {
+    const annotation: ClaimedAnnotation = {
+      meta: baseMeta({
+        id: 'ann-2',
+        zoomRect: { x: 0.25, y: 0.1, w: 0.5, h: 0.4 },
+        note: { text: 'Widen the sidebar.' },
+      }),
+      compositePath,
+      capturedAt: '2026-01-01T00:00:00.500Z',
+    };
+    await channel.notifyAnnotation(annotation);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    assert.equal(received.length, 1);
+    const params = received[0]?.params as { content: string; meta: Record<string, string> };
+    assert.equal(params.content, createInstructionText(annotation));
+    assert.match(params.content, /^Zoom region: x=0\.250 y=0\.100 w=0\.500 h=0\.400$/m);
+  } finally {
+    await client.close();
+  }
+});
