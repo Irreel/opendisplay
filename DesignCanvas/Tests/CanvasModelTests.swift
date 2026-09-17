@@ -381,6 +381,72 @@ final class CanvasModelTests: XCTestCase {
         XCTAssertEqual(model.rounds[0].status, .queued)
     }
 
+    // M5: the Mac sends a fresh snapshot after every hello and a live
+    // `agentReply` per status change, and the two race — a rotation re-hello,
+    // or the engine's rounds stream reconnecting, can deliver a snapshot built
+    // before the reply this device already has. A round must never go
+    // backwards on screen: "applied, with a message" turning back into
+    // "queued" reads as the work having been undone.
+
+    func test_rounds_snapshotMayNotMoveAKnownRoundBackwards() {
+        let model = makeModel()
+        model.canvasMessage(type: CanvasWire.agentReply,
+                            object: AgentReplyMessage(annotationId: "a", status: .applied,
+                                                      message: "done", prUrl: "https://example.test/pr/1",
+                                                      t: wallMs).json)
+        XCTAssertEqual(model.rounds.first?.status, .applied)
+
+        // A snapshot built before that reply landed.
+        model.canvasMessage(type: CanvasWire.rounds,
+                            object: RoundsMessage(rounds: [round("a", .queued, note: "align it")]).json)
+
+        XCTAssertEqual(model.rounds.count, 1)
+        XCTAssertEqual(model.rounds[0].status, .applied)
+        XCTAssertEqual(model.rounds[0].message, "done", "the outcome text survives too")
+        XCTAssertEqual(model.rounds[0].prUrl, "https://example.test/pr/1")
+        XCTAssertEqual(model.rounds[0].note, "align it", "the snapshot is still authoritative for the note")
+    }
+
+    func test_rounds_snapshotMayMoveAKnownRoundForwards() {
+        let model = makeModel()
+        model.canvasMessage(type: CanvasWire.rounds,
+                            object: RoundsMessage(rounds: [round("a", .queued)]).json)
+
+        model.canvasMessage(type: CanvasWire.rounds,
+                            object: RoundsMessage(rounds: [round("a", .sent)]).json)
+        XCTAssertEqual(model.rounds[0].status, .sent)
+
+        model.canvasMessage(type: CanvasWire.rounds,
+                            object: RoundsMessage(rounds: [round("a", .failed, message: "could not")]).json)
+        XCTAssertEqual(model.rounds[0].status, .failed)
+        XCTAssertEqual(model.rounds[0].message, "could not")
+    }
+
+    func test_agentReply_mayNotMoveAKnownRoundBackwards() {
+        let model = makeModel()
+        model.canvasMessage(type: CanvasWire.rounds,
+                            object: RoundsMessage(rounds: [round("a", .applied, message: "done")]).json)
+
+        model.canvasMessage(type: CanvasWire.agentReply,
+                            object: AgentReplyMessage(annotationId: "a", status: .queued,
+                                                      message: nil, prUrl: nil, t: wallMs).json)
+
+        XCTAssertEqual(model.rounds, [round("a", .applied, message: "done")])
+    }
+
+    func test_agentReply_mayStillCorrectOneTerminalStatusWithAnother() {
+        let model = makeModel()
+        model.canvasMessage(type: CanvasWire.rounds,
+                            object: RoundsMessage(rounds: [round("a", .applied, message: "done")]).json)
+
+        model.canvasMessage(type: CanvasWire.agentReply,
+                            object: AgentReplyMessage(annotationId: "a", status: .needsInput,
+                                                      message: "which one?", prUrl: nil, t: wallMs).json)
+
+        XCTAssertEqual(model.rounds[0].status, .needsInput)
+        XCTAssertEqual(model.rounds[0].message, "which one?")
+    }
+
     func test_agentReply_keepsAtMostTwentyRounds() {
         let model = makeModel()
         let twenty = (0..<20).map { round("id-\($0)", .applied) }

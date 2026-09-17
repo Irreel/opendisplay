@@ -115,6 +115,20 @@ enum RoundStatus: String {
     case applied
     case failed
     case needsInput = "needs_input"
+
+    /// How far along a round this status is, so a receiver can refuse to move a
+    /// round backwards (M5). The Mac sends a snapshot after every hello and a
+    /// live `agentReply` per change, and the two race: a snapshot built before
+    /// a reply landed must not turn "applied, with a message" back into
+    /// "queued". The three outcomes share a rank — which one a round ends in is
+    /// not progress, so a reply may still correct one with another.
+    var progressRank: Int {
+        switch self {
+        case .queued: return 0
+        case .sent: return 1
+        case .applied, .failed, .needsInput: return 2
+        }
+    }
 }
 
 enum ChannelState: String {

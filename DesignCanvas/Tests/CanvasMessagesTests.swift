@@ -449,6 +449,17 @@ final class CanvasMessagesTests: XCTestCase {
         XCTAssertFalse(data.contains(0))
     }
 
+    // MARK: - RoundStatus.progressRank (M5)
+
+    func test_progressRank_ordersARoundsLifecycle() {
+        XCTAssertLessThan(RoundStatus.queued.progressRank, RoundStatus.sent.progressRank)
+        XCTAssertLessThan(RoundStatus.sent.progressRank, RoundStatus.applied.progressRank)
+        // The three outcomes are one rank: which of them a round ends in is not
+        // progress, so a reply may correct one with another.
+        XCTAssertEqual(RoundStatus.applied.progressRank, RoundStatus.failed.progressRank)
+        XCTAssertEqual(RoundStatus.applied.progressRank, RoundStatus.needsInput.progressRank)
+    }
+
     // MARK: - CanvasLink (M4)
 
     /// `prUrl` is filled in by the model, from whatever it read while working,
