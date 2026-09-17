@@ -9,7 +9,7 @@ export interface Logger {
 export function defaultLogPath(): string {
   return (
     process.env['DESIGN_CANVAS_LOG_PATH'] ??
-    join(homedir(), 'Library', 'Logs', 'DesignTool', 'server.log')
+    join(homedir(), 'Library', 'Logs', 'DesignCanvas', 'server.log')
   );
 }
 
