@@ -23,7 +23,9 @@ final class CanvasSessionTests: XCTestCase {
             status: status,
             workQueue: DispatchQueue(label: "test.canvas.work", qos: .utility),
             now: now,
-            sleep: { _ in }
+            // Immediate, but cooperative: a test that parks a job in its retry
+            // loop must not monopolise the executor while it waits.
+            sleep: { _ in await Task.yield() }
         )
     }
 
@@ -559,38 +561,86 @@ final class CanvasSessionTests: XCTestCase {
 
     // MARK: - lifetime
 
-    func test_aSessionWithAJobInFlight_isNotKeptAliveByItsOwnUploadPipeline() {
+    /// A session whose device has gone is dead weight: it holds a frame ring
+    /// of full-size deep copies and the link that fed it. Neither may be kept
+    /// alive by an upload that is still being retried.
+    func test_aSessionReleasedWhileAnUploadIsRetrying_stillDeallocates() {
         let daemon = FakeDaemon()
+        daemon.setAnnotationsAlwaysFail(true)
         let outbound = FakeOutbound()
-        // Suspending the work queue parks the job inside its composite hop,
-        // which is the longest a job ever holds anything of the session's.
-        let workQueue = DispatchQueue(label: "test.canvas.work", qos: .utility)
-        var session: CanvasSession? = CanvasSession(
-            deviceName: "Zhao's iPad",
-            daemon: daemon,
-            status: CanvasStatus(),
-            workQueue: workQueue,
-            now: Date.init,
-            sleep: { _ in }
-        )
-        weak var released = session
+        var session: CanvasSession? = makeSession(daemon: daemon)
+        weak let released = session
+
         hello(session!, outbound: outbound, installID: "install-A")
         freeze(session!, outbound: outbound, daemon: daemon, captureMs: 1_000, colour: TestImages.RGBA(0, 0, 200))
-
-        workQueue.suspend()
-        defer { workQueue.resume() }
         session!.canvasDidReceive(
             type: CanvasWire.annotation,
             object: annotationJSON(sketch: Data()),
             outbound: outbound
         )
-        XCTAssertEqual(session!.pendingUploadCount, 1)
+        guard waitUntil("the upload to be retrying", { daemon.annotationCalls.count >= 2 }) else {
+            daemon.setAnnotationsAlwaysFail(false)
+            return
+        }
 
         session = nil
 
-        // The pipeline drops what it is holding rather than keeping the
-        // session alive for a round nobody is waiting on any more.
         waitUntil("the released session to deallocate", { released == nil })
+        // Let the surviving job finish so the retry loop does not outlive the test.
+        daemon.setAnnotationsAlwaysFail(false)
+        waitUntil("the surviving upload to land", { session == nil && daemon.annotationCalls.count >= 3 })
+    }
+
+    /// PRD D5: an accepted sketch is never lost because the Mac side went
+    /// away. The iPad was told "sent" when it left DRAWING, so the round has
+    /// to reach the daemon even though the device it came from has gone.
+    func test_uploadsAcceptedBeforeTheSessionEnded_completeAfterIt_inOrder() {
+        let daemon = FakeDaemon()
+        daemon.setAnnotationsAlwaysFail(true)
+        let outbound = FakeOutbound()
+        var session: CanvasSession? = makeSession(daemon: daemon)
+        weak let released = session
+
+        hello(session!, outbound: outbound, installID: "install-A")
+        freeze(session!, outbound: outbound, daemon: daemon, captureMs: 1_000, colour: TestImages.RGBA(200, 0, 0))
+        session!.canvasDidReceive(
+            type: CanvasWire.annotation,
+            object: annotationJSON(sketch: Data()),
+            outbound: outbound
+        )
+        freeze(session!, outbound: outbound, daemon: daemon, captureMs: 2_000, colour: TestImages.RGBA(0, 200, 0),
+               waitForCapturePost: false)
+        session!.canvasDidReceive(
+            type: CanvasWire.annotation,
+            object: annotationJSON(sketch: Data()),
+            outbound: outbound
+        )
+        XCTAssertEqual(session!.pendingUploadCount, 2)
+
+        guard waitUntil("the first upload to be retrying", { daemon.annotationCalls.count >= 2 }) else {
+            daemon.setAnnotationsAlwaysFail(false)
+            return
+        }
+
+        session = nil
+        guard waitUntil("the released session to deallocate", { released == nil }) else {
+            daemon.setAnnotationsAlwaysFail(false)
+            return
+        }
+
+        // The daemon comes back after the session is already gone.
+        daemon.setAnnotationsAlwaysFail(false)
+        guard waitUntil("both queued uploads to land", {
+            daemon.annotationCalls.contains { $0.sourceCaptureId == "capture-2" }
+        }) else { return }
+
+        // Order held: every attempt at the first round, then the second one,
+        // whose capture was posted by the queued job behind it.
+        let uploaded = daemon.annotationCalls.map(\.sourceCaptureId)
+        XCTAssertEqual(uploaded.last, "capture-2")
+        XCTAssertEqual(uploaded.filter { $0 == "capture-2" }.count, 1)
+        XCTAssertTrue(uploaded.dropLast().allSatisfy { $0 == "capture-1" })
+        XCTAssertEqual(daemon.captureCalls.count, 2)
     }
 }
 

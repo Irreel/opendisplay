@@ -24,15 +24,6 @@ final class FakeOutbound: CanvasOutbound {
         objects.filter { $0["type"] as? String == type }
     }
 
-    /// The payloads that parse as JSON objects with `type` == `type`, in order.
-    func payloads(ofType type: String) -> [[String: Any]] {
-        payloads.compactMap { data in
-            guard let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
-                  object["type"] as? String == type else { return nil }
-            return object
-        }
-    }
-
     @discardableResult
     func sendCanvasJSON(_ object: [String: Any]) -> Bool {
         guard JSONSerialization.isValidJSONObject(object),
@@ -65,10 +56,8 @@ final class FakeDaemon: DaemonAPI {
     private var storedAnnotationCalls: [AnnotationUpload] = []
     private var storedRoundsCalls: [(deviceID: String, limit: Int)] = []
     private var updatesContinuation: AsyncStream<RoundUpdate>.Continuation?
+    private var annotationsAlwaysFail = false
 
-    /// Fired after each `postAnnotation` returns (success or failure), with
-    /// the number of annotation calls made so far.
-    var onAnnotationCall: ((Int) -> Void)?
     /// Fired after the round-updates stream terminates.
     var onUpdatesTerminated: (() -> Void)?
 
@@ -84,6 +73,13 @@ final class FakeDaemon: DaemonAPI {
 
     func scriptRounds(_ result: Result<[CanvasRound], Error>) {
         lock.withLock { storedRoundsResult = result }
+    }
+
+    /// While set, every `postAnnotation` fails however often it is called —
+    /// which is what holds a job in its retry loop for as long as a test needs
+    /// it there. Clearing it lets the scripted/default results take over again.
+    func setAnnotationsAlwaysFail(_ failing: Bool) {
+        lock.withLock { annotationsAlwaysFail = failing }
     }
 
     // MARK: - recorded calls
@@ -108,13 +104,12 @@ final class FakeDaemon: DaemonAPI {
     }
 
     func postAnnotation(_ upload: AnnotationUpload) async throws -> String {
-        let (result, count): (Result<String, Error>, Int) = lock.withLock {
+        let result: Result<String, Error> = lock.withLock {
             storedAnnotationCalls.append(upload)
+            if annotationsAlwaysFail { return .failure(FakeDaemonFailure()) }
             let scripted = storedAnnotationResults.isEmpty ? nil : storedAnnotationResults.removeFirst()
-            let count = storedAnnotationCalls.count
-            return (scripted ?? .success("annotation-\(count)"), count)
+            return scripted ?? .success("annotation-\(storedAnnotationCalls.count)")
         }
-        defer { onAnnotationCall?(count) }
         return try result.get()
     }
 
@@ -138,9 +133,6 @@ final class FakeDaemon: DaemonAPI {
     func emit(_ update: RoundUpdate) {
         lock.withLock { updatesContinuation }?.yield(update)
     }
-
-    /// True once `roundUpdates()` has been called and its continuation stored.
-    var hasSubscriber: Bool { lock.withLock { updatesContinuation != nil } }
 }
 
 /// A failure a fake daemon can be scripted with when the specific error does

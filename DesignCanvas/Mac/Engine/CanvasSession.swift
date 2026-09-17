@@ -59,53 +59,16 @@ final class CanvasStatus {
 ///
 /// Threading. Every `SenderCanvasDelegate` callback arrives on the sender's
 /// serial queue and returns without doing PNG work, compositing or I/O: all
-/// of that happens on `workQueue` and in the upload pipeline below. `deliver`
-/// may be called from anywhere (`CanvasHub`'s consuming task). All mutable
-/// state is behind `lock`, with the one documented exception of
-/// `FreezeCapture.captureID`, which only the (serial) upload pipeline touches.
+/// of that happens in `UploadPipeline`, which also owns the queue of accepted
+/// uploads and outlives this session when it has to. `deliver` may be called
+/// from anywhere (`CanvasHub`'s consuming task). All of this session's own
+/// mutable state is behind `lock`.
 final class CanvasSession: SenderCanvasDelegate {
 
-    /// A frozen frame waiting for its sketch. A reference type because the
-    /// capture post and the annotation job that needs its id are two
-    /// different pipeline jobs.
-    private final class FreezeCapture {
-        let image: CGImage
-        let width: Int
-        let height: Int
-        /// Set by the capture job, read (and cleared, on `.captureNotFound`)
-        /// by the annotation job. Both run on the upload pipeline, which is
-        /// serial, so this needs no lock of its own.
-        var captureID: String?
-
-        init(image: CGImage) {
-            self.image = image
-            self.width = image.width
-            self.height = image.height
-        }
-    }
-
-    /// Everything an `annotation` needs after the sender's queue is released.
-    private struct AnnotationJob {
-        let capture: FreezeCapture
-        let sketchPNG: Data
-        let zoomRect: NormalizedRect
-        let viewport: CanvasViewport
-        let note: String?
-        let deviceID: String
-        let createdAt: Date
-    }
-
-    private enum UploadJob {
-        case capture(FreezeCapture)
-        case annotation(AnnotationJob)
-    }
-
-    private let deviceName: String
     private let daemon: DaemonAPI
     private let status: CanvasStatus
-    private let workQueue: DispatchQueue
     private let now: () -> Date
-    private let sleep: (TimeInterval) async -> Void
+    private let pipeline: UploadPipeline
 
     private let lock = NSLock()
     private var ring = FrameRing()
@@ -113,10 +76,7 @@ final class CanvasSession: SenderCanvasDelegate {
     /// Weak: this is the `MacSender` that owns the link, and it must not be
     /// kept alive by the session it hands its messages to.
     private weak var outbound: CanvasOutbound?
-    private var heldCapture: FreezeCapture?
-    private var jobs: [UploadJob] = []
-    private var draining = false
-    private var pendingUploads = 0
+    private var heldCapture: UploadPipeline.FreezeCapture?
 
     init(
         deviceName: String,
@@ -126,20 +86,30 @@ final class CanvasSession: SenderCanvasDelegate {
         now: @escaping () -> Date = Date.init,
         sleep: @escaping (TimeInterval) async -> Void = { try? await Task.sleep(nanoseconds: UInt64($0 * 1e9)) }
     ) {
-        self.deviceName = deviceName
         self.daemon = daemon
         self.status = status
-        self.workQueue = workQueue
         self.now = now
-        self.sleep = sleep
+        self.pipeline = UploadPipeline(
+            deviceName: deviceName,
+            daemon: daemon,
+            workQueue: workQueue,
+            sleep: sleep
+        )
+    }
+
+    /// Ending a session does not cancel the rounds it accepted: the device was
+    /// told they were sent, so the pipeline keeps them and keeps trying. Said
+    /// out loud, because otherwise a round landing minutes after its iPad
+    /// disconnected reads like the work of a session that is not there.
+    deinit {
+        let pending = pipeline.pendingUploadCount
+        if pending > 0 {
+            Log.info("canvas: session ended with \(pending) uploads pending; continuing in the background")
+        }
     }
 
     /// Annotations accepted but not yet uploaded or dropped.
-    var pendingUploadCount: Int {
-        lock.lock()
-        defer { lock.unlock() }
-        return pendingUploads
-    }
+    var pendingUploadCount: Int { pipeline.pendingUploadCount }
 
     // MARK: - SenderCanvasDelegate
 
@@ -251,12 +221,12 @@ final class CanvasSession: SenderCanvasDelegate {
 
         send(type: CanvasWire.frozen, FrozenMessage(ok: true).json, via: outbound)
 
-        let capture = FreezeCapture(image: image)
+        let capture = UploadPipeline.FreezeCapture(image: image)
         lock.lock()
         let hadPrevious = heldCapture != nil
         heldCapture = capture
-        enqueueLocked(.capture(capture))
         lock.unlock()
+        pipeline.enqueue(capture: capture)
 
         if hadPrevious {
             Log.info("canvas: discarding previous freeze capture")
@@ -290,7 +260,9 @@ final class CanvasSession: SenderCanvasDelegate {
             return
         }
         heldCapture = nil
-        enqueueLocked(.annotation(AnnotationJob(
+        lock.unlock()
+
+        pipeline.enqueue(annotation: UploadPipeline.AnnotationJob(
             capture: capture,
             sketchPNG: message.sketchPNG,
             zoomRect: message.zoomRect,
@@ -298,8 +270,7 @@ final class CanvasSession: SenderCanvasDelegate {
             note: message.note,
             deviceID: installID,
             createdAt: createdAt
-        )))
-        lock.unlock()
+        ))
 
         Log.info("canvas: annotation queued (\(message.sketchPNG.count)-byte sketch)")
     }
@@ -323,183 +294,5 @@ final class CanvasSession: SenderCanvasDelegate {
         var payload = prefix
         payload.append(message.encoded(limit: CanvasWire.senderJSONLimit - added).dropFirst())
         return payload
-    }
-
-    // MARK: - upload pipeline
-
-    /// Appends a job and, when nothing is draining yet, starts the one task
-    /// that runs them. Caller holds `lock`.
-    private func enqueueLocked(_ job: UploadJob) {
-        jobs.append(job)
-        if case .annotation = job {
-            pendingUploads += 1
-        }
-        guard !draining else { return }
-        draining = true
-        startDraining()
-    }
-
-    private func dequeue() -> UploadJob? {
-        lock.lock()
-        defer { lock.unlock() }
-        guard !jobs.isEmpty else {
-            draining = false
-            return nil
-        }
-        return jobs.removeFirst()
-    }
-
-    private func finishAnnotationJob() {
-        lock.lock()
-        pendingUploads -= 1
-        lock.unlock()
-    }
-
-    /// The upload pipeline: one task, one job at a time, strictly in order.
-    ///
-    /// It holds the session only for the moment it takes to pull the next job
-    /// (and, for an annotation, to mark it finished). The job runners are
-    /// static and take everything they need by value, so a job that is
-    /// retrying does not keep a session its owner has released alive; the
-    /// loop then stops and the rest of the queue is dropped.
-    private func startDraining() {
-        let daemon = self.daemon
-        let sleep = self.sleep
-        let deviceName = self.deviceName
-        let workQueue = self.workQueue
-        let weakSelf: () -> CanvasSession? = { [weak self] in self }
-
-        Task {
-            while let job = weakSelf()?.dequeue() {
-                switch job {
-                case .capture(let capture):
-                    await CanvasSession.runCapture(capture, daemon: daemon, workQueue: workQueue)
-                case .annotation(let annotationJob):
-                    await CanvasSession.runAnnotation(
-                        annotationJob,
-                        deviceName: deviceName,
-                        daemon: daemon,
-                        workQueue: workQueue,
-                        sleep: sleep,
-                        isAlive: { weakSelf() != nil }
-                    )
-                    weakSelf()?.finishAnnotationJob()
-                }
-            }
-        }
-    }
-
-    /// One attempt, no retry: the annotation path re-posts the capture itself
-    /// when this left no id behind.
-    private static func runCapture(_ capture: FreezeCapture, daemon: DaemonAPI, workQueue: DispatchQueue) async {
-        guard let png = await onWorkQueue(workQueue, { Compositor.pngData(capture.image) }) else {
-            Log.info("canvas: freeze capture could not be encoded as PNG")
-            return
-        }
-        do {
-            capture.captureID = try await daemon.postCapture(png: png, width: capture.width, height: capture.height)
-        } catch {
-            Log.info("canvas: freeze capture post failed (\(error)); the annotation will re-post it")
-        }
-    }
-
-    /// Composites once, then uploads until it succeeds. A sketch that will
-    /// not decode is the one unrecoverable case — retrying cannot change it —
-    /// so that annotation is dropped and the queue moves on. Everything else
-    /// is retried behind `BackoffPolicy`, which later jobs wait out: losing a
-    /// round's order would show the designer a reply for a sketch they drew
-    /// after the one still in flight.
-    ///
-    /// A fresh policy per job is exactly "reset after a success", since the
-    /// only way out of the loop is a successful upload or a dead session.
-    private static func runAnnotation(
-        _ job: AnnotationJob,
-        deviceName: String,
-        daemon: DaemonAPI,
-        workQueue: DispatchQueue,
-        sleep: (TimeInterval) async -> Void,
-        isAlive: () -> Bool
-    ) async {
-        let composited = await onWorkQueue(workQueue, catching: {
-            try Compositor.composite(base: job.capture.image, sketchPNG: job.sketchPNG, zoomRect: job.zoomRect)
-        })
-        guard case .success(let composite) = composited else {
-            Log.info("canvas: dropping annotation — the sketch could not be composited")
-            return
-        }
-
-        var backoff = BackoffPolicy()
-        var repostedAfterMissingCapture = false
-
-        while isAlive() {
-            // The capture the freeze posted, or — when that post failed, or
-            // the daemon has since lost it — one posted here from the
-            // composite's own copy of the untouched frame.
-            let captureID: String
-            if let posted = job.capture.captureID {
-                captureID = posted
-            } else {
-                do {
-                    captureID = try await daemon.postCapture(
-                        png: composite.screenshotPNG,
-                        width: job.capture.width,
-                        height: job.capture.height
-                    )
-                    job.capture.captureID = captureID
-                } catch {
-                    Log.info("canvas: capture post failed (\(error)); retrying the annotation")
-                    await sleep(backoff.next())
-                    continue
-                }
-            }
-
-            let upload = AnnotationUpload(
-                sourceCaptureId: captureID,
-                compositePNG: composite.compositePNG,
-                sketchPNG: composite.sketchPNG,
-                viewport: job.viewport,
-                zoomRect: job.zoomRect,
-                note: job.note,
-                deviceID: job.deviceID,
-                deviceName: deviceName,
-                createdAt: job.createdAt
-            )
-            do {
-                let annotationID = try await daemon.postAnnotation(upload)
-                Log.info("canvas: annotation \(annotationID) uploaded")
-                return
-            } catch DaemonClientError.captureNotFound where !repostedAfterMissingCapture {
-                // The daemon's store lost (or never had) the capture: post it
-                // again and try once more straight away, before falling back
-                // to the ordinary backoff path.
-                repostedAfterMissingCapture = true
-                job.capture.captureID = nil
-                Log.info("canvas: the daemon has no such capture; re-posting it")
-            } catch {
-                Log.info("canvas: annotation upload failed (\(error)); retrying")
-                await sleep(backoff.next())
-            }
-        }
-    }
-
-    /// Hops to `workQueue` for CPU-bound image work and comes back with the
-    /// result, so neither the sender's queue nor the pipeline's cooperative
-    /// thread carries a PNG encode or a composite.
-    private static func onWorkQueue<T>(_ queue: DispatchQueue, _ body: @escaping () -> T) async -> T {
-        await withCheckedContinuation { continuation in
-            queue.async {
-                continuation.resume(returning: body())
-            }
-        }
-    }
-
-    /// Same hop for work that throws; a `Result` rather than `rethrows`
-    /// because the continuation has to carry the failure back out.
-    private static func onWorkQueue<T>(_ queue: DispatchQueue, catching body: @escaping () throws -> T) async -> Result<T, Error> {
-        await withCheckedContinuation { continuation in
-            queue.async {
-                continuation.resume(returning: Result { try body() })
-            }
-        }
     }
 }

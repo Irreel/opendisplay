@@ -24,6 +24,13 @@ final class CanvasHub {
         self.status = status
     }
 
+    /// A hub that goes away without `stop()` would otherwise leave its
+    /// consumer — and the daemon's SSE connection under it — running until
+    /// the next update happened to arrive.
+    deinit {
+        consumer?.cancel()
+    }
+
     /// A session for one device, wired to the same daemon and status and
     /// registered for round updates.
     func makeSession(deviceName: String) -> CanvasSession {
