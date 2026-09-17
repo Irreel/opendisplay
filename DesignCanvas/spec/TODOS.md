@@ -146,4 +146,28 @@
 **Priority:** P3
 **Depends on:** A design decision.
 
+### Oversize-sketch notice is not visible in Draw Mode
+
+**What:** Show the `sketchTooLarge` notice while Draw Mode is open, for example by rendering the notice banner over `DrawModeOverlay`.
+
+**Why:** When a sketch would exceed the 16 MiB canvas frame cap, `CanvasModel.done` correctly refuses to send it, keeps the strokes and sets the notice. But `CanvasScreen` renders the notice banner only outside Draw Mode, and the connection sheet that also shows it sits behind the panel that Draw Mode hides. So Done on an oversize sketch looks like a dead button.
+
+**Context:** Found by the scoped re-review of the final fix wave (2026-09-17) as the one finding left partially addressed; parked because the process allows no second fix wave, nothing else builds on it, and the trigger (a sketch PNG over 15 MiB) is rare. Start at `DesignCanvas/iOS/CanvasScreen.swift` where `DrawModeOverlay` and `NoticeBanner` are chosen; the model side is already tested (`test_done_withAnOversizeSketch_staysInDrawingAndSaysSo`).
+
+**Effort:** S
+**Priority:** P2
+**Depends on:** None.
+
+### Parked freeze captures expire only when fetched
+
+**What:** Sweep expired entries out of `CanvasCaptureParkingLot`, either on every `park` or on a timer.
+
+**Why:** A device that freezes once and never returns leaves a full-resolution frame retained for the life of the Mac app. The 10-minute expiry is only evaluated when the same device asks for its capture.
+
+**Context:** Minor from the scoped re-review of the final fix wave (2026-09-17). Start at `DesignCanvas/Mac/Engine/CanvasCaptureParkingLot.swift`.
+
+**Effort:** S
+**Priority:** P3
+**Depends on:** None.
+
 ## Completed
