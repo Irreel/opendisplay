@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Design Canvas server entry. Mode dispatch lives here; domain logic stays in modules.
 
-import { CLAIM_LEASE_MS } from './shared.js';
+import { CAPTURE_SWEEP_MS, CLAIM_LEASE_MS } from './shared.js';
 import { createMcpChannel } from './channel/index.js';
 import { runChannelSubscriber } from './channel/subscriber.js';
 import { AnnotationEventBus } from './http/event-stream.js';
@@ -51,4 +51,11 @@ if (isChannel) {
     void store.reconcileStaleClaims();
   }, CLAIM_LEASE_MS / 2);
   timer.unref();
+  // Captures a Draw Mode entry posted and no sketch ever claimed: swept at startup
+  // and hourly, so a full-resolution frame per entry does not accumulate (I5).
+  void store.pruneCaptures();
+  const captureSweep = setInterval(() => {
+    void store.pruneCaptures();
+  }, CAPTURE_SWEEP_MS);
+  captureSweep.unref();
 }

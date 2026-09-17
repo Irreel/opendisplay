@@ -8,6 +8,15 @@ export const CHANNEL_NAME = 'design-canvas';
 export const SCHEMA_VERSION = 3;
 export const SERVICE_NAME = 'Design Canvas';
 export const CLAIM_LEASE_MS = 30_000;
+/**
+ * How long a capture that was never turned into an annotation is kept. Entering Draw
+ * Mode posts a full-resolution frame whether the sketch is ever sent or not, so
+ * without this the capture directory only grew (I5). A consumed capture is deleted
+ * at once by `createAnnotation`; this is the sweep for the rest.
+ */
+export const CAPTURE_TTL_MS = 6 * 60 * 60 * 1000;
+/** How often the daemon runs that sweep (also once at startup). */
+export const CAPTURE_SWEEP_MS = 60 * 60 * 1000;
 
 export const REPLY_STATUSES = ['applied', 'failed', 'needs_input'] as const;
 export type ReplyStatus = (typeof REPLY_STATUSES)[number];
@@ -64,6 +73,13 @@ export interface AnnotationMeta {
   id: string;
   schemaVersion: number;
   createdAt: string;
+  /**
+   * When the frame under this sketch was captured, copied from the source capture as
+   * the annotation is created. Additive on schema 3 (absent on records written before
+   * it existed): the capture directory is deleted the moment it is consumed (I5), so
+   * this is the only place that time survives.
+   */
+  capturedAt?: string;
   claimedAt: string | null;
   servedAt: string | null;
   viewport: Viewport;

@@ -160,3 +160,37 @@ test('GET /v1/captures/latest no longer exists (404)', async () => {
     assert.equal(response.status, 404);
   });
 });
+
+/// I5: the Mac app polls health every 2 s, which was two log lines every two
+/// seconds, for ever, in a file that never rotates.
+test('the health poll is not logged, while other requests still are', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'dc-health-log-'));
+  const events: { type: string; path?: unknown }[] = [];
+  const logger = {
+    event: async (type: string, fields: Record<string, unknown> = {}) => {
+      events.push({ type, path: fields['path'] });
+    },
+  };
+  const store = new DesignCanvasStore(logger, createStorePaths(root));
+  await store.ensure();
+  const server = await startHttpServer({
+    port: 0,
+    version: '0.0.0',
+    store,
+    bus: new AnnotationEventBus(),
+    logger,
+  });
+  try {
+    const { port } = server.address() as AddressInfo;
+    await fetch(`http://127.0.0.1:${port}/v1/health`);
+    await fetch(`http://127.0.0.1:${port}/v1/annotations`);
+
+    const http = events.filter((e) => e.type === 'http.request' || e.type === 'http.response');
+    assert.deepEqual(
+      http.map((e) => `${e.type} ${String(e.path)}`),
+      ['http.request /v1/annotations', 'http.response /v1/annotations'],
+    );
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});

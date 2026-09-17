@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -63,18 +63,42 @@ test('serving annotation is excluded from pending until lease expires', async ()
   assert.equal((await store.pendingAnnotations()).length, 1);
 });
 
-test('claim carries capturedAt from the source capture', async () => {
+/// The capture directory is consumed the moment the annotation is created (I5), so
+/// `capturedAt` has to come from what the annotation recorded — not from a capture
+/// that is already gone by the time the channel claims it.
+test('claim carries capturedAt recorded when the annotation was created', async () => {
   const captureCreatedAt = '2026-02-01T00:00:00.000Z';
-  const { store, id } = await storeWithAnnotation(captureCreatedAt);
+  const { store, id, captureId } = await storeWithAnnotation(captureCreatedAt);
+  assert.equal(await store.getCapture(captureId), null, 'consumed at creation');
   const claimed = await store.claimAnnotation(id);
   assert.equal(claimed?.capturedAt, captureCreatedAt);
 });
 
-test('claim falls back to the annotation createdAt when the capture is gone', async () => {
-  const { store, id, captureId } = await storeWithAnnotation('2026-02-01T00:00:00.000Z');
-  await rm(join(store.paths.captures, captureId), { recursive: true, force: true });
-  const annotation = await store.getAnnotation(id);
+test('claim falls back to the annotation createdAt for a record that never recorded one', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'dc-claim-legacy-'));
+  const store = new DesignCanvasStore(silentLogger, createStorePaths(root));
+  await store.ensure();
+  const id = 'annotation-without-capturedat';
+  const dir = join(store.paths.annotations, id);
+  await mkdir(dir, { recursive: true });
+  await writeFile(join(dir, 'composite.png'), Buffer.from('c'));
+  await writeFile(
+    join(dir, 'meta.json'),
+    JSON.stringify({
+      id,
+      schemaVersion: 3,
+      createdAt: '2026-03-01T00:00:00.000Z',
+      claimedAt: null,
+      servedAt: null,
+      viewport: { w: 1, h: 1 },
+      zoomRect: null,
+      note: { text: null },
+      sourceCaptureId: 'a-capture-long-since-swept',
+      device: { id: 'device-1', name: 'iPad' },
+      reply: null,
+    }),
+  );
+
   const claimed = await store.claimAnnotation(id);
-  assert.equal(claimed?.capturedAt, annotation?.meta.createdAt);
-  assert.notEqual(claimed?.capturedAt, '2026-02-01T00:00:00.000Z');
+  assert.equal(claimed?.capturedAt, '2026-03-01T00:00:00.000Z');
 });

@@ -3,6 +3,7 @@ import { mkdtemp, mkdir, readdir, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
+import { CAPTURE_TTL_MS } from '../shared.js';
 import { DesignCanvasStore, UnknownCaptureError } from './store.js';
 import { createStorePaths } from './paths.js';
 
@@ -59,6 +60,84 @@ test('annotation upload happy path writes four files and schema 3 meta with devi
   assert.equal((await readFile(join(dir, 'sketch.png'))).toString(), 'sketch');
   assert.equal((await readFile(join(dir, 'screenshot.png'))).toString(), 'shot');
   await readFile(join(dir, 'meta.json'));
+});
+
+// I5: every Draw Mode entry posts a full-resolution capture whether the sketch is
+// ever sent or not, and `createAnnotation` copies the screenshot it needs — so the
+// capture directory was pure accumulation.
+
+test('creating an annotation consumes its capture directory', async () => {
+  const store = await tempStore();
+  const capture = await store.createCapture({
+    screenshot: Buffer.from('shot'),
+    viewport: { w: 100, h: 200 },
+  });
+  const meta = await store.createAnnotation({
+    composite: Buffer.from('composite'),
+    sketch: Buffer.from('sketch'),
+    sourceCaptureId: capture.id,
+    viewport: { w: 100, h: 200 },
+    zoomRect: null,
+    device: { id: 'device-1', name: 'iPad' },
+  });
+
+  assert.deepEqual(await readdir(store.paths.captures), [], 'the consumed capture is gone');
+  assert.equal(await store.getCapture(capture.id), null);
+  // The annotation keeps its own copy of the clean frame.
+  assert.equal(
+    (await readFile(join(store.paths.annotations, meta.id, 'screenshot.png'))).toString(),
+    'shot',
+  );
+});
+
+test('an annotation records when its frame was captured, so deleting the capture loses nothing', async () => {
+  const store = await tempStore();
+  const capture = await store.createCapture({
+    screenshot: Buffer.from('shot'),
+    viewport: { w: 1, h: 1 },
+    createdAt: '2026-02-01T00:00:00.000Z',
+  });
+  const meta = await store.createAnnotation({
+    composite: Buffer.from('c'),
+    sketch: Buffer.from('s'),
+    sourceCaptureId: capture.id,
+    viewport: { w: 1, h: 1 },
+    zoomRect: null,
+    device: { id: 'd', name: 'n' },
+  });
+  assert.equal(meta.capturedAt, '2026-02-01T00:00:00.000Z');
+  assert.equal(meta.schemaVersion, 3, 'additive field, no schema bump');
+
+  const read = await store.getAnnotation(meta.id);
+  assert.equal(read?.meta.capturedAt, '2026-02-01T00:00:00.000Z');
+});
+
+test('pruneCaptures drops captures past the TTL and keeps the rest', async () => {
+  const store = await tempStore();
+  const now = Date.parse('2026-02-01T12:00:00.000Z');
+  const stale = await store.createCapture({
+    screenshot: Buffer.from('old'),
+    viewport: { w: 1, h: 1 },
+    createdAt: '2026-02-01T05:00:00.000Z',
+  });
+  const fresh = await store.createCapture({
+    screenshot: Buffer.from('new'),
+    viewport: { w: 1, h: 1 },
+    createdAt: '2026-02-01T11:00:00.000Z',
+  });
+
+  const removed = await store.pruneCaptures(CAPTURE_TTL_MS, new Date(now));
+
+  assert.equal(removed, 1);
+  assert.equal(await store.getCapture(stale.id), null);
+  assert.notEqual(await store.getCapture(fresh.id), null);
+});
+
+test('pruneCaptures leaves an unreadable capture directory alone', async () => {
+  const store = await tempStore();
+  await mkdir(join(store.paths.captures, 'no-meta-here'), { recursive: true });
+  assert.equal(await store.pruneCaptures(CAPTURE_TTL_MS, new Date()), 0);
+  assert.deepEqual(await readdir(store.paths.captures), ['no-meta-here']);
 });
 
 test('creating an annotation with an unknown sourceCaptureId fails and writes nothing', async () => {

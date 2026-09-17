@@ -7,6 +7,7 @@ import {
   type AnnotationMeta,
   type AnnotationNote,
   type AnnotationReply,
+  CAPTURE_TTL_MS,
   type CaptureMeta,
   CLAIM_LEASE_MS,
   type ReplyStatus,
@@ -141,6 +142,9 @@ export class DesignCanvasStore {
       id,
       schemaVersion: SCHEMA_VERSION,
       createdAt,
+      // Recorded here because the capture is deleted below: this is the only
+      // place the frame's own time survives (I5).
+      capturedAt: capture.meta.createdAt,
       claimedAt: null,
       servedAt: null,
       viewport: input.viewport,
@@ -154,12 +158,38 @@ export class DesignCanvasStore {
     await writeFile(join(dir, 'sketch.png'), input.sketch);
     await copyFile(capture.screenshotPath, join(dir, 'screenshot.png'));
     await writeJson(join(dir, 'meta.json'), meta);
+    // The capture has been consumed: its screenshot is now this annotation's own
+    // copy, and nothing else will ever read it. Deleting it last means a failure
+    // above leaves the capture intact for a retry (I5).
+    await rm(join(this.paths.captures, input.sourceCaptureId), { recursive: true, force: true });
     await this.logger.event('annotation.created', {
       annotationId: id,
       sourceCaptureId: input.sourceCaptureId,
       deviceId: input.device.id,
     });
     return meta;
+  }
+
+  /**
+   * Deletes captures older than `ttlMs` — the ones a Draw Mode entry posted and no
+   * sketch ever claimed. A directory without a readable `meta.json` is left alone:
+   * it may be a capture mid-write, and guessing its age is not worth deleting
+   * someone's frame over.
+   */
+  async pruneCaptures(ttlMs = CAPTURE_TTL_MS, now = new Date()): Promise<number> {
+    await this.ensure();
+    const ids = await safeIds(this.paths.captures);
+    let removed = 0;
+    for (const id of ids) {
+      const capture = await readCapture(this.paths.captures, id);
+      const createdAt = capture ? Date.parse(capture.meta.createdAt) : NaN;
+      if (!Number.isFinite(createdAt)) continue;
+      if (now.getTime() - createdAt <= ttlMs) continue;
+      await rm(join(this.paths.captures, id), { recursive: true, force: true });
+      await this.logger.event('capture.pruned', { captureId: id });
+      removed += 1;
+    }
+    return removed;
   }
 
   async markAnnotationServed(
@@ -215,8 +245,11 @@ export class DesignCanvasStore {
       const meta = { ...annotation.meta, claimedAt: new Date().toISOString() };
       await writeJson(join(this.paths.annotations, id, 'meta.json'), meta);
       await this.logger.event('annotation.claimed', { annotationId: id });
-      const capture = await this.getCapture(meta.sourceCaptureId);
-      const capturedAt = capture?.meta.createdAt ?? meta.createdAt;
+      // `capturedAt` is recorded on the annotation as it is created; the capture
+      // lookup is only for records written before that field existed, and the
+      // annotation's own createdAt is the last resort.
+      const capture = meta.capturedAt ? null : await this.getCapture(meta.sourceCaptureId);
+      const capturedAt = meta.capturedAt ?? capture?.meta.createdAt ?? meta.createdAt;
       return { ...annotation, meta, capturedAt };
     });
   }
@@ -353,6 +386,9 @@ async function readAnnotation(root: string, id: string): Promise<AnnotationWithP
       id: raw.id,
       schemaVersion: raw.schemaVersion,
       createdAt: raw.createdAt,
+      // Absent on records written before the field existed; the claim path falls
+      // back for those.
+      ...(raw.capturedAt ? { capturedAt: raw.capturedAt } : {}),
       claimedAt: raw.claimedAt ?? null,
       servedAt: raw.servedAt,
       viewport: raw.viewport,

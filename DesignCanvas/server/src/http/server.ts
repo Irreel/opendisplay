@@ -86,17 +86,25 @@ async function handleRequest(
   // Host header itself is checked by the guard at the top of `route()`.
   const url = new URL(request.url ?? '/', `http://${LOOPBACK_HOST}`);
   const method = request.method ?? 'GET';
-  await options.logger.event('http.request', { method, path: url.pathname });
+  // The Mac app polls health every 2 s for as long as it runs. Logging that is two
+  // lines every two seconds, for ever, in a file that never rotates — it drowns
+  // everything worth reading and it is the whole reason the log grew (I5).
+  const logged = !(method === 'GET' && url.pathname === HTTP_PATHS.health);
+  if (logged) {
+    await options.logger.event('http.request', { method, path: url.pathname });
+  }
 
   try {
     await route(method, url, request, response, options);
   } finally {
-    await options.logger.event('http.response', {
-      method,
-      path: url.pathname,
-      statusCode: response.statusCode,
-      durationMs: Date.now() - started,
-    });
+    if (logged) {
+      await options.logger.event('http.response', {
+        method,
+        path: url.pathname,
+        statusCode: response.statusCode,
+        durationMs: Date.now() - started,
+      });
+    }
   }
 }
 
