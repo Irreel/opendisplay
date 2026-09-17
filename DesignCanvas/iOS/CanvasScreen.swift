@@ -66,7 +66,9 @@ struct CanvasScreen: View {
         }
         .statusBarHidden(isStreaming)
         .persistentSystemOverlays(isStreaming ? .hidden : .automatic)
-        .animation(.easeInOut(duration: 0.15), value: isInDrawMode)
+        // Deliberately unanimated: the sketch surface is one UIKit object the
+        // screen owns and hands back on every entry, and fading a removal out
+        // would leave it in two hierarchies at once.
         .sheet(isPresented: $showConnection) {
             ConnectionDetailView(receiver: receiver, model: canvas,
                                  port: DesignCanvasiPad.port,
