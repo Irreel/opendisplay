@@ -6,6 +6,7 @@ import {
   HTTP_PATHS,
   REPLY_STATUSES,
   type ReplyStatus,
+  ROUNDS_LIMIT,
   SERVER_PORT,
   type Viewport,
   type ZoomRect,
@@ -13,6 +14,7 @@ import {
 import type { Logger } from '../log.js';
 import type { CreateAnnotationInput, DesignCanvasStore, SetReplyInput } from '../store/store.js';
 import { UnknownCaptureError } from '../store/store.js';
+import { toRound } from '../store/rounds.js';
 import { AnnotationEventBus, isLoopback, openAnnotationStream } from './event-stream.js';
 import { daemonIdentity } from './identity.js';
 import {
@@ -22,6 +24,7 @@ import {
   partText,
   readRequestBody,
 } from './multipart.js';
+import { openRoundsStream, RoundsEventBus } from './rounds-stream.js';
 
 const LOOPBACK_HOST = '127.0.0.1';
 
@@ -30,11 +33,14 @@ export interface HttpServerOptions {
   version: string;
   store: DesignCanvasStore;
   bus: AnnotationEventBus;
+  /** Optional: a RoundsEventBus is created internally when omitted. */
+  roundsBus?: RoundsEventBus;
   logger: Logger;
 }
 
 interface ResolvedHttpServerOptions extends HttpServerOptions {
   resolvedPort: number;
+  resolvedRoundsBus: RoundsEventBus;
 }
 
 export async function startHttpServer(options: HttpServerOptions): Promise<Server> {
@@ -42,6 +48,7 @@ export async function startHttpServer(options: HttpServerOptions): Promise<Serve
   const resolvedOptions: ResolvedHttpServerOptions = {
     ...options,
     resolvedPort: port,
+    resolvedRoundsBus: options.roundsBus ?? new RoundsEventBus(),
   };
   const server = createServer((request, response) => {
     handleRequest(request, response, resolvedOptions).catch((error: unknown) => {
@@ -134,6 +141,7 @@ async function route(
       throw error;
     }
     options.bus.emitPending(meta.id);
+    options.resolvedRoundsBus.emit({ ...toRound(meta), deviceId: meta.device.id });
     const body: AnnotationUploadResponse = {
       annotationId: meta.id,
       dispatched: options.bus.subscriberCount > 0,
@@ -169,6 +177,7 @@ async function route(
       return;
     }
     const meta = await options.store.markAnnotationServed(servedMatch[1]);
+    options.resolvedRoundsBus.emit({ ...toRound(meta), deviceId: meta.device.id });
     sendJson(response, 200, { meta });
     return;
   }
@@ -190,6 +199,7 @@ async function route(
       });
       return;
     }
+    options.resolvedRoundsBus.emit({ ...toRound(updated), deviceId: updated.device.id });
     sendJson(response, 200, { meta: updated });
     return;
   }
@@ -209,6 +219,41 @@ async function route(
 
   if (method === 'GET' && url.pathname === HTTP_PATHS.annotationStream) {
     openAnnotationStream(request, response, options.bus);
+    return;
+  }
+
+  if (method === 'GET' && url.pathname === HTTP_PATHS.rounds) {
+    const device = url.searchParams.get('device');
+    if (!device) {
+      sendJson(response, 400, { error: 'invalid_request', message: 'device is required.' });
+      return;
+    }
+    const limitParam = url.searchParams.get('limit');
+    let limit = ROUNDS_LIMIT;
+    if (limitParam !== null) {
+      const parsedLimit = Number(limitParam);
+      if (!Number.isFinite(parsedLimit) || parsedLimit < 1) {
+        sendJson(response, 400, { error: 'invalid_request', message: 'limit must be a number >= 1.' });
+        return;
+      }
+      limit = Math.min(Math.trunc(parsedLimit), ROUNDS_LIMIT);
+    }
+    const annotations = await options.store.listAnnotations();
+    const rounds = annotations
+      .filter((meta) => meta.device.id === device)
+      .sort((a, b) =>
+        a.createdAt === b.createdAt
+          ? b.id.localeCompare(a.id)
+          : b.createdAt.localeCompare(a.createdAt),
+      )
+      .slice(0, limit)
+      .map(toRound);
+    sendJson(response, 200, { rounds });
+    return;
+  }
+
+  if (method === 'GET' && url.pathname === HTTP_PATHS.roundsStream) {
+    openRoundsStream(request, response, options.resolvedRoundsBus);
     return;
   }
 

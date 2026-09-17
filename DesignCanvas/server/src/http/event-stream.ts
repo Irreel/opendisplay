@@ -38,11 +38,16 @@ export function isLoopback(request: IncomingMessage): boolean {
   return addr === '127.0.0.1' || addr === '::1' || addr === '::ffff:127.0.0.1';
 }
 
-/** Holds an SSE connection open, writing `annotation.pending` events until the client disconnects. */
-export function openAnnotationStream(
+/**
+ * Shared SSE plumbing: writes the standard preamble, then lets `subscribe`
+ * attach to whatever bus it's given via the `write(eventName, data)` callback.
+ * Unsubscribes on close/error either side. Both the annotation stream and the
+ * rounds stream (rounds-stream.ts) are built on this.
+ */
+export function openSseStream(
   request: IncomingMessage,
   response: ServerResponse,
-  bus: AnnotationEventBus,
+  subscribe: (write: (eventName: string, data: string) => void) => () => void,
 ): void {
   response.writeHead(200, {
     'content-type': 'text/event-stream',
@@ -50,12 +55,24 @@ export function openAnnotationStream(
     connection: 'keep-alive',
   });
   response.write('retry: 1000\n\n');
-  const unsub = bus.subscribe((id) => {
+  const write = (eventName: string, data: string) => {
     if (!response.writableEnded) {
-      response.write(`event: annotation.pending\ndata: ${id}\n\n`);
+      response.write(`event: ${eventName}\ndata: ${data}\n\n`);
     }
-  });
-  request.on('close', unsub);
-  request.on('error', unsub);
-  response.on('error', unsub);
+  };
+  const unsubscribe = subscribe(write);
+  request.on('close', unsubscribe);
+  request.on('error', unsubscribe);
+  response.on('error', unsubscribe);
+}
+
+/** Holds an SSE connection open, writing `annotation.pending` events until the client disconnects. */
+export function openAnnotationStream(
+  request: IncomingMessage,
+  response: ServerResponse,
+  bus: AnnotationEventBus,
+): void {
+  openSseStream(request, response, (write) =>
+    bus.subscribe((id) => write('annotation.pending', id)),
+  );
 }
