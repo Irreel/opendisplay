@@ -49,6 +49,13 @@ final class SketchCanvasController: NSObject, ObservableObject, PKCanvasViewDele
         canvas.backgroundColor = .clear
         canvas.isOpaque = false
         canvas.isScrollEnabled = false
+        // The ink must not depend on the iPad's appearance (M7). `.label` is
+        // white in Dark Mode, so "black" would have exported as white strokes —
+        // invisible over the light screenshot they are composited onto — and
+        // the four dynamic system colours would each shift as well. Pinning the
+        // canvas to the light appearance fixes every one of the five to what
+        // its swatch shows.
+        canvas.overrideUserInterfaceStyle = .light
         // Finger or pencil: an iPad without an Apple Pencil must still be able
         // to review (`.pencilOnly` is ai.cst.2's choice, not ours).
         canvas.drawingPolicy = .anyInput
