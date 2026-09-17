@@ -139,6 +139,13 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate, CanvasOutboun
     // The dial target. Written on `queue` only (after init): the controller
     // can migrate a live session between transports via switchTransport.
     private var transport: SenderTransport
+    // The port the receiver listens on. Only the cable-upgrade probe needs
+    // it: every other dial carries its port already (a Bonjour endpoint, the
+    // -host/-port override, the usbmux port), while the probe builds its own
+    // endpoints out of the peer's raw addresses and has nothing to read it
+    // from. A second product's receiver listens elsewhere, so a literal here
+    // would silently cost it the cable upgrade.
+    private let devicePort: UInt16
     private let endpointName: String
     private let mode: CaptureMode
     private let quality: StreamQuality
@@ -360,8 +367,10 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate, CanvasOutboun
          quality: StreamQuality = .best, displaySerial: UInt32 = 0x0001,
          identityOffset: UInt32 = 0, awaitingWake: Bool = false,
          inputSinkFactory: InputSinkFactory? = nil,
-         canvasDelegate: SenderCanvasDelegate? = nil) {
+         canvasDelegate: SenderCanvasDelegate? = nil,
+         devicePort: UInt16 = 9000) {
         self.transport = transport
+        self.devicePort = devicePort
         self.endpointName = name
         self.mode = mode
         self.quality = quality
@@ -1188,7 +1197,8 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate, CanvasOutboun
             tcp.noDelay = true
             let params = NWParameters(tls: nil, tcp: tcp)
             params.prohibitedInterfaceTypes = [.wifi, .cellular]
-            let probe = NWConnection(host: host, port: 9000, using: params)
+            let probe = NWConnection(host: host, port: NWEndpoint.Port(rawValue: devicePort)!,
+                                     using: params)
             upgradeProbes.append(probe)
             probe.stateUpdateHandler = { [weak self] state in
                 guard let self, self.upgradeProbes.contains(where: { $0 === probe }) else { return }

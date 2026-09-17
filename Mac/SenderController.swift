@@ -518,7 +518,8 @@ final class SenderController: ObservableObject {
                                identityOffset: identityOffset(for: id),
                                awaitingWake: awaitingWake,
                                inputSinkFactory: config.inputSinkFactory,
-                               canvasDelegate: session.canvasDelegate)
+                               canvasDelegate: session.canvasDelegate,
+                               devicePort: config.discovery.devicePort)
         session.sender = sender
         if case .wifi(let result) = target {
             session.wifiServiceName = serviceName(of: result)
