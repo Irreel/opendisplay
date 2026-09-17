@@ -12,10 +12,7 @@ export const CLAIM_LEASE_MS = 30_000;
 
 export const HTTP_PATHS = {
   health: '/v1/health',
-  pairInitiate: '/v1/pair/initiate',
-  pairComplete: '/v1/pair/complete',
   captures: '/v1/captures',
-  capturesLatest: '/v1/captures/latest',
   annotations: '/v1/annotations',
   annotationStream: '/v1/annotations/stream',
 } as const;
@@ -32,10 +29,6 @@ export interface CaptureMeta {
   /** Human-readable label for the capture source (window title, or a URL from the legacy extension). */
   sourceLabel: string;
   viewport: Viewport;
-}
-
-export interface CaptureRecord extends CaptureMeta {
-  pngUrl: string;
 }
 
 export interface AnnotationNote {
@@ -60,8 +53,6 @@ export interface HealthResponse {
   status: 'ok';
   version: string;
   channelAttached: boolean;
-  pairedDevices: number;
-  ipadUrls: string[];
   /** Daemon process PID. */
   pid?: number;
   /** Random ID generated once at daemon startup. */

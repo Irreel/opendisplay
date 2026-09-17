@@ -127,3 +127,36 @@ test('/v1/health channelCount and channelAttachedAt track live SSE subscribers',
     assert.equal(empty.channelAttached, false);
   });
 });
+
+test('/v1/health has no ipadUrls or pairedDevices, and the daemon binds 127.0.0.1', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'dc-health-bind-'));
+  const store = new DesignCanvasStore(silentLogger, createStorePaths(root));
+  await store.ensure();
+  const bus = new AnnotationEventBus();
+  const server = await startHttpServer({
+    port: 0,
+    version: '0.0.0',
+    store,
+    bus,
+    logger: silentLogger,
+  });
+  try {
+    const address = server.address() as AddressInfo;
+    assert.equal(address.address, '127.0.0.1');
+    const { port } = address;
+    const health = (await (
+      await fetch(`http://127.0.0.1:${port}/v1/health`)
+    ).json()) as Record<string, unknown>;
+    assert.equal('ipadUrls' in health, false);
+    assert.equal('pairedDevices' in health, false);
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});
+
+test('GET /v1/captures/latest no longer exists (404)', async () => {
+  await withServer(async (base) => {
+    const response = await fetch(`${base}/v1/captures/latest`);
+    assert.equal(response.status, 404);
+  });
+});

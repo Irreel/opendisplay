@@ -1,10 +1,6 @@
-import { createReadStream } from 'node:fs';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
-import { networkInterfaces } from 'node:os';
-import { basename } from 'node:path';
 import {
   type AnnotationUploadResponse,
-  type CaptureRecord,
   type HealthResponse,
   HTTP_PATHS,
   SERVER_PORT,
@@ -22,9 +18,10 @@ import {
   readRequestBody,
 } from './multipart.js';
 
+const LOOPBACK_HOST = '127.0.0.1';
+
 export interface HttpServerOptions {
   port?: number;
-  host?: string;
   version: string;
   store: DesignCanvasStore;
   bus: AnnotationEventBus;
@@ -32,16 +29,13 @@ export interface HttpServerOptions {
 }
 
 interface ResolvedHttpServerOptions extends HttpServerOptions {
-  resolvedHost: string;
   resolvedPort: number;
 }
 
 export async function startHttpServer(options: HttpServerOptions): Promise<Server> {
-  const host = options.host ?? '127.0.0.1';
   const port = options.port ?? Number(process.env['SERVER_PORT'] ?? SERVER_PORT);
   const resolvedOptions: ResolvedHttpServerOptions = {
     ...options,
-    resolvedHost: host,
     resolvedPort: port,
   };
   const server = createServer((request, response) => {
@@ -51,7 +45,7 @@ export async function startHttpServer(options: HttpServerOptions): Promise<Serve
   });
   await new Promise<void>((resolve, reject) => {
     server.once('error', reject);
-    server.listen(port, host, () => {
+    server.listen(port, LOOPBACK_HOST, () => {
       server.off('error', reject);
       const address = server.address();
       if (address && typeof address === 'object') {
@@ -61,7 +55,7 @@ export async function startHttpServer(options: HttpServerOptions): Promise<Serve
     });
   });
   await options.logger.event('server.started', {
-    host,
+    host: LOOPBACK_HOST,
     port,
   });
   return server;
@@ -96,13 +90,13 @@ async function route(
   response: ServerResponse,
   options: ResolvedHttpServerOptions,
 ): Promise<void> {
+  if (!requireLoopback(request, response)) return;
+
   if (method === 'GET' && url.pathname === HTTP_PATHS.health) {
     const body: HealthResponse = {
       status: 'ok',
       version: options.version,
       channelAttached: options.bus.subscriberCount > 0,
-      pairedDevices: 0,
-      ipadUrls: ipadUrlsFor(options.resolvedHost, options.resolvedPort),
       ...daemonIdentity,
       port: options.resolvedPort,
       channelCount: options.bus.subscriberCount,
@@ -116,34 +110,6 @@ async function route(
     const upload = await parseCaptureUpload(request);
     const meta = await options.store.createCapture(upload);
     sendJson(response, 201, { captureId: meta.id });
-    return;
-  }
-
-  if (method === 'GET' && url.pathname === HTTP_PATHS.capturesLatest) {
-    const latest = await options.store.latestCapture();
-    if (!latest) {
-      sendJson(response, 404, {
-        error: 'capture_not_found',
-        message: 'No captures have been uploaded.',
-      });
-      return;
-    }
-    const record: CaptureRecord = {
-      ...latest.meta,
-      pngUrl: `/v1/captures/${latest.meta.id}/screenshot.png`,
-    };
-    sendJson(response, 200, record);
-    return;
-  }
-
-  const captureMatch = /^\/v1\/captures\/([^/]+)\/screenshot\.png$/.exec(url.pathname);
-  if (method === 'GET' && captureMatch?.[1]) {
-    const capture = await options.store.getCapture(captureMatch[1]);
-    if (!capture) {
-      sendJson(response, 404, { error: 'capture_not_found', message: 'Capture not found.' });
-      return;
-    }
-    streamPng(response, capture.screenshotPath);
     return;
   }
 
@@ -166,7 +132,6 @@ async function route(
 
   const claimMatch = /^\/v1\/annotations\/([^/]+)\/claim$/.exec(url.pathname);
   if (method === 'POST' && claimMatch?.[1]) {
-    if (!requireLoopback(request, response)) return;
     const claimed = await options.store.claimAnnotation(claimMatch[1]);
     if (!claimed) {
       sendJson(response, 409, {
@@ -181,7 +146,6 @@ async function route(
 
   const servedMatch = /^\/v1\/annotations\/([^/]+)\/served$/.exec(url.pathname);
   if (method === 'POST' && servedMatch?.[1]) {
-    if (!requireLoopback(request, response)) return;
     const existing = await options.store.getAnnotation(servedMatch[1]);
     if (!existing) {
       sendJson(response, 404, { error: 'annotation_not_found', message: 'Annotation not found.' });
@@ -206,7 +170,6 @@ async function route(
   }
 
   if (method === 'GET' && url.pathname === HTTP_PATHS.annotationStream) {
-    if (!requireLoopback(request, response)) return;
     openAnnotationStream(request, response, options.bus);
     return;
   }
@@ -215,25 +178,6 @@ async function route(
     error: 'not_found',
     message: `${method} ${url.pathname} is not implemented.`,
   });
-}
-
-function ipadUrlsFor(host: string, port: number): string[] {
-  if (host === '127.0.0.1' || host === 'localhost' || host === '::1') {
-    return [];
-  }
-  if (host !== '0.0.0.0' && host !== '::') {
-    return [`http://${host}:${port}`];
-  }
-
-  const urls = new Set<string>();
-  for (const entries of Object.values(networkInterfaces())) {
-    for (const entry of entries ?? []) {
-      if (entry.family === 'IPv4' && !entry.internal) {
-        urls.add(`http://${entry.address}:${port}`);
-      }
-    }
-  }
-  return [...urls].sort();
 }
 
 async function parseCaptureUpload(request: IncomingMessage) {
@@ -332,8 +276,8 @@ async function parseAnnotationUpload(request: IncomingMessage) {
   };
 }
 
-/** Returns false (after sending 403) if the request is not from loopback. */
-function requireLoopback(request: IncomingMessage, response: ServerResponse): boolean {
+/** Returns false (after sending 403) if the request is not from loopback. Exported for unit tests. */
+export function requireLoopback(request: IncomingMessage, response: ServerResponse): boolean {
   if (!isLoopback(request)) {
     sendJson(response, 403, { error: 'forbidden', message: 'Loopback only.' });
     return false;
@@ -346,17 +290,8 @@ function sendJson(response: ServerResponse, statusCode: number, body: unknown): 
   response.writeHead(statusCode, {
     'content-type': 'application/json; charset=utf-8',
     'content-length': Buffer.byteLength(payload),
-    'access-control-allow-origin': '*',
   });
   response.end(payload);
-}
-
-function streamPng(response: ServerResponse, path: string): void {
-  response.writeHead(200, {
-    'content-type': 'image/png',
-    'content-disposition': `inline; filename="${basename(path)}"`,
-  });
-  createReadStream(path).pipe(response);
 }
 
 function sendError(response: ServerResponse, error: unknown): void {
