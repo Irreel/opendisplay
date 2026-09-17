@@ -27,7 +27,7 @@ export async function readRequestBody(
 export function parseMultipart(body: Buffer, contentType: string): Map<string, MultipartPart> {
   const boundary = getBoundary(contentType);
   if (!boundary) {
-    throw new Error('Missing multipart boundary');
+    throw new MissingBoundaryError();
   }
   const delimiter = Buffer.from(`--${boundary}`);
   const parts = new Map<string, MultipartPart>();
@@ -78,6 +78,14 @@ export function partBuffer(parts: Map<string, MultipartPart>, name: string): Buf
 export class BodyTooLargeError extends Error {
   constructor(readonly limitBytes: number) {
     super(`Request body exceeds ${limitBytes} bytes`);
+  }
+}
+
+/** A multipart/form-data request whose content-type has no boundary parameter. This is a
+ * client error (malformed request), not a server fault; callers map it to 400. */
+export class MissingBoundaryError extends Error {
+  constructor() {
+    super('Missing multipart boundary');
   }
 }
 

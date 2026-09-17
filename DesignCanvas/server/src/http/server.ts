@@ -19,6 +19,7 @@ import { AnnotationEventBus, isLoopback, openAnnotationStream } from './event-st
 import { daemonIdentity } from './identity.js';
 import {
   BodyTooLargeError,
+  MissingBoundaryError,
   parseMultipart,
   partBuffer,
   partText,
@@ -273,11 +274,20 @@ async function route(
   });
 }
 
+/** Parses JSON text, converting a syntax error into a 400 invalid_request instead of a 500. */
+function parseJson(text: string, context: string): unknown {
+  try {
+    return JSON.parse(text);
+  } catch {
+    throw new HttpError(400, 'invalid_request', `${context} must be valid JSON.`);
+  }
+}
+
 async function parseCaptureUpload(request: IncomingMessage) {
   const contentType = request.headers['content-type'] ?? '';
   const body = await readRequestBody(request);
   if (contentType.startsWith('application/json')) {
-    const parsed = JSON.parse(body.toString('utf8')) as {
+    const parsed = parseJson(body.toString('utf8'), 'Capture upload body') as {
       screenshotBase64: string;
       viewport: Viewport;
       createdAt?: string;
@@ -298,7 +308,7 @@ async function parseCaptureUpload(request: IncomingMessage) {
       'Capture upload requires screenshot and meta parts.',
     );
   }
-  const meta = JSON.parse(metaText) as {
+  const meta = parseJson(metaText, 'meta') as {
     viewport: Viewport;
     createdAt?: string;
   };
@@ -313,7 +323,7 @@ async function parseAnnotationUpload(request: IncomingMessage): Promise<CreateAn
   const contentType = request.headers['content-type'] ?? '';
   const body = await readRequestBody(request);
   if (contentType.startsWith('application/json')) {
-    const parsed = JSON.parse(body.toString('utf8')) as {
+    const parsed = parseJson(body.toString('utf8'), 'Annotation upload body') as {
       compositeBase64: string;
       sketchBase64: string;
       sourceCaptureId: string;
@@ -324,7 +334,7 @@ async function parseAnnotationUpload(request: IncomingMessage): Promise<CreateAn
       createdAt?: string;
     };
     return {
-      composite: Buffer.from(parsed.compositeBase64, 'base64'),
+      composite: Buffer.from(requireString(parsed.compositeBase64, 'compositeBase64'), 'base64'),
       sketch: Buffer.from(requireString(parsed.sketchBase64, 'sketchBase64'), 'base64'),
       sourceCaptureId: requireString(parsed.sourceCaptureId, 'sourceCaptureId'),
       viewport: requireViewport(parsed.viewport),
@@ -345,7 +355,7 @@ async function parseAnnotationUpload(request: IncomingMessage): Promise<CreateAn
       'Annotation upload requires composite, sketch, and meta parts.',
     );
   }
-  const meta = JSON.parse(metaText) as {
+  const meta = parseJson(metaText, 'meta') as {
     sourceCaptureId: string;
     viewport: Viewport;
     zoomRect: ZoomRect | null;
@@ -367,12 +377,7 @@ async function parseAnnotationUpload(request: IncomingMessage): Promise<CreateAn
 
 async function parseReplyBody(request: IncomingMessage): Promise<SetReplyInput> {
   const body = await readRequestBody(request);
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(body.toString('utf8'));
-  } catch {
-    throw new HttpError(400, 'invalid_request', 'Reply body must be valid JSON.');
-  }
+  const parsed = parseJson(body.toString('utf8'), 'Reply body');
   if (typeof parsed !== 'object' || parsed === null) {
     throw new HttpError(400, 'invalid_request', 'Reply body must be a JSON object.');
   }
@@ -428,6 +433,10 @@ function sendError(response: ServerResponse, error: unknown): void {
   }
   if (error instanceof BodyTooLargeError) {
     sendJson(response, 413, { error: 'body_too_large', message: error.message });
+    return;
+  }
+  if (error instanceof MissingBoundaryError) {
+    sendJson(response, 400, { error: 'invalid_request', message: error.message });
     return;
   }
   const message = error instanceof Error ? error.message : 'Unknown server error';
