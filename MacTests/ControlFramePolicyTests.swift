@@ -92,4 +92,28 @@ final class ControlFramePolicyTests: XCTestCase {
         XCTAssertTrue(ControlFramePolicy.allowsOutboundJSON(byteCount: 32_767))
         XCTAssertFalse(ControlFramePolicy.allowsOutboundJSON(byteCount: 32_768))
     }
+
+    // MARK: - Outbound payloads
+
+    func testOutboundJSONPayloadRoundTripsASendableObject() throws {
+        let payload = try XCTUnwrap(
+            ControlFramePolicy.outboundJSONPayload(for: ["type": "frozen", "ok": true]))
+        XCTAssertTrue(ControlFramePolicy.allowsOutboundJSON(byteCount: payload.count))
+        let object = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: payload) as? [String: Any])
+        XCTAssertEqual(object["type"] as? String, "frozen")
+        XCTAssertEqual(object["ok"] as? Bool, true)
+    }
+
+    func testOutboundJSONPayloadRefusesAnObjectJSONCannotRepresent() {
+        XCTAssertNil(ControlFramePolicy.outboundJSONPayload(for: ["at": Date()]))
+        XCTAssertNil(ControlFramePolicy.outboundJSONPayload(for: ["ratio": Double.nan]))
+    }
+
+    func testOutboundJSONPayloadRefusesAnObjectThatReachesTheLimit() {
+        // The value alone already passes the limit, so no encoding of this
+        // object can fit — the caller must not get bytes it cannot send.
+        let oversize = String(repeating: "x", count: ControlFramePolicy.outboundJSONLimit)
+        XCTAssertNil(ControlFramePolicy.outboundJSONPayload(for: ["note": oversize]))
+    }
 }

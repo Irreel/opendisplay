@@ -57,4 +57,19 @@ struct ControlFramePolicy: Equatable {
     static func allowsOutboundJSON(byteCount: Int) -> Bool {
         byteCount > 0 && byteCount < outboundJSONLimit
     }
+
+    /// The bytes to put on the wire for an outbound control object, or nil
+    /// when it cannot go: `JSONSerialization` will not represent it (a Date,
+    /// a NaN), or its encoding breaks the limit above.
+    ///
+    /// This is everything a caller can decide about a message on its own —
+    /// whether the link is up is the sending queue's business, not the
+    /// message's — so it is the whole synchronous answer to "can this be
+    /// sent", and it is pure.
+    static func outboundJSONPayload(for object: [String: Any]) -> Data? {
+        guard JSONSerialization.isValidJSONObject(object),
+              let payload = try? JSONSerialization.data(withJSONObject: object),
+              allowsOutboundJSON(byteCount: payload.count) else { return nil }
+        return payload
+    }
 }

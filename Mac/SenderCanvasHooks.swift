@@ -32,10 +32,16 @@ protocol InputSink: AnyObject {
 typealias InputSinkFactory = (CGDirectDisplayID) -> InputSink?
 
 /// The sender side a canvas delegate may talk back to. `MacSender` conforms.
+///
+/// Delivery is best-effort. Whether the link is up is knowable only on the
+/// sender's own queue, so these hand the message over and return; a message
+/// that finds the link down when it runs there is dropped with a log line.
+/// The Bool is the synchronous answer only: false means the message never
+/// left this call — it could not be serialised, or it breaks the 32768-byte
+/// rule (PROTOCOL.md section 4). True means accepted for sending, not sent.
 protocol CanvasOutbound: AnyObject {
-    /// Serialises and sends on the sender's queue. Returns false (and logs)
-    /// if not connected, not serialisable, or the payload breaks the
-    /// 32768-byte rule (PROTOCOL.md section 4).
+    /// Serialises the object and queues it on the sender's queue. False (and
+    /// a log line) when it is not serialisable or would break the size rule.
     @discardableResult func sendCanvasJSON(_ object: [String: Any]) -> Bool
     /// Same, for bytes already encoded (used for the size-fitted rounds
     /// snapshot, which is shrunk to fit before it is handed over).

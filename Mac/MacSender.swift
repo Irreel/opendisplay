@@ -2369,17 +2369,20 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate, CanvasOutboun
     // MARK: - CanvasOutbound
 
     /// Send a canvas control message. Callable from any thread — the canvas
-    /// engine runs on its own — so the send hops to `queue`, where the
-    /// connection lives, and the Bool answers what can be known here: the
-    /// object serialises, it fits the wire, and the link was up.
+    /// engine runs on its own — so the Bool answers only what a caller can
+    /// know synchronously: the object serialises and fits the wire. Whether
+    /// the link is up is `queue`'s business and nobody else's; see
+    /// `enqueueCanvasPayload`.
     @discardableResult
     func sendCanvasJSON(_ object: [String: Any]) -> Bool {
-        guard JSONSerialization.isValidJSONObject(object),
-              let data = try? JSONSerialization.data(withJSONObject: object) else {
-            Log.info("canvas message could not be serialised — dropped")
+        guard let payload = ControlFramePolicy.outboundJSONPayload(for: object) else {
+            Log.info("canvas message refused (type \(object["type"] as? String ?? "unknown")): "
+                     + "not serialisable, or not under the "
+                     + "\(ControlFramePolicy.outboundJSONLimit)-byte limit")
             return false
         }
-        return sendCanvasJSONData(data)
+        enqueueCanvasPayload(payload)
+        return true
     }
 
     /// Same, for bytes the caller already encoded (the rounds snapshot is
@@ -2387,46 +2390,63 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate, CanvasOutboun
     @discardableResult
     func sendCanvasJSONData(_ data: Data) -> Bool {
         guard ControlFramePolicy.allowsOutboundJSON(byteCount: data.count) else {
-            Log.info("refusing oversize canvas message (\(data.count) bytes)")
+            Log.info("refusing oversize canvas message (\(data.count) bytes, type \(Self.controlMessageType(data)))")
             return false
         }
-        guard let json = String(data: data, encoding: .utf8) else {
-            Log.info("canvas message is not UTF-8 — dropped")
-            return false
-        }
-        // connectionReady lives on `queue`; this read is the answer for the
-        // caller, while sendJSONFrame re-checks it there as the real gate.
-        guard connectionReady else {
-            Log.info("canvas message dropped — no live connection to \(endpointName)")
-            return false
-        }
-        queue.async { [weak self] in self?.sendJSONFrame(json) }
+        enqueueCanvasPayload(data)
         return true
     }
 
-    private func sendJSONFrame(_ json: String) {
-        guard let connection, connectionReady else { return }
-        let payload = Data(json.utf8)
+    /// Hand an accepted canvas message to `queue`, which is the only place
+    /// that can know whether the link is up: reading `connectionReady` from
+    /// the engine's thread would be a race, and a stale `true` would tell the
+    /// engine a reply went out that never did. So delivery is best-effort,
+    /// and a message that finds the link down says so — canvas messages are
+    /// per-round, not per-frame, so one line each is affordable (unlike the
+    /// per-frame senders below, which stay silent).
+    private func enqueueCanvasPayload(_ payload: Data) {
+        queue.async { [weak self] in
+            guard let self else { return }
+            if !self.sendJSONFrame(payload) {
+                Log.info("canvas message dropped: no live connection to \(self.endpointName) "
+                         + "(type \(Self.controlMessageType(payload)))")
+            }
+        }
+    }
+
+    @discardableResult
+    private func sendJSONFrame(_ json: String) -> Bool {
+        sendJSONFrame(Data(json.utf8))
+    }
+
+    /// Frame and send one control message on `queue`. False means nothing
+    /// reached the wire: the link is down, or the message broke the size rule
+    /// (which logs on its own). Every existing caller ignores the result —
+    /// a dropped cursor update or ping is not worth a line at their rate.
+    @discardableResult
+    private func sendJSONFrame(_ payload: Data) -> Bool {
+        guard let connection, connectionReady else { return false }
         // PROTOCOL.md section 4: the receiver tells control messages from
         // video by length alone (plus a leading `{` and no NUL byte). A
         // control message at or past 32768 bytes is handed to the decoder as
         // video instead — dropping it is the only safe outcome. `cursorImg`
         // caps its PNG at 24000 bytes for exactly this reason.
         guard ControlFramePolicy.allowsOutboundJSON(byteCount: payload.count) else {
-            Log.info("refusing oversize control message (\(payload.count) bytes, type \(Self.controlMessageType(json)))")
-            return
+            Log.info("refusing oversize control message (\(payload.count) bytes, type \(Self.controlMessageType(payload)))")
+            return false
         }
         var header = UInt32(payload.count).bigEndian
         var frame = Data(bytes: &header, count: 4)
         frame.append(payload)
         connection.send(content: frame, completion: .contentProcessed { _ in })
+        return true
     }
 
     /// The `type` of an outbound control message, scanned off the front of the
-    /// string. Every message we build starts `{"type":"…"`, and a message big
+    /// payload. Every message we build starts `{"type":"…"`, and a message big
     /// enough to be refused is the last thing to hand to JSONSerialization.
-    private static func controlMessageType(_ json: String) -> String {
-        let head = json.prefix(64)
+    private static func controlMessageType(_ payload: Data) -> String {
+        let head = String(decoding: payload.prefix(64), as: UTF8.self)
         guard let marker = head.range(of: "\"type\":\""),
               let end = head[marker.upperBound...].firstIndex(of: "\"") else { return "unknown" }
         let type = String(head[marker.upperBound..<end])
