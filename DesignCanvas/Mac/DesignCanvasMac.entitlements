@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!--
+	  Mirrors Mac/OpenSidecarMac.entitlements (which is empty: the sender uses the private
+	  CGVirtualDisplay API and ships outside the Mac App Store, so no App Sandbox), plus the
+	  one thing Design Canvas does that OpenDisplay does not — ask Terminal.app to run the
+	  Claude Code launch command via AppleScript.
+	-->
+	<key>com.apple.security.automation.apple-events</key>
+	<true/>
+</dict>
+</plist>
