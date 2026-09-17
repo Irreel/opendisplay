@@ -80,7 +80,11 @@ async function handleRequest(
   options: ResolvedHttpServerOptions,
 ): Promise<void> {
   const started = Date.now();
-  const url = new URL(request.url ?? '/', `http://${request.headers.host ?? '127.0.0.1'}`);
+  // Deliberately NOT built against the request's own `Host`: only the path and the
+  // query are ever read from this, and a hostile or malformed Host header must not
+  // be able to change how they parse (or throw out of the URL constructor). The
+  // Host header itself is checked by the guard at the top of `route()`.
+  const url = new URL(request.url ?? '/', `http://${LOOPBACK_HOST}`);
   const method = request.method ?? 'GET';
   await options.logger.event('http.request', { method, path: url.pathname });
 
@@ -103,7 +107,7 @@ async function route(
   response: ServerResponse,
   options: ResolvedHttpServerOptions,
 ): Promise<void> {
-  if (!requireLoopback(request, response)) return;
+  if (!requireLocalRequest(request, response, options.resolvedPort)) return;
 
   if (method === 'GET' && url.pathname === HTTP_PATHS.health) {
     const body: HealthResponse = {
@@ -408,6 +412,56 @@ async function parseReplyBody(request: IncomingMessage): Promise<SetReplyInput> 
 export function requireLoopback(request: IncomingMessage, response: ServerResponse): boolean {
   if (!isLoopback(request)) {
     sendJson(response, 403, { error: 'forbidden', message: 'Loopback only.' });
+    return false;
+  }
+  return true;
+}
+
+/**
+ * True only for the names this daemon answers to: `127.0.0.1`, `localhost` or
+ * `[::1]`, each with the bound port.
+ *
+ * Binding to loopback keeps other machines out; it does not keep a *browser*
+ * out. A page on any site can be served a hostname that resolves to 127.0.0.1
+ * (DNS rebinding) and then reach the daemon as same-origin — enough to post a
+ * capture and an annotation carrying an attacker's note and image, which is
+ * prompt injection straight into the user's Claude Code session, or to read
+ * `GET /v1/annotations`. Such a request carries the attacker's hostname in
+ * `Host`, which is what this rejects.
+ */
+export function allowedHost(host: string | undefined, port: number): boolean {
+  if (!host) return false;
+  return host === `127.0.0.1:${port}` || host === `localhost:${port}` || host === `[::1]:${port}`;
+}
+
+/**
+ * The single guard every route passes: the peer is loopback, the request is not
+ * a browser's, and it named this daemon by a loopback Host.
+ *
+ * Any `Origin` header at all is refused. Every legitimate client here is a
+ * program — the Mac engine's `URLSession`, the channel's `fetch`, the two
+ * scripts — and none of them sends one; a browser always does, on a
+ * cross-origin request or a page's own same-origin POST. So its presence is
+ * enough to say no, with no allow-list to keep in step.
+ */
+export function requireLocalRequest(
+  request: IncomingMessage,
+  response: ServerResponse,
+  port: number,
+): boolean {
+  if (!requireLoopback(request, response)) return false;
+  if (request.headers.origin !== undefined) {
+    sendJson(response, 403, {
+      error: 'forbidden',
+      message: 'Requests carrying an Origin header are not served.',
+    });
+    return false;
+  }
+  if (!allowedHost(request.headers.host, port)) {
+    sendJson(response, 403, {
+      error: 'forbidden',
+      message: 'Host must name this daemon on loopback.',
+    });
     return false;
   }
   return true;

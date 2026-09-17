@@ -173,6 +173,23 @@ with a real pairing step is tracked as future work in
 [`spec/TODOS.md`](spec/TODOS.md) (OpenDisplay upstream issue #16); it isn't
 built yet.
 
+The daemon listens on `127.0.0.1:47100` only, which keeps other machines
+out — but binding to loopback does **not** keep a *browser* out. A page on
+any site can be served a hostname that resolves to 127.0.0.1 (DNS
+rebinding) and then talk to the daemon as same-origin: enough to post a
+capture and an annotation carrying someone else's note and image, which is
+prompt injection straight into your Claude Code session, or to read back
+`GET /v1/annotations`. So the daemon refuses any request whose `Host` is not
+`127.0.0.1`, `localhost` or `[::1]` on its own port, and any request that
+carries an `Origin` header at all — every legitimate client here is a
+program, and none of them sends one.
+
+**Residual risk:** that defence is about browsers, not about the machine.
+Any local user or process on this Mac can still post captures,
+annotations and replies to the daemon — there is no authentication on the
+loopback API — and an annotation is context for an agent that can edit your
+files. Treat the daemon as trusting everything already running on your Mac.
+
 ## Known limits
 
 - **No reply timeout.** A round that Claude Code never replies to (the
