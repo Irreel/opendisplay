@@ -1,15 +1,17 @@
 import { randomBytes } from 'node:crypto';
 import { createReadStream } from 'node:fs';
-import { mkdir, readdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { copyFile, mkdir, readdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import {
+  type AnnotationDevice,
   type AnnotationMeta,
   type AnnotationNote,
+  type AnnotationReply,
   type CaptureMeta,
   CLAIM_LEASE_MS,
-  LEGACY_SCHEMA_VERSION,
   SCHEMA_VERSION,
   type Viewport,
+  type ZoomRect,
 } from '../shared.js';
 import type { Logger } from '../log.js';
 import { createStorePaths, type StorePaths } from './paths.js';
@@ -17,18 +19,17 @@ import { uuidv7 } from './uuidv7.js';
 
 export interface CreateCaptureInput {
   screenshot: Buffer;
-  sourceLabel: string;
   viewport: Viewport;
   createdAt?: string;
 }
 
 export interface CreateAnnotationInput {
   composite: Buffer;
-  sketch?: Buffer | null;
-  noteFile?: Buffer | null;
+  sketch: Buffer;
   sourceCaptureId: string;
-  sourceLabel: string;
   viewport: Viewport;
+  zoomRect: ZoomRect | null;
+  device: AnnotationDevice;
   note?: Partial<AnnotationNote>;
   createdAt?: string;
 }
@@ -42,6 +43,13 @@ export interface AnnotationWithPath {
   meta: AnnotationMeta;
   compositePath: string;
   sketchPath: string | null;
+}
+
+/** createAnnotation was given a sourceCaptureId with no matching capture on disk. */
+export class UnknownCaptureError extends Error {
+  constructor(readonly sourceCaptureId: string) {
+    super(`Unknown capture: ${sourceCaptureId}`);
+  }
 }
 
 export class DesignCanvasStore {
@@ -83,12 +91,11 @@ export class DesignCanvasStore {
       id,
       schemaVersion: SCHEMA_VERSION,
       createdAt,
-      sourceLabel: input.sourceLabel,
       viewport: input.viewport,
     };
     await writeFile(join(dir, 'screenshot.png'), input.screenshot);
     await writeJson(join(dir, 'meta.json'), meta);
-    await this.logger.event('capture.created', { captureId: id, sourceLabel: meta.sourceLabel });
+    await this.logger.event('capture.created', { captureId: id });
     return meta;
   }
 
@@ -104,39 +111,41 @@ export class DesignCanvasStore {
     return readCapture(this.paths.captures, id);
   }
 
+  /** Throws UnknownCaptureError (and writes nothing) if sourceCaptureId has no capture. */
   async createAnnotation(input: CreateAnnotationInput): Promise<AnnotationMeta> {
     await this.ensure();
+    const capture = await this.getCapture(input.sourceCaptureId);
+    if (!capture) {
+      throw new UnknownCaptureError(input.sourceCaptureId);
+    }
     const id = uuidv7();
     const createdAt = input.createdAt ?? new Date().toISOString();
     const dir = join(this.paths.annotations, id);
     await mkdir(dir, { recursive: true });
     const note: AnnotationNote = {
       text: input.note?.text ?? null,
-      voiceFile: input.noteFile ? 'note.m4a' : (input.note?.voiceFile ?? null),
     };
     const meta: AnnotationMeta = {
       id,
       schemaVersion: SCHEMA_VERSION,
       createdAt,
-      servedAt: null,
       claimedAt: null,
-      sourceLabel: input.sourceLabel,
+      servedAt: null,
       viewport: input.viewport,
+      zoomRect: input.zoomRect,
       note,
       sourceCaptureId: input.sourceCaptureId,
+      device: input.device,
+      reply: null,
     };
     await writeFile(join(dir, 'composite.png'), input.composite);
-    if (input.sketch) {
-      await writeFile(join(dir, 'sketch.png'), input.sketch);
-    }
-    if (input.noteFile) {
-      await writeFile(join(dir, 'note.m4a'), input.noteFile);
-    }
+    await writeFile(join(dir, 'sketch.png'), input.sketch);
+    await copyFile(capture.screenshotPath, join(dir, 'screenshot.png'));
     await writeJson(join(dir, 'meta.json'), meta);
     await this.logger.event('annotation.created', {
       annotationId: id,
       sourceCaptureId: input.sourceCaptureId,
-      sourceLabel: meta.sourceLabel,
+      deviceId: input.device.id,
     });
     return meta;
   }
@@ -278,7 +287,7 @@ async function readCapture(root: string, id: string): Promise<CaptureWithPath | 
   try {
     const meta = await readJson<CaptureMeta>(join(root, id, 'meta.json'));
     return {
-      meta: normalizeSourceLabel(meta),
+      meta,
       screenshotPath: join(root, id, 'screenshot.png'),
     };
   } catch (error) {
@@ -289,12 +298,34 @@ async function readCapture(root: string, id: string): Promise<CaptureWithPath | 
   }
 }
 
+/** Raw shape as it may exist on disk: a v2 record predates zoomRect/device/reply. */
+type RawAnnotationMeta = Omit<AnnotationMeta, 'zoomRect' | 'device' | 'reply' | 'claimedAt'> & {
+  claimedAt?: string | null;
+  zoomRect?: ZoomRect | null;
+  device?: AnnotationDevice;
+  reply?: AnnotationReply | null;
+  /** v2 and earlier; ignored on read. */
+  sourceLabel?: string;
+};
+
 async function readAnnotation(root: string, id: string): Promise<AnnotationWithPath | null> {
   try {
-    const meta = await readJson<AnnotationMeta>(join(root, id, 'meta.json'));
-    const normalized = normalizeSourceLabel(meta);
+    const raw = await readJson<RawAnnotationMeta>(join(root, id, 'meta.json'));
+    const meta: AnnotationMeta = {
+      id: raw.id,
+      schemaVersion: raw.schemaVersion,
+      createdAt: raw.createdAt,
+      claimedAt: raw.claimedAt ?? null,
+      servedAt: raw.servedAt,
+      viewport: raw.viewport,
+      zoomRect: raw.zoomRect ?? null,
+      note: raw.note,
+      sourceCaptureId: raw.sourceCaptureId,
+      device: raw.device ?? { id: '', name: '' },
+      reply: raw.reply ?? null,
+    };
     return {
-      meta: { ...normalized, claimedAt: normalized.claimedAt ?? null },
+      meta,
       compositePath: join(root, id, 'composite.png'),
       sketchPath: join(root, id, 'sketch.png'),
     };
@@ -326,14 +357,4 @@ async function writeJson(path: string, value: unknown): Promise<void> {
 
 function createSortableId(): string {
   return `${Date.now().toString(36)}-${randomBytes(8).toString('hex')}`;
-}
-
-function normalizeSourceLabel<T extends { schemaVersion: number; sourceLabel: string }>(
-  meta: T & { pageUrl?: string },
-): T {
-  if (meta.schemaVersion === LEGACY_SCHEMA_VERSION && typeof meta.pageUrl === 'string') {
-    const { pageUrl, ...rest } = meta;
-    return { ...(rest as T), sourceLabel: pageUrl };
-  }
-  return meta;
 }

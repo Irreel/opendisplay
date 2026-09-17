@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readdir, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { DesignCanvasStore } from './store.js';
+import { DesignCanvasStore, UnknownCaptureError } from './store.js';
 import { createStorePaths } from './paths.js';
 
 const silentLogger = { event: async () => {} } as unknown as ConstructorParameters<
@@ -18,36 +18,69 @@ async function tempStore(): Promise<DesignCanvasStore> {
   return store;
 }
 
-test('capture round-trips sourceLabel', async () => {
+test('capture round-trips viewport at schema version 3', async () => {
   const store = await tempStore();
   const meta = await store.createCapture({
     screenshot: Buffer.from('png'),
-    sourceLabel: 'localhost:3000 — Chrome',
     viewport: { w: 1440, h: 900 },
   });
-  assert.equal(meta.sourceLabel, 'localhost:3000 — Chrome');
-  assert.equal(meta.schemaVersion, 2);
+  assert.equal(meta.schemaVersion, 3);
+  assert.deepEqual(meta.viewport, { w: 1440, h: 900 });
   const latest = await store.latestCapture();
-  assert.equal(latest?.meta.sourceLabel, 'localhost:3000 — Chrome');
+  assert.deepEqual(latest?.meta.viewport, { w: 1440, h: 900 });
 });
 
-test('reads a legacy v1 capture by mapping pageUrl to sourceLabel', async () => {
+test('annotation upload happy path writes four files and schema 3 meta with device and zoomRect', async () => {
   const store = await tempStore();
-  const id = 'legacy-1';
-  const dir = join(store.paths.captures, id);
-  await mkdir(dir, { recursive: true });
-  await writeFile(join(dir, 'screenshot.png'), Buffer.from('png'));
-  await writeFile(
-    join(dir, 'meta.json'),
-    JSON.stringify({ id, schemaVersion: 1, createdAt: '2026-01-01T00:00:00.000Z', pageUrl: 'http://old', viewport: { w: 1, h: 1 } }),
+  const capture = await store.createCapture({
+    screenshot: Buffer.from('shot'),
+    viewport: { w: 100, h: 200 },
+  });
+  const meta = await store.createAnnotation({
+    composite: Buffer.from('composite'),
+    sketch: Buffer.from('sketch'),
+    sourceCaptureId: capture.id,
+    viewport: { w: 100, h: 200 },
+    zoomRect: { x: 0.1, y: 0.2, w: 0.5, h: 0.4 },
+    device: { id: 'device-1', name: 'iPad' },
+    note: { text: 'make it bigger' },
+  });
+
+  assert.equal(meta.schemaVersion, 3);
+  assert.deepEqual(meta.device, { id: 'device-1', name: 'iPad' });
+  assert.deepEqual(meta.zoomRect, { x: 0.1, y: 0.2, w: 0.5, h: 0.4 });
+  assert.equal(meta.reply, null);
+  assert.equal(meta.claimedAt, null);
+  assert.equal(meta.servedAt, null);
+  assert.equal(meta.note.text, 'make it bigger');
+
+  const dir = join(store.paths.annotations, meta.id);
+  assert.equal((await readFile(join(dir, 'composite.png'))).toString(), 'composite');
+  assert.equal((await readFile(join(dir, 'sketch.png'))).toString(), 'sketch');
+  assert.equal((await readFile(join(dir, 'screenshot.png'))).toString(), 'shot');
+  await readFile(join(dir, 'meta.json'));
+});
+
+test('creating an annotation with an unknown sourceCaptureId fails and writes nothing', async () => {
+  const store = await tempStore();
+  await assert.rejects(
+    store.createAnnotation({
+      composite: Buffer.from('composite'),
+      sketch: Buffer.from('sketch'),
+      sourceCaptureId: 'does-not-exist',
+      viewport: { w: 1, h: 1 },
+      zoomRect: null,
+      device: { id: 'd', name: 'n' },
+    }),
+    (error: unknown) => error instanceof UnknownCaptureError,
   );
-  const capture = await store.getCapture(id);
-  assert.equal(capture?.meta.sourceLabel, 'http://old');
+  const entries = await readdir(store.paths.annotations);
+  assert.deepEqual(entries, []);
 });
 
-test('reads a legacy v1 annotation by mapping pageUrl to sourceLabel', async () => {
+test('a v2 annotation record reads with device, zoomRect, and reply defaults', async () => {
   const store = await tempStore();
-  const id = 'legacy-annotation-1';
+  const id = 'legacy-v2-annotation';
   const dir = join(store.paths.annotations, id);
   await mkdir(dir, { recursive: true });
   await writeFile(join(dir, 'composite.png'), Buffer.from('png'));
@@ -55,15 +88,22 @@ test('reads a legacy v1 annotation by mapping pageUrl to sourceLabel', async () 
     join(dir, 'meta.json'),
     JSON.stringify({
       id,
-      schemaVersion: 1,
+      schemaVersion: 2,
       createdAt: '2026-01-01T00:00:00.000Z',
       servedAt: null,
-      pageUrl: 'http://old-annotation',
+      claimedAt: null,
+      sourceLabel: 'ignored on read',
       viewport: { w: 1, h: 1 },
       note: { text: 'legacy note', voiceFile: null },
       sourceCaptureId: 'legacy-capture-1',
     }),
   );
+
   const annotation = await store.getAnnotation(id);
-  assert.equal(annotation?.meta.sourceLabel, 'http://old-annotation');
+  assert.ok(annotation);
+  assert.deepEqual(annotation?.meta.device, { id: '', name: '' });
+  assert.equal(annotation?.meta.zoomRect, null);
+  assert.equal(annotation?.meta.reply, null);
+  assert.equal(annotation?.meta.note.text, 'legacy note');
+  assert.equal((annotation?.meta as { sourceLabel?: string }).sourceLabel, undefined);
 });

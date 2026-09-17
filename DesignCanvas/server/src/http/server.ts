@@ -1,13 +1,16 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import {
+  type AnnotationDevice,
   type AnnotationUploadResponse,
   type HealthResponse,
   HTTP_PATHS,
   SERVER_PORT,
   type Viewport,
+  type ZoomRect,
 } from '../shared.js';
 import type { Logger } from '../log.js';
-import type { DesignCanvasStore } from '../store/store.js';
+import type { CreateAnnotationInput, DesignCanvasStore } from '../store/store.js';
+import { UnknownCaptureError } from '../store/store.js';
 import { AnnotationEventBus, isLoopback, openAnnotationStream } from './event-stream.js';
 import { daemonIdentity } from './identity.js';
 import {
@@ -115,7 +118,19 @@ async function route(
 
   if (method === 'POST' && url.pathname === HTTP_PATHS.annotations) {
     const upload = await parseAnnotationUpload(request);
-    const meta = await options.store.createAnnotation(upload);
+    let meta;
+    try {
+      meta = await options.store.createAnnotation(upload);
+    } catch (error) {
+      if (error instanceof UnknownCaptureError) {
+        sendJson(response, 404, {
+          error: 'capture_not_found',
+          message: `No capture with id ${error.sourceCaptureId}.`,
+        });
+        return;
+      }
+      throw error;
+    }
     options.bus.emitPending(meta.id);
     const body: AnnotationUploadResponse = {
       annotationId: meta.id,
@@ -186,14 +201,11 @@ async function parseCaptureUpload(request: IncomingMessage) {
   if (contentType.startsWith('application/json')) {
     const parsed = JSON.parse(body.toString('utf8')) as {
       screenshotBase64: string;
-      sourceLabel?: string;
-      pageUrl?: string;
       viewport: Viewport;
       createdAt?: string;
     };
     return {
       screenshot: Buffer.from(parsed.screenshotBase64, 'base64'),
-      sourceLabel: requireString(parsed.sourceLabel ?? parsed.pageUrl, 'sourceLabel'),
       viewport: requireViewport(parsed.viewport),
       ...(parsed.createdAt ? { createdAt: parsed.createdAt } : {}),
     };
@@ -204,74 +216,73 @@ async function parseCaptureUpload(request: IncomingMessage) {
   if (!metaText || !screenshot) {
     throw new HttpError(
       400,
-      'invalid_capture_upload',
+      'invalid_request',
       'Capture upload requires screenshot and meta parts.',
     );
   }
   const meta = JSON.parse(metaText) as {
-    sourceLabel?: string;
-    pageUrl?: string;
     viewport: Viewport;
     createdAt?: string;
   };
   return {
     screenshot,
-    sourceLabel: requireString(meta.sourceLabel ?? meta.pageUrl, 'sourceLabel'),
     viewport: requireViewport(meta.viewport),
     ...(meta.createdAt ? { createdAt: meta.createdAt } : {}),
   };
 }
 
-async function parseAnnotationUpload(request: IncomingMessage) {
+async function parseAnnotationUpload(request: IncomingMessage): Promise<CreateAnnotationInput> {
   const contentType = request.headers['content-type'] ?? '';
   const body = await readRequestBody(request);
   if (contentType.startsWith('application/json')) {
     const parsed = JSON.parse(body.toString('utf8')) as {
       compositeBase64: string;
-      sketchBase64?: string;
+      sketchBase64: string;
       sourceCaptureId: string;
-      sourceLabel?: string;
-      pageUrl?: string;
       viewport: Viewport;
-      note?: { text?: string | null; voiceFile?: string | null };
+      zoomRect: ZoomRect | null;
+      note?: { text?: string | null };
+      device: AnnotationDevice;
       createdAt?: string;
     };
     return {
       composite: Buffer.from(parsed.compositeBase64, 'base64'),
-      sketch: parsed.sketchBase64 ? Buffer.from(parsed.sketchBase64, 'base64') : null,
+      sketch: Buffer.from(requireString(parsed.sketchBase64, 'sketchBase64'), 'base64'),
       sourceCaptureId: requireString(parsed.sourceCaptureId, 'sourceCaptureId'),
-      sourceLabel: requireString(parsed.sourceLabel ?? parsed.pageUrl, 'sourceLabel'),
       viewport: requireViewport(parsed.viewport),
-      note: parsed.note ?? {},
+      zoomRect: requireZoomRect(parsed.zoomRect),
+      note: requireNote(parsed.note),
+      device: requireDevice(parsed.device),
       ...(parsed.createdAt ? { createdAt: parsed.createdAt } : {}),
     };
   }
   const parts = parseMultipart(body, contentType);
   const metaText = partText(parts, 'meta');
   const composite = partBuffer(parts, 'composite');
-  if (!metaText || !composite) {
+  const sketch = partBuffer(parts, 'sketch');
+  if (!metaText || !composite || !sketch) {
     throw new HttpError(
       400,
-      'invalid_annotation_upload',
-      'Annotation upload requires composite and meta parts.',
+      'invalid_request',
+      'Annotation upload requires composite, sketch, and meta parts.',
     );
   }
   const meta = JSON.parse(metaText) as {
     sourceCaptureId: string;
-    sourceLabel?: string;
-    pageUrl?: string;
     viewport: Viewport;
-    note?: { text?: string | null; voiceFile?: string | null };
+    zoomRect: ZoomRect | null;
+    note?: { text?: string | null };
+    device: AnnotationDevice;
     createdAt?: string;
   };
   return {
     composite,
-    sketch: partBuffer(parts, 'sketch'),
-    noteFile: partBuffer(parts, 'note'),
+    sketch,
     sourceCaptureId: requireString(meta.sourceCaptureId, 'sourceCaptureId'),
-    sourceLabel: requireString(meta.sourceLabel ?? meta.pageUrl, 'sourceLabel'),
     viewport: requireViewport(meta.viewport),
-    note: meta.note ?? {},
+    zoomRect: requireZoomRect(meta.zoomRect),
+    note: requireNote(meta.note),
+    device: requireDevice(meta.device),
     ...(meta.createdAt ? { createdAt: meta.createdAt } : {}),
   };
 }
@@ -329,7 +340,56 @@ function requireViewport(value: unknown): Viewport {
   ) {
     throw new HttpError(400, 'invalid_request', 'viewport must include numeric w and h.');
   }
-  return { w: value.w, h: value.h };
+  const scale = 'scale' in value ? value.scale : undefined;
+  if (scale !== undefined && typeof scale !== 'number') {
+    throw new HttpError(400, 'invalid_request', 'viewport.scale must be a number when present.');
+  }
+  return scale === undefined ? { w: value.w, h: value.h } : { w: value.w, h: value.h, scale };
+}
+
+function requireZoomRect(value: unknown): ZoomRect | null {
+  if (value === null) return null;
+  if (
+    typeof value !== 'object' ||
+    value === null ||
+    !('x' in value) ||
+    !('y' in value) ||
+    !('w' in value) ||
+    !('h' in value) ||
+    typeof value.x !== 'number' ||
+    typeof value.y !== 'number' ||
+    typeof value.w !== 'number' ||
+    typeof value.h !== 'number'
+  ) {
+    throw new HttpError(400, 'invalid_request', 'zoomRect must be null or {x,y,w,h} numbers.');
+  }
+  return { x: value.x, y: value.y, w: value.w, h: value.h };
+}
+
+function requireDevice(value: unknown): AnnotationDevice {
+  if (
+    typeof value !== 'object' ||
+    value === null ||
+    !('id' in value) ||
+    !('name' in value) ||
+    typeof value.id !== 'string' ||
+    typeof value.name !== 'string'
+  ) {
+    throw new HttpError(400, 'invalid_request', 'device must include string id and name.');
+  }
+  return { id: value.id, name: value.name };
+}
+
+function requireNote(value: unknown): { text?: string | null } {
+  if (value === undefined) return {};
+  if (typeof value !== 'object' || value === null) {
+    throw new HttpError(400, 'invalid_request', 'note must be an object when present.');
+  }
+  const text = 'text' in value ? value.text : undefined;
+  if (text !== undefined && text !== null && typeof text !== 'string') {
+    throw new HttpError(400, 'invalid_request', 'note.text must be a string or null when present.');
+  }
+  return text === undefined ? {} : { text };
 }
 
 class HttpError extends Error {

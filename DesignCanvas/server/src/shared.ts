@@ -5,19 +5,34 @@
 
 export const SERVER_PORT = 47100;
 export const CHANNEL_NAME = 'design-canvas';
-export const SCHEMA_VERSION = 2;
-export const LEGACY_SCHEMA_VERSION = 1;
+export const SCHEMA_VERSION = 3;
 export const SERVICE_NAME = 'Design Canvas';
 export const CLAIM_LEASE_MS = 30_000;
+
+export const REPLY_STATUSES = ['applied', 'failed', 'needs_input'] as const;
+export type ReplyStatus = (typeof REPLY_STATUSES)[number];
+export const REPLY_MESSAGE_MAX_BYTES = 2048;
+export const ROUNDS_LIMIT = 20;
+export type RoundStatus = 'queued' | 'sent' | 'applied' | 'failed' | 'needs_input';
 
 export const HTTP_PATHS = {
   health: '/v1/health',
   captures: '/v1/captures',
   annotations: '/v1/annotations',
   annotationStream: '/v1/annotations/stream',
+  rounds: '/v1/rounds',
+  roundsStream: '/v1/rounds/stream',
 } as const;
 
 export interface Viewport {
+  w: number;
+  h: number;
+  scale?: number;
+}
+
+export interface ZoomRect {
+  x: number;
+  y: number;
   w: number;
   h: number;
 }
@@ -26,27 +41,37 @@ export interface CaptureMeta {
   id: string;
   schemaVersion: number;
   createdAt: string;
-  /** Human-readable label for the capture source (window title, or a URL from the legacy extension). */
-  sourceLabel: string;
   viewport: Viewport;
 }
 
 export interface AnnotationNote {
   text: string | null;
-  voiceFile: string | null;
+}
+
+export interface AnnotationDevice {
+  id: string;
+  name: string;
+}
+
+export interface AnnotationReply {
+  status: ReplyStatus;
+  message: string | null;
+  prUrl: string | null;
+  at: string;
 }
 
 export interface AnnotationMeta {
   id: string;
   schemaVersion: number;
   createdAt: string;
-  servedAt: string | null;
   claimedAt: string | null;
-  /** Human-readable label for the capture source (window title, or a URL from the legacy extension). */
-  sourceLabel: string;
+  servedAt: string | null;
   viewport: Viewport;
+  zoomRect: ZoomRect | null;
   note: AnnotationNote;
   sourceCaptureId: string;
+  device: AnnotationDevice;
+  reply: AnnotationReply | null;
 }
 
 export interface HealthResponse {
@@ -77,4 +102,19 @@ export interface AnnotationUploadResponse {
    * after this returns; the daemon's lease sweep recovers such cases.
    */
   dispatched: boolean;
+}
+
+/** A projection of one annotation's lifecycle for the iPad's rounds list/snapshot. */
+export interface Round {
+  annotationId: string;
+  createdAt: string;
+  status: RoundStatus;
+  message?: string;
+  prUrl?: string;
+  note?: string;
+}
+
+/** A `Round` tagged with the device it belongs to, for the rounds SSE stream. */
+export interface RoundEvent extends Round {
+  deviceId: string;
 }

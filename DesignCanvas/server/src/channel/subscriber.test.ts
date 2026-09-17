@@ -31,7 +31,6 @@ async function postCapture(base: string): Promise<string> {
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({
       screenshotBase64: Buffer.from('png').toString('base64'),
-      sourceLabel: 'example',
       viewport: { w: 100, h: 200 },
     }),
   });
@@ -46,9 +45,11 @@ async function postAnnotation(base: string, captureId: string): Promise<string> 
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({
       compositeBase64: Buffer.from('composite').toString('base64'),
+      sketchBase64: Buffer.from('sketch').toString('base64'),
       sourceCaptureId: captureId,
-      sourceLabel: 'example',
       viewport: { w: 100, h: 200 },
+      zoomRect: null,
+      device: { id: 'device-1', name: 'iPad' },
     }),
   });
   assert.equal(response.status, 201);

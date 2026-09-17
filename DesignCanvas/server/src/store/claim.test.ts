@@ -14,8 +14,15 @@ async function storeWithAnnotation() {
   const root = await mkdtemp(join(tmpdir(), 'dc-claim-'));
   const store = new DesignCanvasStore(silentLogger, createStorePaths(root));
   await store.ensure();
-  const capture = await store.createCapture({ screenshot: Buffer.from('p'), sourceLabel: 'w', viewport: { w: 1, h: 1 } });
-  const ann = await store.createAnnotation({ composite: Buffer.from('c'), sourceCaptureId: capture.id, sourceLabel: 'w', viewport: { w: 1, h: 1 } });
+  const capture = await store.createCapture({ screenshot: Buffer.from('p'), viewport: { w: 1, h: 1 } });
+  const ann = await store.createAnnotation({
+    composite: Buffer.from('c'),
+    sketch: Buffer.from('s'),
+    sourceCaptureId: capture.id,
+    viewport: { w: 1, h: 1 },
+    zoomRect: null,
+    device: { id: 'device-1', name: 'iPad' },
+  });
   return { store, id: ann.id };
 }
 
