@@ -4,12 +4,14 @@ import {
   type AnnotationUploadResponse,
   type HealthResponse,
   HTTP_PATHS,
+  REPLY_STATUSES,
+  type ReplyStatus,
   SERVER_PORT,
   type Viewport,
   type ZoomRect,
 } from '../shared.js';
 import type { Logger } from '../log.js';
-import type { CreateAnnotationInput, DesignCanvasStore } from '../store/store.js';
+import type { CreateAnnotationInput, DesignCanvasStore, SetReplyInput } from '../store/store.js';
 import { UnknownCaptureError } from '../store/store.js';
 import { AnnotationEventBus, isLoopback, openAnnotationStream } from './event-stream.js';
 import { daemonIdentity } from './identity.js';
@@ -171,6 +173,27 @@ async function route(
     return;
   }
 
+  const replyMatch = /^\/v1\/annotations\/([^/]+)\/reply$/.exec(url.pathname);
+  if (method === 'POST' && replyMatch?.[1]) {
+    const id = replyMatch[1];
+    const existing = await options.store.getAnnotation(id);
+    if (!existing) {
+      sendJson(response, 404, { error: 'annotation_not_found', message: 'Annotation not found.' });
+      return;
+    }
+    const reply = await parseReplyBody(request);
+    const updated = await options.store.setReply(id, reply);
+    if (!updated) {
+      sendJson(response, 409, {
+        error: 'already_replied',
+        message: 'A reply was already recorded for this annotation.',
+      });
+      return;
+    }
+    sendJson(response, 200, { meta: updated });
+    return;
+  }
+
   const annotationMatch = /^\/v1\/annotations\/([^/]+)$/.exec(url.pathname);
   if (method === 'DELETE' && annotationMatch?.[1]) {
     const deleted = await options.store.deleteAnnotation(annotationMatch[1]);
@@ -284,6 +307,40 @@ async function parseAnnotationUpload(request: IncomingMessage): Promise<CreateAn
     note: requireNote(meta.note),
     device: requireDevice(meta.device),
     ...(meta.createdAt ? { createdAt: meta.createdAt } : {}),
+  };
+}
+
+async function parseReplyBody(request: IncomingMessage): Promise<SetReplyInput> {
+  const body = await readRequestBody(request);
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(body.toString('utf8'));
+  } catch {
+    throw new HttpError(400, 'invalid_request', 'Reply body must be valid JSON.');
+  }
+  if (typeof parsed !== 'object' || parsed === null) {
+    throw new HttpError(400, 'invalid_request', 'Reply body must be a JSON object.');
+  }
+  const status = 'status' in parsed ? parsed.status : undefined;
+  if (typeof status !== 'string' || !(REPLY_STATUSES as readonly string[]).includes(status)) {
+    throw new HttpError(
+      400,
+      'invalid_request',
+      `status must be one of ${REPLY_STATUSES.join(', ')}.`,
+    );
+  }
+  const message = 'message' in parsed ? parsed.message : undefined;
+  if (message !== undefined && typeof message !== 'string') {
+    throw new HttpError(400, 'invalid_request', 'message must be a string when present.');
+  }
+  const prUrl = 'prUrl' in parsed ? parsed.prUrl : undefined;
+  if (prUrl !== undefined && typeof prUrl !== 'string') {
+    throw new HttpError(400, 'invalid_request', 'prUrl must be a string when present.');
+  }
+  return {
+    status: status as ReplyStatus,
+    message: message ?? null,
+    prUrl: prUrl ?? null,
   };
 }
 

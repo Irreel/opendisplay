@@ -9,6 +9,7 @@ import {
   type AnnotationReply,
   type CaptureMeta,
   CLAIM_LEASE_MS,
+  type ReplyStatus,
   SCHEMA_VERSION,
   type Viewport,
   type ZoomRect,
@@ -43,6 +44,12 @@ export interface AnnotationWithPath {
   meta: AnnotationMeta;
   compositePath: string;
   sketchPath: string | null;
+}
+
+export interface SetReplyInput {
+  status: ReplyStatus;
+  message: string | null;
+  prUrl: string | null;
 }
 
 /** createAnnotation was given a sourceCaptureId with no matching capture on disk. */
@@ -162,6 +169,30 @@ export class DesignCanvasStore {
       const meta = { ...annotation.meta, servedAt };
       await writeJson(join(this.paths.annotations, id, 'meta.json'), meta);
       await this.logger.event('annotation.served', { annotationId: id, servedAt });
+      return meta;
+    });
+  }
+
+  /**
+   * Refuses (returns null) a second reply for the same annotation; stores the
+   * full message untruncated. Independent of claim/served state: a reply may
+   * arrive before or after the annotation is marked served.
+   */
+  async setReply(
+    id: string,
+    reply: SetReplyInput,
+    at = new Date().toISOString(),
+  ): Promise<AnnotationMeta | null> {
+    return this.withLock(id, async () => {
+      const annotation = await this.getAnnotation(id);
+      if (!annotation) {
+        throw new Error(`Annotation not found: ${id}`);
+      }
+      if (annotation.meta.reply !== null) return null; // already replied
+      const recorded: AnnotationReply = { ...reply, at };
+      const meta = { ...annotation.meta, reply: recorded };
+      await writeJson(join(this.paths.annotations, id, 'meta.json'), meta);
+      await this.logger.event('annotation.replied', { annotationId: id, status: reply.status });
       return meta;
     });
   }
