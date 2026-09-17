@@ -157,7 +157,13 @@ async function route(
 
   const claimMatch = /^\/v1\/annotations\/([^/]+)\/claim$/.exec(url.pathname);
   if (method === 'POST' && claimMatch?.[1]) {
-    const claimed = await options.store.claimAnnotation(claimMatch[1]);
+    const id = claimMatch[1];
+    const existing = await options.store.getAnnotation(id);
+    if (!existing) {
+      sendJson(response, 404, { error: 'annotation_not_found', message: 'Annotation not found.' });
+      return;
+    }
+    const claimed = await options.store.claimAnnotation(id);
     if (!claimed) {
       sendJson(response, 409, {
         error: 'already_claimed',

@@ -88,6 +88,32 @@ test('loopback claim/served endpoints drive the annotation lifecycle', async () 
   }
 });
 
+test('claiming an unknown annotation id returns 404, not 409', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'dc-claim-404-'));
+  const store = new DesignCanvasStore(silentLogger, createStorePaths(root));
+  await store.ensure();
+  const bus = new AnnotationEventBus();
+  const server = await startHttpServer({
+    port: 0,
+    version: '0.0.0',
+    store,
+    bus,
+    logger: silentLogger,
+  });
+
+  try {
+    const { port } = server.address() as AddressInfo;
+    const claim = await fetch(`http://127.0.0.1:${port}/v1/annotations/does-not-exist/claim`, {
+      method: 'POST',
+    });
+    assert.equal(claim.status, 404);
+    const body = (await claim.json()) as { error: string };
+    assert.equal(body.error, 'annotation_not_found');
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});
+
 test('marking an unknown annotation as served returns 404', async () => {
   const root = await mkdtemp(join(tmpdir(), 'dc-served-404-'));
   const store = new DesignCanvasStore(silentLogger, createStorePaths(root));
