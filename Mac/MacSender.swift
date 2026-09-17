@@ -210,6 +210,11 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
     // is half-open (e.g. usbmuxd accepted but the device is gone) — reconnect.
     private var lastReceived = Date()
 
+    // What an inbound control frame may declare and how its payload is read
+    // off the wire. Plain OpenDisplay keeps PROTOCOL.md section 3's 1 MiB cap;
+    // a Design Canvas session swaps in the 16 MiB canvas policy. On `queue`.
+    private var controlFramePolicy = ControlFramePolicy(canvas: false)
+
     // Session created after the receiver went to sleep: it refuses
     // connections until its screen is back, so dial failures mean "asleep",
     // not "app closed" — surface that instead of the usual hints. Cleared by
@@ -1642,31 +1647,88 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
 
     // MARK: - Control messages (phone -> Mac)
 
+    /// Reads one length-prefixed control frame (PROTOCOL.md section 3) and
+    /// re-arms itself, on `queue`. Every exit either re-arms the read or kills
+    /// the link: a read loop that just returns takes control input down —
+    /// pings, hello, input — while video keeps flowing, and nothing notices.
+    /// The only exception is our own cancel (ECANCELED), where there is
+    /// deliberately nothing left to read.
     private func receiveControl(on conn: NWConnection) {
         conn.receive(minimumIncompleteLength: 4, maximumLength: 4) { [weak self] data, _, _, error in
             guard let self, error == nil, let data, data.count == 4 else {
-                if let error {
-                    Log.info("control receive ended: \(error)")
-                    // A receive error on the live connection is fatal to it.
-                    // Route through linkDied so a cable session ends instead
-                    // of silently waiting for the watchdog to redial. Skip
-                    // ECANCELED: that is our own cancel (stop, migrate,
-                    // redial), not the link dying.
-                    var isOwnCancel = false
-                    if case .posix(let code) = error, code == .ECANCELED { isOwnCancel = true }
-                    if let self, self.connection === conn, !isOwnCancel {
-                        self.linkDied("receive failed: \(error)")
-                    }
-                }
+                self?.controlReadEnded(error, on: conn, during: "header")
                 return
             }
             let len = Int(UInt32(bigEndian: data.withUnsafeBytes { $0.loadUnaligned(as: UInt32.self) }))
-            guard len > 0, len < 1 << 20 else { return }
-            conn.receive(minimumIncompleteLength: len, maximumLength: len) { [weak self] payload, _, _, error in
-                guard let self, error == nil, let payload, payload.count == len else { return }
-                self.handleControl(payload)
-                self.receiveControl(on: conn)
+            switch self.controlFramePolicy.decide(declaredLength: len) {
+            case .reject(let reason):
+                Log.info("control frame rejected: \(reason) (declared \(len) bytes)")
+                // The payload boundary is now unknown, so reading on would
+                // parse this frame's body as the next header — and returning
+                // would strand the read loop. Kill the link and let the
+                // redial logic decide whether the session continues.
+                if self.connection === conn {
+                    self.linkDied("oversize or empty control frame")
+                }
+            case .read(let chunks):
+                self.receiveControlPayload(chunks: chunks, from: 0, parts: [], on: conn)
             }
+        }
+    }
+
+    /// Reads the payload chunk by chunk (on `queue`), then hands the assembled
+    /// frame to `handleControl`. One receive for a whole multi-megabyte frame
+    /// would leave `lastReceived` untouched for the duration and let the 5s
+    /// watchdog redial out from under an upload that is progressing fine, so
+    /// every chunk that lands counts as liveness.
+    private func receiveControlPayload(chunks: [Int], from index: Int,
+                                       parts: [Data], on conn: NWConnection) {
+        guard index < chunks.count else {
+            var payload = Data()
+            payload.reserveCapacity(parts.reduce(0) { $0 + $1.count })
+            for part in parts { payload.append(part) }
+            // Re-arm before handling, never after: handling a frame can be
+            // real work, and a ping waiting behind it is a link that looks
+            // dead to the peer.
+            receiveControl(on: conn)
+            handleControl(payload)
+            return
+        }
+        let want = chunks[index]
+        conn.receive(minimumIncompleteLength: want, maximumLength: want) { [weak self] data, _, _, error in
+            guard let self, error == nil, let data, data.count == want else {
+                self?.controlReadEnded(error, on: conn, during: "payload")
+                return
+            }
+            // Bytes are flowing; the watchdog should see that even though no
+            // whole message has arrived yet.
+            self.lastReceived = Date()
+            self.receiveControlPayload(chunks: chunks, from: index + 1,
+                                       parts: parts + [data], on: conn)
+        }
+    }
+
+    /// The single exit for a control read that brought no usable bytes (on
+    /// `queue`). A receive error on the live connection is fatal to it. Route
+    /// through linkDied so a cable session ends instead of silently waiting
+    /// for the watchdog to redial. Skip ECANCELED: that is our own cancel
+    /// (stop, migrate, redial), not the link dying.
+    ///
+    /// No error and no bytes means the peer closed the socket, possibly
+    /// mid-frame. Re-arming would spin on a connection that returns nothing
+    /// forever, so that takes the same exit — the watchdog used to arrive
+    /// there 5s later.
+    private func controlReadEnded(_ error: NWError?, on conn: NWConnection, during phase: String) {
+        guard let error else {
+            Log.info("control receive ended: connection closed during the \(phase)")
+            if connection === conn { linkDied("connection closed by the receiver") }
+            return
+        }
+        Log.info("control receive ended: \(error)")
+        var isOwnCancel = false
+        if case .posix(let code) = error, code == .ECANCELED { isOwnCancel = true }
+        if connection === conn, !isOwnCancel {
+            linkDied("receive failed: \(error)")
         }
     }
 
@@ -2232,10 +2294,30 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
     private func sendJSONFrame(_ json: String) {
         guard let connection, connectionReady else { return }
         let payload = Data(json.utf8)
+        // PROTOCOL.md section 4: the receiver tells control messages from
+        // video by length alone (plus a leading `{` and no NUL byte). A
+        // control message at or past 32768 bytes is handed to the decoder as
+        // video instead — dropping it is the only safe outcome. `cursorImg`
+        // caps its PNG at 24000 bytes for exactly this reason.
+        guard ControlFramePolicy.allowsOutboundJSON(byteCount: payload.count) else {
+            Log.info("refusing oversize control message (\(payload.count) bytes, type \(Self.controlMessageType(json)))")
+            return
+        }
         var header = UInt32(payload.count).bigEndian
         var frame = Data(bytes: &header, count: 4)
         frame.append(payload)
         connection.send(content: frame, completion: .contentProcessed { _ in })
+    }
+
+    /// The `type` of an outbound control message, scanned off the front of the
+    /// string. Every message we build starts `{"type":"…"`, and a message big
+    /// enough to be refused is the last thing to hand to JSONSerialization.
+    private static func controlMessageType(_ json: String) -> String {
+        let head = json.prefix(64)
+        guard let marker = head.range(of: "\"type\":\""),
+              let end = head[marker.upperBound...].firstIndex(of: "\"") else { return "unknown" }
+        let type = String(head[marker.upperBound..<end])
+        return type.isEmpty ? "unknown" : type
     }
 
     private func sendFramed(_ payload: Data) {
