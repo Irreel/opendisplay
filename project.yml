@@ -41,6 +41,10 @@ schemes:
     test:
       targets:
         - DesignCanvasTests
+  DesignCanvasiOS:
+    build:
+      targets:
+        DesignCanvasiOS: all
 # DEVELOPMENT_TEAM comes from the environment (see generate.sh / .env) so no
 # personal team ID lives in the repo. Unset = unsigned, fine for CI.
 settings:
@@ -261,6 +265,49 @@ targets:
           PRODUCT_BUNDLE_IDENTIFIER: com.designcanvas.mac.debug
           PRODUCT_NAME: Design Canvas Dev
           BUNDLE_DISPLAY_NAME: Design Canvas Dev
+  # The Design Canvas iPad app. OpenDisplay's receiver core with Draw Mode on
+  # top, listening on its own port and Bonjour type so the two products never
+  # dial each other (plan ruling 1). iPad only: this is a drawing surface held
+  # in two hands, not a phone screen. It takes three files from iOS/ — the
+  # logger, the receiver's view model and the log viewer — and none of
+  # OpenDisplay's own UI.
+  DesignCanvasiOS:
+    type: application
+    platform: iOS
+    deploymentTarget: "16.4"
+    sources:
+      - Shared
+      - DesignCanvas/Shared
+      - DesignCanvas/iOS
+      - iOS/Log.swift
+      - iOS/ReceiverModel.swift
+      - iOS/DiagnosticsLogView.swift
+    info:
+      path: DesignCanvas/iOS/Info.plist
+      properties:
+        CFBundleDisplayName: Design Canvas
+        CFBundleShortVersionString: "$(MARKETING_VERSION)"
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
+        UILaunchScreen: {}
+        UIRequiresFullScreen: true
+        NSLocalNetworkUsageDescription: Design Canvas advertises itself on the local network so your Mac can connect over WiFi.
+        NSBonjourServices: ["_designcanvas._tcp"]
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+          - UIInterfaceOrientationPortraitUpsideDown
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.designcanvas.ipad
+        PRODUCT_NAME: Design Canvas
+        TARGETED_DEVICE_FAMILY: "2"
+        CODE_SIGN_ENTITLEMENTS: DesignCanvas/iOS/DesignCanvasiOS.entitlements
+      configs:
+        # Its own identity for local builds, like every other target here, so a
+        # Debug install never replaces a release one on the same iPad.
+        Debug:
+          PRODUCT_BUNDLE_IDENTIFIER: com.designcanvas.ipad.debug
   DesignCanvasTests:
     type: bundle.unit-test
     platform: macOS
