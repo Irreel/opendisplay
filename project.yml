@@ -210,6 +210,14 @@ targets:
       - DesignCanvas/Tests
       - DesignCanvas/Shared
       - DesignCanvas/Mac/Engine
+      # The menu-bar shell's logic, minus the three files that can only exist
+      # inside the app: the @main scene, the SwiftUI menu, and the real engine
+      # (which names SenderController/MacSender — not compiled here).
+      - path: DesignCanvas/Mac/App
+        excludes:
+          - DesignCanvasMacApp.swift
+          - OpenDisplaySenderEngine.swift
+          - MenuBarView.swift
       - Mac/Log.swift
       - Mac/LogPolicies.swift
       # CanvasSession conforms to SenderCanvasDelegate and talks back through
