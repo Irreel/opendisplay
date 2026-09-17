@@ -1,4 +1,6 @@
+import CoreGraphics
 import Foundation
+import ImageIO
 import XCTest
 
 // NOTE: this hostless bundle compiles DesignCanvas/Mac/Engine,
@@ -35,6 +37,74 @@ final class CanvasSessionTests: XCTestCase {
         outbound.objects(ofType: CanvasWire.frozen).compactMap { $0["ok"] as? Bool }
     }
 
+    private static let testViewport = CanvasViewport(width: 1366, height: 1024, scale: 2)
+
+    private func annotationJSON(
+        sketch: Data,
+        zoomRect: NormalizedRect = .full,
+        viewport: CanvasViewport = CanvasSessionTests.testViewport,
+        note: String? = nil
+    ) -> [String: Any] {
+        var object = AnnotationMessage(
+            sketchPNG: sketch,
+            zoomRect: zoomRect,
+            viewport: viewport,
+            note: note,
+            t: 1_700_000_000_000
+        ).json
+        object["type"] = CanvasWire.annotation
+        return object
+    }
+
+    /// A sketch whose top `bandHeight` rows are opaque `fill` and whose rest
+    /// is transparent, so a composite can be checked for "sketch on top,
+    /// frame below".
+    private func sketchPNG(width: Int, height: Int, bandHeight: Int, fill: TestImages.RGBA) -> Data {
+        TestImages.pngData(
+            TestImages.rectOnTransparentCGImage(
+                width: width,
+                height: height,
+                rect: CGRect(x: 0, y: 0, width: Double(width), height: Double(bandHeight)),
+                fill: fill
+            )
+        )
+    }
+
+    private func pngSize(_ data: Data) -> CGSize? {
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil),
+              let image = CGImageSourceCreateImageAtIndex(source, 0, nil) else { return nil }
+        return CGSize(width: image.width, height: image.height)
+    }
+
+    /// Feeds one frame and freezes on it, waiting until its capture has been
+    /// posted so the held capture already carries an id.
+    @discardableResult
+    private func freeze(
+        _ session: CanvasSession,
+        outbound: FakeOutbound,
+        daemon: FakeDaemon,
+        captureMs: Int64,
+        colour: TestImages.RGBA,
+        width: Int = 40,
+        height: Int = 30,
+        waitForCapturePost: Bool = true
+    ) -> Int {
+        let posts = daemon.captureCalls.count
+        session.canvasDidEncodeFrame(
+            TestImages.solidBGRAPixelBuffer(width: width, height: height, color: colour),
+            captureMs: captureMs
+        )
+        session.canvasDidReceive(type: CanvasWire.freeze, object: freezeJSON(captureMs: captureMs), outbound: outbound)
+        if waitForCapturePost {
+            waitUntil("the freeze capture to be posted") { daemon.captureCalls.count == posts + 1 }
+        }
+        return posts + 1
+    }
+
+    private func hello(_ session: CanvasSession, outbound: FakeOutbound, installID: String = "install-A") {
+        session.canvasPeerDidHello(CanvasPeer(installID: installID, deviceKind: "ipad"), outbound: outbound)
+    }
+
     // MARK: - freeze
 
     func test_freeze_hit_repliesFrozenOkImmediately_andPostsTheFrameAsACapture() {
@@ -49,7 +119,7 @@ final class CanvasSessionTests: XCTestCase {
         // The reply is sent before any PNG work, so it is already recorded.
         XCTAssertEqual(frozenReplies(outbound), [true])
 
-        waitUntil("the freeze capture to be posted") { daemon.captureCalls.count == 1 }
+        guard waitUntil("the freeze capture to be posted", { daemon.captureCalls.count == 1 }) else { return }
         let call = daemon.captureCalls[0]
         XCTAssertEqual(call.width, 40)
         XCTAssertEqual(call.height, 30)
@@ -76,7 +146,7 @@ final class CanvasSessionTests: XCTestCase {
         // Positive marker: a freeze that does hit posts, and because the
         // upload pipeline is FIFO the miss would have been posted first.
         session.canvasDidReceive(type: CanvasWire.freeze, object: freezeJSON(captureMs: 2_000), outbound: outbound)
-        waitUntil("the hitting freeze's capture to be posted") { daemon.captureCalls.count == 1 }
+        guard waitUntil("the hitting freeze's capture to be posted", { daemon.captureCalls.count == 1 }) else { return }
         XCTAssertEqual(frozenReplies(outbound), [false, true])
         XCTAssertEqual(daemon.captureCalls[0].width, 20)
         XCTAssertEqual(daemon.captureCalls.count, 1)
@@ -100,4 +170,206 @@ final class CanvasSessionTests: XCTestCase {
         XCTAssertEqual(frozenReplies(outbound), [false])
         XCTAssertTrue(daemon.captureCalls.isEmpty)
     }
+
+    // MARK: - annotation
+
+    func test_annotation_afterFreeze_uploadsTheCompositeWithCaptureIdDeviceZoomNoteAndViewport() {
+        let daemon = FakeDaemon()
+        let outbound = FakeOutbound()
+        let createdAt = Date(timeIntervalSince1970: 1_700_000_000)
+        let session = makeSession(daemon: daemon, deviceName: "Zhao's iPad", now: { createdAt })
+        hello(session, outbound: outbound, installID: "install-A")
+        freeze(session, outbound: outbound, daemon: daemon, captureMs: 1_000, colour: TestImages.RGBA(0, 0, 200))
+
+        let sketch = sketchPNG(width: 40, height: 30, bandHeight: 6, fill: TestImages.RGBA(255, 0, 0))
+        session.canvasDidReceive(
+            type: CanvasWire.annotation,
+            object: annotationJSON(sketch: sketch, note: "make this blue"),
+            outbound: outbound
+        )
+        XCTAssertEqual(session.pendingUploadCount, 1)
+
+        guard waitUntil("the annotation to be uploaded", { daemon.annotationCalls.count == 1 }) else { return }
+        let upload = daemon.annotationCalls[0]
+        XCTAssertEqual(upload.sourceCaptureId, "capture-1")
+        XCTAssertEqual(upload.deviceID, "install-A")
+        XCTAssertEqual(upload.deviceName, "Zhao's iPad")
+        XCTAssertEqual(upload.zoomRect, NormalizedRect.full)
+        XCTAssertEqual(upload.viewport, CanvasSessionTests.testViewport)
+        XCTAssertEqual(upload.note, "make this blue")
+        XCTAssertEqual(upload.createdAt, createdAt)
+        XCTAssertEqual(upload.sketchPNG, sketch)
+        XCTAssertEqual(pngSize(upload.compositePNG), CGSize(width: 40, height: 30))
+        XCTAssertEqual(TestImages.pixel(inPNG: upload.compositePNG, x: 5, y: 2), TestImages.RGBA(255, 0, 0))
+        XCTAssertEqual(TestImages.pixel(inPNG: upload.compositePNG, x: 5, y: 20), TestImages.RGBA(0, 0, 200))
+
+        waitUntil("the pending count to fall back to zero") { session.pendingUploadCount == 0 }
+    }
+
+    func test_annotation_withNoPriorFreeze_uploadsNothing() {
+        let daemon = FakeDaemon()
+        let outbound = FakeOutbound()
+        let session = makeSession(daemon: daemon)
+        hello(session, outbound: outbound)
+
+        session.canvasDidReceive(
+            type: CanvasWire.annotation,
+            object: annotationJSON(sketch: Data()),
+            outbound: outbound
+        )
+        XCTAssertEqual(session.pendingUploadCount, 0)
+
+        // Positive marker: an annotation that does have a freeze uploads, and
+        // the pipeline is FIFO, so a dropped one would have been posted first.
+        freeze(session, outbound: outbound, daemon: daemon, captureMs: 1_000, colour: TestImages.RGBA(0, 0, 200))
+        session.canvasDidReceive(
+            type: CanvasWire.annotation,
+            object: annotationJSON(sketch: Data()),
+            outbound: outbound
+        )
+        guard waitUntil("the second annotation to be uploaded", { daemon.annotationCalls.count == 1 }) else { return }
+        XCTAssertEqual(daemon.annotationCalls.count, 1)
+        XCTAssertEqual(daemon.annotationCalls[0].sourceCaptureId, "capture-1")
+    }
+
+    func test_secondFreezeBeforeDone_replacesTheHeldCapture() {
+        let daemon = FakeDaemon()
+        let outbound = FakeOutbound()
+        let session = makeSession(daemon: daemon)
+        hello(session, outbound: outbound)
+
+        freeze(session, outbound: outbound, daemon: daemon, captureMs: 1_000, colour: TestImages.RGBA(200, 0, 0))
+        freeze(session, outbound: outbound, daemon: daemon, captureMs: 2_000, colour: TestImages.RGBA(0, 200, 0))
+        XCTAssertEqual(daemon.captureCalls.count, 2)
+
+        session.canvasDidReceive(
+            type: CanvasWire.annotation,
+            object: annotationJSON(sketch: Data()),
+            outbound: outbound
+        )
+
+        guard waitUntil("the annotation to be uploaded", { daemon.annotationCalls.count == 1 }) else { return }
+        let upload = daemon.annotationCalls[0]
+        XCTAssertEqual(upload.sourceCaptureId, "capture-2")
+        XCTAssertEqual(TestImages.pixel(inPNG: upload.compositePNG, x: 5, y: 5), TestImages.RGBA(0, 200, 0))
+    }
+
+    func test_capturePostFailedAtFreeze_annotationPathPostsTheCaptureFirst() {
+        let daemon = FakeDaemon()
+        daemon.scriptCaptures([.failure(FakeDaemonFailure())])
+        let outbound = FakeOutbound()
+        let session = makeSession(daemon: daemon)
+        hello(session, outbound: outbound)
+        freeze(session, outbound: outbound, daemon: daemon, captureMs: 1_000, colour: TestImages.RGBA(0, 0, 200))
+
+        session.canvasDidReceive(
+            type: CanvasWire.annotation,
+            object: annotationJSON(sketch: Data()),
+            outbound: outbound
+        )
+
+        guard waitUntil("the annotation to be uploaded", { daemon.annotationCalls.count == 1 }) else { return }
+        XCTAssertEqual(daemon.captureCalls.count, 2)
+        // The re-post carries the full, uncropped frame, not the composite.
+        XCTAssertEqual(daemon.captureCalls[1].width, 40)
+        XCTAssertEqual(daemon.captureCalls[1].height, 30)
+        XCTAssertEqual(pngSize(daemon.captureCalls[1].png), CGSize(width: 40, height: 30))
+        XCTAssertEqual(daemon.annotationCalls[0].sourceCaptureId, "capture-2")
+    }
+
+    func test_failedUpload_isRetriedWithBackoff_andOrderIsPreservedAcrossQueuedAnnotations() {
+        let daemon = FakeDaemon()
+        daemon.scriptAnnotations([.failure(FakeDaemonFailure()), .failure(FakeDaemonFailure())])
+        let outbound = FakeOutbound()
+        var delays: [TimeInterval] = []
+        let delaysLock = NSLock()
+        let session = CanvasSession(
+            deviceName: "Zhao's iPad",
+            daemon: daemon,
+            status: CanvasStatus(),
+            workQueue: DispatchQueue(label: "test.canvas.work", qos: .utility),
+            now: Date.init,
+            sleep: { seconds in delaysLock.withLock { delays.append(seconds) } }
+        )
+        hello(session, outbound: outbound)
+
+        freeze(session, outbound: outbound, daemon: daemon, captureMs: 1_000, colour: TestImages.RGBA(200, 0, 0))
+        session.canvasDidReceive(
+            type: CanvasWire.annotation,
+            object: annotationJSON(sketch: Data()),
+            outbound: outbound
+        )
+        freeze(session, outbound: outbound, daemon: daemon, captureMs: 2_000, colour: TestImages.RGBA(0, 200, 0),
+               waitForCapturePost: false)
+        session.canvasDidReceive(
+            type: CanvasWire.annotation,
+            object: annotationJSON(sketch: Data()),
+            outbound: outbound
+        )
+
+        guard waitUntil("both annotations to be uploaded", { daemon.annotationCalls.count == 4 }) else { return }
+        XCTAssertEqual(
+            daemon.annotationCalls.map(\.sourceCaptureId),
+            ["capture-1", "capture-1", "capture-1", "capture-2"]
+        )
+        XCTAssertEqual(delaysLock.withLock { delays }, [0.5, 1.0])
+        waitUntil("the pending count to fall back to zero") { session.pendingUploadCount == 0 }
+    }
+
+    func test_captureNotFound_repostsTheCaptureThenTheAnnotationSucceeds() {
+        let daemon = FakeDaemon()
+        daemon.scriptAnnotations([.failure(DaemonClientError.captureNotFound)])
+        let outbound = FakeOutbound()
+        var delays: [TimeInterval] = []
+        let delaysLock = NSLock()
+        let session = CanvasSession(
+            deviceName: "Zhao's iPad",
+            daemon: daemon,
+            status: CanvasStatus(),
+            workQueue: DispatchQueue(label: "test.canvas.work", qos: .utility),
+            now: Date.init,
+            sleep: { seconds in delaysLock.withLock { delays.append(seconds) } }
+        )
+        hello(session, outbound: outbound)
+        freeze(session, outbound: outbound, daemon: daemon, captureMs: 1_000, colour: TestImages.RGBA(0, 0, 200))
+
+        session.canvasDidReceive(
+            type: CanvasWire.annotation,
+            object: annotationJSON(sketch: Data()),
+            outbound: outbound
+        )
+
+        guard waitUntil("the retried annotation to be uploaded", { daemon.annotationCalls.count == 2 }) else { return }
+        XCTAssertEqual(daemon.captureCalls.count, 2)
+        XCTAssertEqual(daemon.annotationCalls.map(\.sourceCaptureId), ["capture-1", "capture-2"])
+        // Re-posting after .captureNotFound retries at once, with no backoff.
+        XCTAssertEqual(delaysLock.withLock { delays }, [])
+    }
+
+    func test_undecodableSketch_isDropped_andLaterJobsStillRun() {
+        let daemon = FakeDaemon()
+        let outbound = FakeOutbound()
+        let session = makeSession(daemon: daemon)
+        hello(session, outbound: outbound)
+
+        freeze(session, outbound: outbound, daemon: daemon, captureMs: 1_000, colour: TestImages.RGBA(200, 0, 0))
+        session.canvasDidReceive(
+            type: CanvasWire.annotation,
+            object: annotationJSON(sketch: Data([0x01, 0x02, 0x03, 0x04])),
+            outbound: outbound
+        )
+
+        freeze(session, outbound: outbound, daemon: daemon, captureMs: 2_000, colour: TestImages.RGBA(0, 200, 0),
+               waitForCapturePost: false)
+        session.canvasDidReceive(
+            type: CanvasWire.annotation,
+            object: annotationJSON(sketch: Data()),
+            outbound: outbound
+        )
+
+        guard waitUntil("the second annotation to be uploaded", { daemon.annotationCalls.count == 1 }) else { return }
+        XCTAssertEqual(daemon.annotationCalls[0].sourceCaptureId, "capture-2")
+        waitUntil("the pending count to fall back to zero") { session.pendingUploadCount == 0 }
+    }
 }
+

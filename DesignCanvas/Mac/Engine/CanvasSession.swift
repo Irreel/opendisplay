@@ -143,7 +143,12 @@ final class CanvasSession: SenderCanvasDelegate {
 
     // MARK: - SenderCanvasDelegate
 
-    func canvasPeerDidHello(_ peer: CanvasPeer, outbound: CanvasOutbound) {}
+    func canvasPeerDidHello(_ peer: CanvasPeer, outbound: CanvasOutbound) {
+        lock.lock()
+        self.peer = peer
+        self.outbound = outbound
+        lock.unlock()
+    }
 
     /// Runs at capture rate: one deep copy into the ring and nothing else —
     /// no logging, no I/O (global constraint "logging discipline").
@@ -157,6 +162,8 @@ final class CanvasSession: SenderCanvasDelegate {
         switch type {
         case CanvasWire.freeze:
             handleFreeze(object, outbound: outbound)
+        case CanvasWire.annotation:
+            handleAnnotation(object)
         default:
             break
         }
@@ -202,6 +209,46 @@ final class CanvasSession: SenderCanvasDelegate {
             Log.info("canvas: discarding previous freeze capture")
         }
         Log.info("canvas: freeze accepted at captureMs \(found.captureMs)")
+    }
+
+    // MARK: - annotation
+
+    /// Hands the held freeze capture and the sketch to the upload pipeline
+    /// and returns: the composite and the upload are the pipeline's work, not
+    /// the sender queue's. `createdAt` is stamped here rather than when the
+    /// upload finally lands, so retries keep their original order in the
+    /// store.
+    private func handleAnnotation(_ object: [String: Any]) {
+        guard let message = AnnotationMessage(json: object) else {
+            Log.info("canvas: unparseable annotation")
+            return
+        }
+        let createdAt = now()
+
+        lock.lock()
+        guard let installID = peer?.installID else {
+            lock.unlock()
+            Log.info("canvas: dropping annotation — no peer has said hello yet")
+            return
+        }
+        guard let capture = heldCapture else {
+            lock.unlock()
+            Log.info("canvas: dropping annotation — no freeze capture is held")
+            return
+        }
+        heldCapture = nil
+        enqueueLocked(.annotation(AnnotationJob(
+            capture: capture,
+            sketchPNG: message.sketchPNG,
+            zoomRect: message.zoomRect,
+            viewport: message.viewport,
+            note: message.note,
+            deviceID: installID,
+            createdAt: createdAt
+        )))
+        lock.unlock()
+
+        Log.info("canvas: annotation queued (\(message.sketchPNG.count)-byte sketch)")
     }
 
     // MARK: - sending
@@ -290,6 +337,15 @@ final class CanvasSession: SenderCanvasDelegate {
         }
     }
 
+    /// Composites once, then uploads until it succeeds. A sketch that will
+    /// not decode is the one unrecoverable case — retrying cannot change it —
+    /// so that annotation is dropped and the queue moves on. Everything else
+    /// is retried behind `BackoffPolicy`, which later jobs wait out: losing a
+    /// round's order would show the designer a reply for a sketch they drew
+    /// after the one still in flight.
+    ///
+    /// A fresh policy per job is exactly "reset after a success", since the
+    /// only way out of the loop is a successful upload or a dead session.
     private static func runAnnotation(
         _ job: AnnotationJob,
         deviceName: String,
@@ -297,7 +353,62 @@ final class CanvasSession: SenderCanvasDelegate {
         workQueue: DispatchQueue,
         sleep: (TimeInterval) async -> Void,
         isAlive: () -> Bool
-    ) async {}
+    ) async {
+        let composited = await onWorkQueue(workQueue, catching: {
+            try Compositor.composite(base: job.capture.image, sketchPNG: job.sketchPNG, zoomRect: job.zoomRect)
+        })
+        guard case .success(let composite) = composited else {
+            Log.info("canvas: dropping annotation — the sketch could not be composited")
+            return
+        }
+
+        var backoff = BackoffPolicy()
+        var repostedAfterMissingCapture = false
+
+        while isAlive() {
+            if job.capture.captureID == nil {
+                do {
+                    job.capture.captureID = try await daemon.postCapture(
+                        png: composite.screenshotPNG,
+                        width: job.capture.width,
+                        height: job.capture.height
+                    )
+                } catch {
+                    Log.info("canvas: capture post failed (\(error)); retrying the annotation")
+                    await sleep(backoff.next())
+                    continue
+                }
+            }
+            guard let captureID = job.capture.captureID else { continue }
+
+            let upload = AnnotationUpload(
+                sourceCaptureId: captureID,
+                compositePNG: composite.compositePNG,
+                sketchPNG: composite.sketchPNG,
+                viewport: job.viewport,
+                zoomRect: job.zoomRect,
+                note: job.note,
+                deviceID: job.deviceID,
+                deviceName: deviceName,
+                createdAt: job.createdAt
+            )
+            do {
+                let annotationID = try await daemon.postAnnotation(upload)
+                Log.info("canvas: annotation \(annotationID) uploaded")
+                return
+            } catch DaemonClientError.captureNotFound where !repostedAfterMissingCapture {
+                // The daemon's store lost (or never had) the capture: post it
+                // again and try once more straight away, before falling back
+                // to the ordinary backoff path.
+                repostedAfterMissingCapture = true
+                job.capture.captureID = nil
+                Log.info("canvas: the daemon has no such capture; re-posting it")
+            } catch {
+                Log.info("canvas: annotation upload failed (\(error)); retrying")
+                await sleep(backoff.next())
+            }
+        }
+    }
 
     /// Hops to `workQueue` for CPU-bound image work and comes back with the
     /// result, so neither the sender's queue nor the pipeline's cooperative
