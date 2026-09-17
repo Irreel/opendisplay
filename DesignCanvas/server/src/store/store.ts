@@ -65,6 +65,33 @@ export class UnknownCaptureError extends Error {
   }
 }
 
+/**
+ * The only shape of id this store will join into a path: the alphabet its own
+ * `uuidv7()` and `createSortableId()` produce, and nothing that can name a parent
+ * directory or a second path segment.
+ */
+export const STORE_ID_PATTERN = /^[A-Za-z0-9-]+$/;
+
+/** An id from a request that must never be joined into a store path (M3). */
+export class InvalidStoreIdError extends Error {
+  constructor(readonly id: string) {
+    super(`Invalid store id: ${id}`);
+  }
+}
+
+/**
+ * Guards every id that becomes part of a filesystem path. Ids arrive from route
+ * paths *and* from request bodies (`sourceCaptureId`), and `../annotations/<id>`
+ * in a body made the store read an annotation's directory as a capture and copy a
+ * file out of it. One check here covers every caller, whatever the route table does.
+ */
+function requireStoreId(id: string): string {
+  if (!STORE_ID_PATTERN.test(id)) {
+    throw new InvalidStoreIdError(id);
+  }
+  return id;
+}
+
 export class DesignCanvasStore {
   readonly paths: StorePaths;
 
@@ -120,12 +147,14 @@ export class DesignCanvasStore {
   }
 
   async getCapture(id: string): Promise<CaptureWithPath | null> {
+    requireStoreId(id);
     await this.ensure();
     return readCapture(this.paths.captures, id);
   }
 
   /** Throws UnknownCaptureError (and writes nothing) if sourceCaptureId has no capture. */
   async createAnnotation(input: CreateAnnotationInput): Promise<AnnotationMeta> {
+    requireStoreId(input.sourceCaptureId);
     await this.ensure();
     const capture = await this.getCapture(input.sourceCaptureId);
     if (!capture) {
@@ -196,6 +225,7 @@ export class DesignCanvasStore {
     id: string,
     servedAt = new Date().toISOString(),
   ): Promise<AnnotationMeta> {
+    requireStoreId(id);
     return this.withLock(id, async () => {
       const annotation = await this.getAnnotation(id);
       if (!annotation) {
@@ -218,6 +248,7 @@ export class DesignCanvasStore {
     reply: SetReplyInput,
     at = new Date().toISOString(),
   ): Promise<AnnotationMeta | null> {
+    requireStoreId(id);
     return this.withLock(id, async () => {
       const annotation = await this.getAnnotation(id);
       if (!annotation) {
@@ -236,6 +267,7 @@ export class DesignCanvasStore {
     id: string,
     leaseMs = CLAIM_LEASE_MS,
   ): Promise<ClaimedAnnotation | null> {
+    requireStoreId(id);
     return this.withLock(id, async () => {
       const annotation = await this.getAnnotation(id);
       if (!annotation) return null;
@@ -288,6 +320,7 @@ export class DesignCanvasStore {
   }
 
   async getAnnotation(id: string): Promise<AnnotationWithPath | null> {
+    requireStoreId(id);
     await this.ensure();
     return readAnnotation(this.paths.annotations, id);
   }
@@ -320,6 +353,7 @@ export class DesignCanvasStore {
   }
 
   async deleteAnnotation(id: string): Promise<boolean> {
+    requireStoreId(id);
     const annotation = await this.getAnnotation(id);
     if (!annotation) {
       return false;

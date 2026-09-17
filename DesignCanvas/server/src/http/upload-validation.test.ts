@@ -97,6 +97,61 @@ test('a JSON annotation body missing compositeBase64 is 400 invalid_request, not
   });
 });
 
+// M3: `sourceCaptureId` comes from the request body and was joined straight into a
+// store path. `../annotations/<id>` made the store read an annotation's directory as
+// if it were a capture, and copy a file from it into a new annotation.
+
+test('posting an annotation with a traversing sourceCaptureId is 400 invalid_request and creates nothing', async () => {
+  await withServer(async (store, base) => {
+    const real = await store.createAnnotation({
+      composite: Buffer.from('c'),
+      sketch: Buffer.from('s'),
+      sourceCaptureId: (
+        await store.createCapture({ screenshot: Buffer.from('p'), viewport: { w: 1, h: 1 } })
+      ).id,
+      viewport: { w: 1, h: 1 },
+      zoomRect: null,
+      device: { id: 'device-1', name: 'iPad' },
+    });
+
+    const response = await fetch(`${base}/v1/annotations`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        compositeBase64: Buffer.from('c').toString('base64'),
+        sketchBase64: Buffer.from('s').toString('base64'),
+        sourceCaptureId: `../annotations/${real.id}`,
+        viewport: { w: 1, h: 1 },
+        zoomRect: null,
+        device: { id: 'device-1', name: 'iPad' },
+      }),
+    });
+
+    await assertInvalidRequest(response);
+    assert.deepEqual(await readdir(store.paths.annotations), [real.id], 'nothing new was written');
+  });
+});
+
+test('an id with a separator or a percent-escape is refused before it reaches a path', async () => {
+  await withServer(async (_store, base) => {
+    for (const id of ['../x', 'a/b', '..', 'a%2Fb', '']) {
+      const response = await fetch(`${base}/v1/annotations`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          compositeBase64: Buffer.from('c').toString('base64'),
+          sketchBase64: Buffer.from('s').toString('base64'),
+          sourceCaptureId: id,
+          viewport: { w: 1, h: 1 },
+          zoomRect: null,
+          device: { id: 'device-1', name: 'iPad' },
+        }),
+      });
+      assert.equal(response.status, 400, `id ${JSON.stringify(id)}`);
+    }
+  });
+});
+
 test('posting an annotation with an unknown sourceCaptureId is 404 capture_not_found and creates nothing', async () => {
   await withServer(async (store, base) => {
     const response = await fetch(`${base}/v1/annotations`, {

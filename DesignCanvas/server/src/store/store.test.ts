@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { CAPTURE_TTL_MS } from '../shared.js';
-import { DesignCanvasStore, UnknownCaptureError } from './store.js';
+import { DesignCanvasStore, InvalidStoreIdError, UnknownCaptureError } from './store.js';
 import { createStorePaths } from './paths.js';
 
 const silentLogger = { event: async () => {} } as unknown as ConstructorParameters<
@@ -155,6 +155,47 @@ test('creating an annotation with an unknown sourceCaptureId fails and writes no
   );
   const entries = await readdir(store.paths.annotations);
   assert.deepEqual(entries, []);
+});
+
+test('every id that reaches a store path is validated (M3)', async () => {
+  const store = await tempStore();
+  const bad = ['../annotations/x', 'a/b', '..', '.', 'a b', 'a.b', ''];
+  for (const id of bad) {
+    await assert.rejects(
+      store.getCapture(id),
+      (error: unknown) => error instanceof InvalidStoreIdError,
+      `getCapture ${JSON.stringify(id)}`,
+    );
+    await assert.rejects(
+      store.getAnnotation(id),
+      (error: unknown) => error instanceof InvalidStoreIdError,
+      `getAnnotation ${JSON.stringify(id)}`,
+    );
+    await assert.rejects(
+      store.deleteAnnotation(id),
+      (error: unknown) => error instanceof InvalidStoreIdError,
+      `deleteAnnotation ${JSON.stringify(id)}`,
+    );
+    await assert.rejects(
+      store.claimAnnotation(id),
+      (error: unknown) => error instanceof InvalidStoreIdError,
+      `claimAnnotation ${JSON.stringify(id)}`,
+    );
+    await assert.rejects(
+      store.setReply(id, { status: 'applied', message: null, prUrl: null }),
+      (error: unknown) => error instanceof InvalidStoreIdError,
+      `setReply ${JSON.stringify(id)}`,
+    );
+    await assert.rejects(
+      store.markAnnotationServed(id),
+      (error: unknown) => error instanceof InvalidStoreIdError,
+      `markAnnotationServed ${JSON.stringify(id)}`,
+    );
+  }
+  // The ids this store actually mints pass, and so does a plain unknown one.
+  const capture = await store.createCapture({ screenshot: Buffer.from('p'), viewport: { w: 1, h: 1 } });
+  assert.match(capture.id, /^[A-Za-z0-9-]+$/);
+  assert.equal(await store.getAnnotation('no-such-annotation'), null);
 });
 
 test('a v2 annotation record reads with device, zoomRect, and reply defaults', async () => {

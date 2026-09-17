@@ -13,7 +13,7 @@ import {
 } from '../shared.js';
 import type { Logger } from '../log.js';
 import type { CreateAnnotationInput, DesignCanvasStore, SetReplyInput } from '../store/store.js';
-import { UnknownCaptureError } from '../store/store.js';
+import { InvalidStoreIdError, UnknownCaptureError } from '../store/store.js';
 import { toRound } from '../store/rounds.js';
 import { AnnotationEventBus, isLoopback, openAnnotationStream } from './event-stream.js';
 import { daemonIdentity } from './identity.js';
@@ -491,6 +491,16 @@ function sendError(response: ServerResponse, error: unknown): void {
   }
   if (error instanceof HttpError) {
     sendJson(response, error.statusCode, { error: error.code, message: error.message });
+    return;
+  }
+  // An id the store refused to join into a path (M3). It is a malformed request
+  // wherever it came from — a route segment or a body field — so it is one answer,
+  // not two: 400 invalid_request.
+  if (error instanceof InvalidStoreIdError) {
+    sendJson(response, 400, {
+      error: 'invalid_request',
+      message: 'Ids must match [A-Za-z0-9-]+.',
+    });
     return;
   }
   if (error instanceof BodyTooLargeError) {
