@@ -753,13 +753,14 @@ crashing or retrying — any canvas JSON payload of 32768 bytes or more
 before it is ever queued for the wire, the same refusal point that guards
 every other outbound control message. A `rounds` snapshot that would not
 otherwise fit is shrunk before sending, in steps: first the full
-snapshot; if that is still too large, every entry's `message` and `note`
-are cut from their 2048-byte baseline down to 256 bytes each; if it still
-does not fit, the oldest rounds (the tail, since `rounds` is newest-first)
-are dropped one at a time until it does. The 256-byte cut is a
-last-resort shrink under size pressure, separate from — and tighter than
-— the 2048-byte limit `message` already carries on both `agentReply` and
-every `rounds` entry (section 11.2).
+snapshot; if that is still too large, every entry's `message` (already at
+most 2048 bytes per section 11.2) and `note` (which carries no cap of its
+own before this point) are both cut to 256 bytes; if it still does not
+fit, the oldest rounds (the tail, since `rounds` is newest-first) are
+dropped one at a time until it does. This 256-byte cut is a last-resort
+shrink under size pressure — tighter than `message`'s existing 2048-byte
+limit, and the first and only limit a `rounds` entry's `note` is ever
+given.
 
 ### 11.5 No input on a canvas session
 
