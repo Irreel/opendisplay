@@ -107,7 +107,7 @@ struct MenuBarView: View {
         Text("iPads")
             .font(.caption)
             .foregroundColor(.secondary)
-        if model.devices.isEmpty {
+        if model.devices.isEmpty && model.discoveredDevices.isEmpty {
             Text("No iPad connected \u{2014} open Design Canvas on the iPad")
                 .font(.caption2)
                 .foregroundColor(.secondary)
@@ -129,6 +129,25 @@ struct MenuBarView: View {
                     Text(device.onUSB ? "USB" : "WiFi")
                         .font(.caption2)
                         .foregroundColor(.secondary)
+                    Button("Disconnect") { model.disconnectDevice(id: device.id) }
+                        .font(.caption2)
+                }
+            }
+            // The only way to start a WiFi iPad: the sender auto-connects a WiFi
+            // device only once the user has connected to it from a UI, and this
+            // is that UI (I1, PRD D1).
+            ForEach(model.discoveredDevices) { device in
+                HStack {
+                    Text(device.name)
+                        .font(.caption)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    Spacer()
+                    Text(device.transport)
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                    Button("Connect") { model.connectDevice(id: device.id) }
+                        .font(.caption2)
                 }
             }
         }

@@ -28,7 +28,7 @@ a dated row per run rather than overwriting the last one.
 
 | # | Check | How to verify |
 |---|---|---|
-| 1 | **Pairing** | WiFi: the iPad appears in the Mac's device list via Bonjour and connects with one tap the first time (trust-on-first-use); reconnecting later needs no further prompt. USB: plugging the cable connects with no discovery step at all. |
+| 1 | **Pairing** | WiFi: the iPad appears under **iPads** in the Mac app's menu via Bonjour, with a **Connect** button; clicking it once starts the session, and relaunching the Mac app reconnects that iPad with no further click (the first connect is what makes the sender remember it). **Disconnect** ends the session and stops the auto-reconnect. USB: plugging the cable connects with no discovery step and no click at all. |
 | 2 | **Mirror** | The iPad shows a live, low-latency mirror of the Mac's virtual display. Tap and drag on the iPad's screen and confirm nothing moves, clicks, or scrolls on the Mac — a canvas session forwards no input in either direction. |
 | 3 | **Zoom** | Pinch-to-zoom and pan on the iPad are smooth, local, and view-only: the Mac's display and the live mirror are unaffected by zooming in or out. |
 | 4 | **Freeze exactness** | Point the mirrored display at something moving (the clock/spinner). Enter Draw Mode at a moment you can identify precisely (e.g. "the second hand crosses 12"). After the round completes, open `~/.claude/channels/design-canvas/annotations/<id>/screenshot.png` for that annotation and confirm it shows that exact moment — not a frame noticeably before or after. |

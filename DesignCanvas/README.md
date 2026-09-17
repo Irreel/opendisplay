@@ -132,8 +132,13 @@ real device or simulator, and run.
 
 1. Launch the Mac app. Grant Screen Recording if it isn't already granted
    (this needs one relaunch to take effect).
-2. Open the Design Canvas app on the iPad and pick the Mac from the list
-   (WiFi) or connect it over USB.
+2. Open the Design Canvas app on the iPad and leave it open. The iPad is
+   the listener: it has no list of Macs and nothing to pick. Over **USB**,
+   plugging the cable in connects on its own. Over **WiFi**, the iPad
+   appears under **iPads** in the Mac app's menu — click **Connect** next
+   to it. That first click is also what makes the Mac auto-reconnect that
+   iPad on later launches; **Disconnect** stops both the session and the
+   auto-reconnect.
 3. In the Mac app, click **Open Project…** and choose the repo you want
    Claude Code to work in (or pick it from **Recent projects**).
 4. Click **Set server build…** and point it at
@@ -161,10 +166,11 @@ real device or simulator, and run.
 ## Security note
 
 WiFi connections use OpenDisplay's existing trust-on-first-use model: a
-remembered device's Bonjour `id` auto-reconnects without a prompt, and a
-brand-new one needs one click to accept. This means **a LAN neighbour who
-spoofs a remembered device's Bonjour id can get dialed and push a sketch
-into your Claude Code session** — the same way any OpenDisplay peer could
+brand-new device needs one click (**Connect**, in the Mac app's menu) and
+is remembered from then on, after which its Bonjour `id` auto-reconnects
+with no prompt. There is no pairing code and no verification of that id, so
+**a LAN neighbour who spoofs a remembered device's Bonjour id can get
+dialed and push a sketch into your Claude Code session** — the same way any OpenDisplay peer could
 push input on a plain mirroring session, except here what lands is a
 sketch that becomes context for an agent that can edit your files.
 

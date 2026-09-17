@@ -12,6 +12,7 @@ import Foundation
 @MainActor
 final class OpenDisplaySenderEngine: SenderEngine {
     private(set) var devices: [EngineDevice] = []
+    private(set) var discovered: [DiscoveredDevice] = []
     var onDevicesChanged: (() -> Void)?
 
     var pendingUploads: Int { hub.pendingUploads }
@@ -22,6 +23,7 @@ final class OpenDisplaySenderEngine: SenderEngine {
     private let hub: CanvasHub
     private var controller: SenderController?
     private var sessionListObserver: AnyCancellable?
+    private var controllerObserver: AnyCancellable?
     private var sessionObservers: [AnyCancellable] = []
 
     init(daemon: DaemonAPI = DaemonClient()) {
@@ -47,21 +49,44 @@ final class OpenDisplaySenderEngine: SenderEngine {
         self.controller = controller
 
         // `$sessions` covers devices arriving and leaving; each session's own `objectWillChange`
-        // covers its status and transport changing while it stays in the list. Both are received
-        // on the main run loop so the rebuild reads the value *after* it lands —
-        // `objectWillChange` fires before it.
+        // covers its status and transport changing while it stays in the list; the controller's
+        // own `objectWillChange` covers what it discovers (Bonjour results and usbmuxd devices),
+        // which is the list the menu offers a Connect for. All are received on the main run loop
+        // so the rebuild reads the value *after* it lands — `objectWillChange` fires before it.
         sessionListObserver = controller.$sessions
             .receive(on: RunLoop.main)
             .sink { [weak self] sessions in self?.observeEach(sessions) }
+        controllerObserver = controller.objectWillChange
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in self?.rebuild() }
     }
 
     func stop() {
         sessionListObserver = nil
+        controllerObserver = nil
         sessionObservers = []
         controller?.sessions.forEach { $0.sender?.stop() }
         controller = nil
         hub.stop()
-        publish([])
+        publish([], [])
+    }
+
+    // MARK: - Connecting
+
+    /// `userInitiated` is the point: it overrides the "one session per physical device" guard (so
+    /// a tap right after unplugging is not swallowed by the dying USB session's grace) and, for a
+    /// WiFi target, adds the device to the controller's remembered set, which is what makes it
+    /// auto-reconnect on later launches.
+    func connect(id: String) {
+        guard let controller,
+              let entry = controller.deviceEntries.first(where: { $0.id == id }),
+              let target = entry.preferredTarget else { return }
+        controller.connect(to: target, userInitiated: true)
+    }
+
+    func disconnect(id: String) {
+        guard let controller, let session = controller.session(for: id) else { return }
+        controller.disconnect(session)
     }
 
     func setProjectName(_ name: String?) {
@@ -85,16 +110,28 @@ final class OpenDisplaySenderEngine: SenderEngine {
 
     private func rebuild() {
         guard let controller else { return }
-        publish(controller.sessions.map {
-            EngineDevice(id: $0.id, name: $0.name, status: $0.status, onUSB: $0.onUSB)
-        })
+        // One row per physical device, as the controller groups them; the ones it is already
+        // serving are the `devices` list, and the rest are what a Connect is offered for. A row
+        // with no target at all is a session whose device vanished from discovery — it is covered
+        // by `devices`, never offered a Connect.
+        let waiting = controller.deviceEntries.compactMap { entry -> DiscoveredDevice? in
+            guard controller.session(for: entry) == nil, entry.preferredTarget != nil else { return nil }
+            return DiscoveredDevice(id: entry.id, name: entry.name, transport: entry.transportLabel)
+        }
+        publish(
+            controller.sessions.map {
+                EngineDevice(id: $0.id, name: $0.name, status: $0.status, onUSB: $0.onUSB)
+            },
+            waiting
+        )
     }
 
     /// Only a real change is republished — sessions publish often (frame counters, throughput),
     /// and none of that is in `EngineDevice`.
-    private func publish(_ latest: [EngineDevice]) {
-        guard latest != devices else { return }
+    private func publish(_ latest: [EngineDevice], _ latestDiscovered: [DiscoveredDevice]) {
+        guard latest != devices || latestDiscovered != discovered else { return }
         devices = latest
+        discovered = latestDiscovered
         onDevicesChanged?()
     }
 }

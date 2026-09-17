@@ -17,6 +17,7 @@ import XCTest
 @MainActor
 final class FakeSenderEngine: SenderEngine {
     var devices: [EngineDevice] = []
+    var discovered: [DiscoveredDevice] = []
     var onDevicesChanged: (() -> Void)?
     var pendingUploads = 0
 
@@ -24,15 +25,21 @@ final class FakeSenderEngine: SenderEngine {
     private(set) var stopCount = 0
     private(set) var projectNames: [String?] = []
     private(set) var channelStates: [ChannelState] = []
+    private(set) var connected: [String] = []
+    private(set) var disconnected: [String] = []
 
     func start() { startCount += 1 }
     func stop() { stopCount += 1 }
     func setProjectName(_ name: String?) { projectNames.append(name) }
     func setChannelState(_ state: ChannelState) { channelStates.append(state) }
+    func connect(id: String) { connected.append(id) }
+    func disconnect(id: String) { disconnected.append(id) }
 
-    /// What the real engine does when `SenderController.sessions` changes.
-    func publish(_ devices: [EngineDevice]) {
+    /// What the real engine does when `SenderController`'s sessions or its
+    /// discovery change.
+    func publish(_ devices: [EngineDevice], discovered: [DiscoveredDevice] = []) {
         self.devices = devices
+        self.discovered = discovered
         onDevicesChanged?()
     }
 }
@@ -629,5 +636,33 @@ final class AppModelTests: XCTestCase {
 
         engine.publish([])
         XCTAssertEqual(model.devices, [], "a device going away republishes too")
+    }
+
+    /// I1: `SenderController` auto-connects USB devices and *remembered* WiFi
+    /// ones, and a device is only remembered once the user connected to it from
+    /// a UI. Design Canvas had no such UI, so a WiFi iPad could never be
+    /// started from this app at all — against PRD D1.
+    func testDiscoveredDevicesRepublish() {
+        let (model, _, engine) = makeEngineModel()
+        XCTAssertEqual(model.discoveredDevices, [])
+
+        let waiting = DiscoveredDevice(id: "service:Zhao's iPad", name: "Zhao's iPad", transport: "WiFi")
+        engine.publish([], discovered: [waiting])
+        XCTAssertEqual(model.discoveredDevices, [waiting])
+
+        let connected = EngineDevice(id: "wifi:Zhao's iPad", name: "Zhao's iPad", status: "Streaming", onUSB: false)
+        engine.publish([connected], discovered: [])
+        XCTAssertEqual(model.devices, [connected])
+        XCTAssertEqual(model.discoveredDevices, [], "a device being served is no longer offered a Connect")
+    }
+
+    func testConnectAndDisconnectForwardToTheEngine() {
+        let (model, _, engine) = makeEngineModel()
+
+        model.connectDevice(id: "service:Zhao's iPad")
+        model.disconnectDevice(id: "wifi:Zhao's iPad")
+
+        XCTAssertEqual(engine.connected, ["service:Zhao's iPad"])
+        XCTAssertEqual(engine.disconnected, ["wifi:Zhao's iPad"])
     }
 }

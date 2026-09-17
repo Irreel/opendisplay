@@ -40,6 +40,11 @@ final class AppModel: ObservableObject {
     /// Mirror of `engine.devices`, republished whenever the engine reports a change. The menu
     /// reads this rather than the engine so the view stays a plain `@ObservedObject` consumer.
     @Published private(set) var devices: [EngineDevice] = []
+    /// Mirror of `engine.discovered`: devices the sender can see but is not serving. The menu
+    /// offers each one a Connect, which is the only way a WiFi iPad can be started at all —
+    /// `SenderController` auto-connects a WiFi device only once the user has connected to it
+    /// once (I1, PRD D1).
+    @Published private(set) var discoveredDevices: [DiscoveredDevice] = []
     /// Sketches the engine has accepted and not yet delivered to the daemon, refreshed on every
     /// health poll. Nothing reported this before, so a daemon that was down looked like a sketch
     /// that had vanished (I3).
@@ -121,9 +126,11 @@ final class AppModel: ObservableObject {
         self.probe = probe ?? { await daemon.probe() }
 
         devices = engine?.devices ?? []
+        discoveredDevices = engine?.discovered ?? []
         engine?.onDevicesChanged = { [weak self, weak engine] in
             guard let self, let engine else { return }
             self.devices = engine.devices
+            self.discoveredDevices = engine.discovered
         }
         engine?.start()
 
@@ -134,6 +141,19 @@ final class AppModel: ObservableObject {
         }
         restartSupervisor()
         startHealthPolling()
+    }
+
+    // MARK: - Devices
+
+    /// Dial a discovered device (a menu tap). A WiFi device connected this way is remembered by
+    /// the sender, so later launches auto-reconnect it.
+    func connectDevice(id: String) {
+        engine?.connect(id: id)
+    }
+
+    /// Stop serving a connected device, and stop auto-connecting it.
+    func disconnectDevice(id: String) {
+        engine?.disconnect(id: id)
     }
 
     // MARK: - Recents
