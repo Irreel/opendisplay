@@ -39,15 +39,50 @@ export function isLoopback(request: IncomingMessage): boolean {
 }
 
 /**
- * Shared SSE plumbing: writes the standard preamble, then lets `subscribe`
- * attach to whatever bus it's given via the `write(eventName, data)` callback.
- * Unsubscribes on close/error either side. Both the annotation stream and the
+ * An SSE comment line: ignored by every consumer's parser (the Mac's
+ * `SSEParser`, the channel subscriber's frame reader), and the only thing that
+ * keeps a silent stream alive.
+ */
+export const SSE_KEEPALIVE = ': ka\n\n';
+
+/**
+ * How often that comment goes out. Both consumers give up on an idle stream:
+ * the Mac's `URLRequest` has a 60 s *idle* timeout, and the channel's `fetch`
+ * hits undici's 300 s body timeout — which dropped `channelCount` to 0 for the
+ * length of a reconnect and made the Mac app read a routine reconnect as "the
+ * user quit Claude Code". 15 s is comfortably inside both.
+ */
+export const SSE_KEEPALIVE_MS = 15_000;
+
+/**
+ * Starts the keep-alive beat for one stream. `unref()`'d, so it never holds
+ * the daemon's event loop open; the caller clears it when the stream closes.
+ */
+export function startSseKeepAlive(
+  response: ServerResponse,
+  intervalMs = SSE_KEEPALIVE_MS,
+): NodeJS.Timeout {
+  const timer = setInterval(() => {
+    if (!response.writableEnded) {
+      response.write(SSE_KEEPALIVE);
+    }
+  }, intervalMs);
+  timer.unref();
+  return timer;
+}
+
+/**
+ * Shared SSE plumbing: writes the standard preamble, beats a keep-alive
+ * comment every `keepAliveMs`, then lets `subscribe` attach to whatever bus
+ * it's given via the `write(eventName, data)` callback. Unsubscribes and stops
+ * the beat on close/error either side. Both the annotation stream and the
  * rounds stream (rounds-stream.ts) are built on this.
  */
 export function openSseStream(
   request: IncomingMessage,
   response: ServerResponse,
   subscribe: (write: (eventName: string, data: string) => void) => () => void,
+  keepAliveMs = SSE_KEEPALIVE_MS,
 ): void {
   response.writeHead(200, {
     'content-type': 'text/event-stream',
@@ -61,9 +96,14 @@ export function openSseStream(
     }
   };
   const unsubscribe = subscribe(write);
-  request.on('close', unsubscribe);
-  request.on('error', unsubscribe);
-  response.on('error', unsubscribe);
+  const keepAlive = startSseKeepAlive(response, keepAliveMs);
+  const close = () => {
+    clearInterval(keepAlive);
+    unsubscribe();
+  };
+  request.on('close', close);
+  request.on('error', close);
+  response.on('error', close);
 }
 
 /** Holds an SSE connection open, writing `annotation.pending` events until the client disconnects. */

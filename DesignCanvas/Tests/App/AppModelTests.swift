@@ -168,7 +168,11 @@ final class AppModelTests: XCTestCase {
         XCTAssertEqual(model.sessionState.display, .ownedAttached, "a channel attaching clears the timeout")
     }
 
-    // MARK: - 6. Auto-clear when the owned channel drops back to 0.
+    // MARK: - 6. Auto-clear when the owned channel drops back to 0 — but only after TWO
+    // consecutive authoritative zeros. The channel process's SSE stream reconnects (undici's
+    // 300 s body timeout closes an idle one), and for the ~0.5 s of that gap the daemon honestly
+    // reports zero subscribers. Ending the session on one such poll turned a routine reconnect
+    // into "existing session detected", which only Reset clears (I2).
 
     func testAutoClearsSessionStartedWhenChannelDrops() async {
         let (model, probe, _, _) = makeModel(childPid: 100)
@@ -183,8 +187,38 @@ final class AppModelTests: XCTestCase {
 
         probe.result = .healthy(health(pid: 100, channelCount: 0))
         await model.pollOnce()
-        XCTAssertFalse(model.sessionStarted, "channel dropping to 0 after ownedAttached auto-clears")
+        XCTAssertTrue(model.sessionStarted, "one zero could be a channel reconnect in progress")
+
+        await model.pollOnce()
+        XCTAssertFalse(model.sessionStarted, "a second zero means the user really quit Claude Code")
         XCTAssertEqual(model.sessionState.display, .daemonOnly)
+    }
+
+    func testAChannelReconnectGapDoesNotEndAnOwnedSession() async {
+        let (model, probe, _, _) = makeModel(childPid: 100)
+        probe.result = .healthy(health(pid: 100, channelCount: 0))
+        await model.pollOnce()
+
+        model.sessionStarted = true
+        probe.result = .healthy(health(pid: 100, channelCount: 1))
+        await model.pollOnce()
+        XCTAssertEqual(model.sessionState.display, .ownedAttached)
+
+        // The gap: the channel's stream is between connections for one poll.
+        probe.result = .healthy(health(pid: 100, channelCount: 0))
+        await model.pollOnce()
+        XCTAssertTrue(model.sessionStarted)
+
+        // It reconnects, and the session is back to attached with no Reset.
+        probe.result = .healthy(health(pid: 100, channelCount: 1))
+        await model.pollOnce()
+        XCTAssertTrue(model.sessionStarted)
+        XCTAssertEqual(model.sessionState.display, .ownedAttached)
+
+        // And the zero counter started over: one more zero is not two.
+        probe.result = .healthy(health(pid: 100, channelCount: 0))
+        await model.pollOnce()
+        XCTAssertTrue(model.sessionStarted, "the run of zeros restarted after the reconnect")
     }
 
     // MARK: - 6b. Auto-clear requires an AUTHORITATIVE zero: `channelCount()` also reads as 0 for

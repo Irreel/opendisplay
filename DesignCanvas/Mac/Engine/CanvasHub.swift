@@ -57,9 +57,14 @@ final class CanvasHub {
         guard consumer == nil else { return }
         let updates = daemon.roundUpdates()
         consumer = Task { [weak self] in
-            for await update in updates {
+            for await event in updates {
                 guard let self else { return }
-                self.deliver(update)
+                switch event {
+                case .connected:
+                    self.resendSnapshots()
+                case .update(let update):
+                    self.deliver(update)
+                }
             }
         }
     }
@@ -67,6 +72,18 @@ final class CanvasHub {
     func stop() {
         consumer?.cancel()
         consumer = nil
+    }
+
+    /// A (re)connection of the rounds stream. The daemon replays nothing, so
+    /// any `round.updated` emitted while the stream was down is lost — every
+    /// connected device is given a fresh snapshot instead (I2). On the first
+    /// connection this repeats what their hellos just sent, which is harmless:
+    /// a snapshot replaces the iPad's list rather than adding to it.
+    private func resendSnapshots() {
+        prune()
+        for entry in sessions {
+            entry.session?.resendSnapshot()
+        }
     }
 
     /// Offered to every live session; each one decides whether the update is

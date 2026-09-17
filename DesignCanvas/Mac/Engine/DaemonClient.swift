@@ -66,6 +66,18 @@ struct RoundUpdate: Equatable {
     let round: CanvasRound
 }
 
+/// One item from the daemon's rounds stream.
+///
+/// `.connected` is how the engine learns a connection was just established,
+/// and it always precedes that connection's updates. It matters because the
+/// daemon has no event replay: a `round.updated` emitted while the stream was
+/// down is simply gone, and the only cure is to ask for a fresh snapshot
+/// (`CanvasHub`, I2).
+enum RoundStreamEvent: Equatable {
+    case connected
+    case update(RoundUpdate)
+}
+
 enum DaemonClientError: Error, Equatable {
     case badStatus(Int)
     case undecodable
@@ -80,7 +92,7 @@ protocol DaemonAPI: AnyObject {
     func rounds(deviceID: String, limit: Int) async throws -> [CanvasRound]
     /// Reconnects forever with backoff until the stream is cancelled (see
     /// `DaemonClient.roundUpdates()`).
-    func roundUpdates() -> AsyncStream<RoundUpdate>
+    func roundUpdates() -> AsyncStream<RoundStreamEvent>
 }
 
 /// The Mac engine's one client for the local Node daemon at
@@ -246,11 +258,17 @@ final class DaemonClient: DaemonAPI {
     /// (never `.lines`, which drops the blank lines that delimit SSE
     /// frames). A non-200 response, a transport error, or the stream simply
     /// ending all count as a failed connection and trigger `backoff.next()`
-    /// before reconnecting; backoff resets once the first byte of a 200
-    /// connection arrives. Runs until the returned stream is cancelled —
-    /// `onTermination` fires when the consumer stops iterating (including
-    /// when the stream is deallocated), which cancels the underlying `Task`.
-    func roundUpdates() -> AsyncStream<RoundUpdate> {
+    /// before reconnecting; backoff resets — and `.connected` is yielded —
+    /// once the first byte of a 200 connection arrives. Runs until the
+    /// returned stream is cancelled — `onTermination` fires when the consumer
+    /// stops iterating (including when the stream is deallocated), which
+    /// cancels the underlying `Task`.
+    ///
+    /// `timeoutInterval` is an *idle* timer, and its 60 s default cut this
+    /// stream off about once a minute: an hour is long enough that only a real
+    /// outage ends a connection, while the daemon's 15 s keep-alive comment
+    /// means an idle-but-live stream never trips it at all (I2).
+    func roundUpdates() -> AsyncStream<RoundStreamEvent> {
         let baseURL = self.baseURL
         let session = self.session
         let sleep = self.sleep
@@ -262,7 +280,8 @@ final class DaemonClient: DaemonAPI {
                     var parser = SSEParser()
                     var receivedFirstByte = false
                     do {
-                        let request = URLRequest(url: baseURL.appendingPathComponent("v1/rounds/stream"))
+                        var request = URLRequest(url: baseURL.appendingPathComponent("v1/rounds/stream"))
+                        request.timeoutInterval = 3_600
                         let (byteStream, response) = try await session.bytes(for: request)
                         guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
                             let status = (response as? HTTPURLResponse)?.statusCode ?? -1
@@ -273,10 +292,11 @@ final class DaemonClient: DaemonAPI {
                             if !receivedFirstByte {
                                 receivedFirstByte = true
                                 backoff.reset()
+                                continuation.yield(.connected)
                             }
                             for event in parser.feed(Data([byte])) where event.event == "round.updated" {
                                 if let update = DaemonClient.decodeRoundUpdate(event.data) {
-                                    continuation.yield(update)
+                                    continuation.yield(.update(update))
                                 }
                             }
                         }

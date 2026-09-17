@@ -124,17 +124,35 @@ final class CanvasSession: SenderCanvasDelegate {
 
     /// Every hello, including the re-hellos a rotation causes: the iPad keeps
     /// no round history of its own, so the snapshot is what shows a reply
-    /// that landed while it was away (spec section 5.4). A daemon that cannot
-    /// answer still gets an empty snapshot out, so the device is not left
-    /// waiting on one.
+    /// that landed while it was away (spec section 5.4).
     func canvasPeerDidHello(_ peer: CanvasPeer, outbound: CanvasOutbound) {
         lock.lock()
         self.peer = peer
         self.outbound = outbound
         lock.unlock()
 
+        sendRoundsSnapshot(deviceID: peer.installID, via: outbound)
+    }
+
+    /// The same snapshot hello sends, on demand. `CanvasHub` calls this after
+    /// the daemon's rounds stream (re)connects: the daemon replays nothing, so
+    /// a `round.updated` emitted while the stream was down is only ever seen
+    /// again in a snapshot (I2). A session with no device or no link has
+    /// nothing to send and nowhere to send it.
+    func resendSnapshot() {
+        lock.lock()
+        let deviceID = peer?.installID
+        let outbound = self.outbound
+        lock.unlock()
+
+        guard let deviceID, let outbound else { return }
+        sendRoundsSnapshot(deviceID: deviceID, via: outbound)
+    }
+
+    /// A daemon that cannot answer still gets an empty snapshot out, so the
+    /// device is not left waiting on one.
+    private func sendRoundsSnapshot(deviceID: String, via outbound: CanvasOutbound) {
         let daemon = self.daemon
-        let deviceID = peer.installID
         Task {
             let rounds: [CanvasRound]
             do {

@@ -55,7 +55,7 @@ final class FakeDaemon: DaemonAPI {
     private var storedCaptureCalls: [(png: Data, width: Int, height: Int)] = []
     private var storedAnnotationCalls: [AnnotationUpload] = []
     private var storedRoundsCalls: [(deviceID: String, limit: Int)] = []
-    private var updatesContinuation: AsyncStream<RoundUpdate>.Continuation?
+    private var updatesContinuation: AsyncStream<RoundStreamEvent>.Continuation?
     private var annotationsAlwaysFail = false
 
     /// Fired after the round-updates stream terminates.
@@ -121,17 +121,25 @@ final class FakeDaemon: DaemonAPI {
         return try result.get()
     }
 
-    func roundUpdates() -> AsyncStream<RoundUpdate> {
+    /// Yields `.connected` at once, as `DaemonClient` does when a connection
+    /// is established, then whatever `emit`/`emitConnected` push into it.
+    func roundUpdates() -> AsyncStream<RoundStreamEvent> {
         AsyncStream { continuation in
             lock.withLock { updatesContinuation = continuation }
             continuation.onTermination = { [weak self] _ in self?.onUpdatesTerminated?() }
+            continuation.yield(.connected)
         }
     }
 
     /// Pushes one update into the stream `roundUpdates()` handed out. Safe to
     /// call before anyone subscribes (it is then a no-op).
     func emit(_ update: RoundUpdate) {
-        lock.withLock { updatesContinuation }?.yield(update)
+        lock.withLock { updatesContinuation }?.yield(.update(update))
+    }
+
+    /// A reconnect: the stream was down, and is up again.
+    func emitConnected() {
+        lock.withLock { updatesContinuation }?.yield(.connected)
     }
 }
 

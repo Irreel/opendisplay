@@ -324,6 +324,59 @@ final class DaemonClientTests: XCTestCase {
 
     // MARK: - roundUpdates()
 
+    /// `URLRequest.timeoutInterval` is an *idle* timer, and its 60 s default
+    /// cut an idle rounds stream off about once a minute — losing any
+    /// `round.updated` emitted in the reconnect gap, which the daemon never
+    /// replays (I2).
+    func test_roundUpdates_requestsTheStreamWithAnHourLongIdleTimeout() async {
+        let eventJSON = #"{"annotationId":"a1","createdAt":"2026-01-01T00:00:00.000Z","status":"queued","deviceId":"dev-1"}"#
+        StubURLProtocol.scripts = [
+            .init(statusCode: 200, bodyChunks: [Data("event: round.updated\ndata: \(eventJSON)\n\n".utf8)]),
+        ]
+        let client = makeClient()
+        var iterator = client.roundUpdates().makeAsyncIterator()
+
+        _ = await iterator.next()   // .connected
+        _ = await iterator.next()   // the update
+
+        guard let recorded = StubURLProtocol.recorded.first else {
+            return XCTFail("expected a recorded request")
+        }
+        XCTAssertEqual(recorded.request.url?.path, "/v1/rounds/stream")
+        XCTAssertEqual(recorded.request.timeoutInterval, 3_600)
+    }
+
+    /// The engine has no other way to know a gap happened, and a gap means a
+    /// lost update: `.connected` is what makes it ask for a fresh snapshot.
+    func test_roundUpdates_yieldsConnected_beforeEachConnectionsEvents() async {
+        let firstEventJSON = #"{"annotationId":"a1","createdAt":"2026-01-01T00:00:00.000Z","status":"queued","deviceId":"dev-1"}"#
+        let secondEventJSON = #"{"annotationId":"a2","createdAt":"2026-01-01T00:00:01.000Z","status":"sent","deviceId":"dev-1"}"#
+        StubURLProtocol.scripts = [
+            .init(statusCode: 200, bodyChunks: [Data("event: round.updated\ndata: \(firstEventJSON)\n\n".utf8)]),
+            .init(statusCode: 200, bodyChunks: [Data("event: round.updated\ndata: \(secondEventJSON)\n\n".utf8)]),
+        ]
+        let client = makeClient()
+        var iterator = client.roundUpdates().makeAsyncIterator()
+
+        let connected = await iterator.next()
+        XCTAssertEqual(connected, .connected)
+        let first = await iterator.next()
+        XCTAssertEqual(first, .update(RoundUpdate(
+            deviceID: "dev-1",
+            round: CanvasRound(annotationId: "a1", createdAt: "2026-01-01T00:00:00.000Z",
+                               status: .queued, message: nil, prUrl: nil, note: nil)
+        )))
+
+        let reconnected = await iterator.next()
+        XCTAssertEqual(reconnected, .connected, "the reconnect announces itself too")
+        let second = await iterator.next()
+        XCTAssertEqual(second, .update(RoundUpdate(
+            deviceID: "dev-1",
+            round: CanvasRound(annotationId: "a2", createdAt: "2026-01-01T00:00:01.000Z",
+                               status: .sent, message: nil, prUrl: nil, note: nil)
+        )))
+    }
+
     func test_roundUpdates_deliversEvents_andReconnectsWithBackoffBetweenConnections() async {
         let firstEventJSON = #"{"annotationId":"a1","createdAt":"2026-01-01T00:00:00.000Z","status":"queued","deviceId":"dev-1"}"#
         let secondEventJSON = #"{"annotationId":"a2","createdAt":"2026-01-01T00:00:01.000Z","status":"sent","deviceId":"dev-1"}"#
@@ -356,14 +409,22 @@ final class DaemonClientTests: XCTestCase {
         let stream = client.roundUpdates()
         var iterator = stream.makeAsyncIterator()
 
-        let first = await iterator.next()
-        XCTAssertEqual(first?.deviceID, "dev-1")
-        XCTAssertEqual(first?.round.annotationId, "a1")
-        XCTAssertEqual(first?.round.status, .queued)
+        let connected = await iterator.next()
+        XCTAssertEqual(connected, .connected)
+        guard case .update(let first)? = await iterator.next() else {
+            return XCTFail("expected the first round update")
+        }
+        XCTAssertEqual(first.deviceID, "dev-1")
+        XCTAssertEqual(first.round.annotationId, "a1")
+        XCTAssertEqual(first.round.status, .queued)
 
-        let second = await iterator.next()
-        XCTAssertEqual(second?.round.annotationId, "a2")
-        XCTAssertEqual(second?.round.status, .sent)
+        let reconnected = await iterator.next()
+        XCTAssertEqual(reconnected, .connected)
+        guard case .update(let second)? = await iterator.next() else {
+            return XCTFail("expected the second round update")
+        }
+        XCTAssertEqual(second.round.annotationId, "a2")
+        XCTAssertEqual(second.round.status, .sent)
 
         XCTAssertEqual(recorder.first, 0.5)
     }

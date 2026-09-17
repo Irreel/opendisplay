@@ -440,6 +440,48 @@ final class CanvasSessionTests: XCTestCase {
         XCTAssertEqual(RoundsMessage(json: object), RoundsMessage(rounds: []))
     }
 
+    /// The daemon never replays `round.updated`, so an update emitted while
+    /// the engine's stream was down is gone for good. A reconnect therefore
+    /// repeats what hello sends (I2).
+    func test_resendSnapshot_sendsTheSnapshotAgain() throws {
+        let daemon = FakeDaemon()
+        let rounds = [round("a1", status: .applied, message: "done")]
+        daemon.scriptRounds(.success(rounds))
+        let outbound = FakeOutbound()
+        let session = makeSession(daemon: daemon)
+
+        hello(session, outbound: outbound, installID: "install-A")
+        guard waitUntil("hello's snapshot to be sent", { outbound.payloads.count == 1 }) else { return }
+
+        session.resendSnapshot()
+
+        guard waitUntil("the resent snapshot", { outbound.payloads.count == 2 }) else { return }
+        XCTAssertEqual(daemon.roundsCalls.map(\.deviceID), ["install-A", "install-A"])
+        let object = try XCTUnwrap(
+            (try? JSONSerialization.jsonObject(with: outbound.payloads[1])) as? [String: Any]
+        )
+        XCTAssertEqual(object["type"] as? String, CanvasWire.rounds)
+        XCTAssertEqual(RoundsMessage(json: object), RoundsMessage(rounds: rounds))
+    }
+
+    func test_resendSnapshot_withNoDeviceOrNoLink_sendsNothing() {
+        let daemon = FakeDaemon()
+        let outbound = FakeOutbound()
+        let session = makeSession(daemon: daemon)
+
+        // No hello yet: there is no device to ask about.
+        session.resendSnapshot()
+        XCTAssertTrue(daemon.roundsCalls.isEmpty)
+
+        hello(session, outbound: outbound, installID: "install-A")
+        guard waitUntil("hello's snapshot to be sent", { outbound.payloads.count == 1 }) else { return }
+        session.canvasLinkDidDrop()
+
+        session.resendSnapshot()
+        XCTAssertEqual(daemon.roundsCalls.count, 1, "nothing to send it down")
+        XCTAssertEqual(outbound.payloads.count, 1)
+    }
+
     // MARK: - deliver
 
     private func agentReplies(_ outbound: FakeOutbound) -> [[String: Any]] {

@@ -74,6 +74,12 @@ final class AppModel: ObservableObject {
     private var lastProbeResult: HealthProbeResult = .refused
     /// Display of the previous poll; used only to detect the ownedAttached -> count 0 transition.
     private var previousDisplay: DisplayState = .noDaemon
+    /// How many polls in a row have seen a healthy daemon report zero channel subscribers.
+    /// Two are required to end an owned session — see `pollOnce()`.
+    private var consecutiveHealthyZeroPolls = 0
+    /// This app's own session has been seen attached at least once, so a run of zeros after it
+    /// means the channel went away rather than never having arrived.
+    private var ownedChannelWasAttached = false
     /// Depth counter backing `isResetting`: `startNewAfterReset()` calls `resetProcesses()`, and
     /// both use `beginResetting()`/`endResetting()`, so a plain Bool would get set back to false
     /// by the inner `resetProcesses()` call's own cleanup while the outer `startNewAfterReset()`
@@ -243,12 +249,26 @@ final class AppModel: ObservableObject {
         let count = SessionStateClassifier.channelCount(result)
 
         // Our owned+attached session's channel dropped back to 0 -> the user quit Claude Code.
-        // End the session without a button. Gated on an AUTHORITATIVE zero (`result` healthy) —
-        // `channelCount()` also returns 0 for a non-healthy probe (.timedOut/.refused/etc.), and
-        // a single transient stall (the probe times out at 1.5s) must never be read as "the
-        // channel dropped to 0"; that would orphan a live session over one missed poll.
-        if case .healthy = result, previousDisplay == .ownedAttached, count == 0 {
+        // End the session without a button, under two gates:
+        //
+        //  - the zero must be AUTHORITATIVE (`result` healthy) — `channelCount()` also returns 0
+        //    for a non-healthy probe (.timedOut/.refused/etc.), and a single transient stall (the
+        //    probe times out at 1.5s) must never be read as "the channel dropped to 0"; that
+        //    would orphan a live session over one missed poll;
+        //  - and there must be TWO of them in a row. The channel process's SSE stream reconnects
+        //    (undici closes an idle body after 300s), and for the ~0.5s of that gap the daemon
+        //    honestly reports zero subscribers. One such poll used to end the session, after
+        //    which the next poll showed "existing session detected" — recoverable only by Reset.
+        if case .healthy = result, count == 0 {
+            consecutiveHealthyZeroPolls += 1
+        } else {
+            consecutiveHealthyZeroPolls = 0
+        }
+        if previousDisplay == .ownedAttached { ownedChannelWasAttached = true }
+        if !sessionStarted { ownedChannelWasAttached = false }
+        if ownedChannelWasAttached, consecutiveHealthyZeroPolls >= 2 {
             sessionStarted = false
+            ownedChannelWasAttached = false
         }
 
         // Launch clock: stamps on the sessionStarted false -> true edge. `startSession()` also

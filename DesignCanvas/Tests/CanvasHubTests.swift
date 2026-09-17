@@ -110,6 +110,30 @@ final class CanvasHubTests: XCTestCase {
         XCTAssertEqual(daemon.captureCalls.count, 1)
     }
 
+    /// I2: the rounds stream reconnects (an idle timeout, a daemon restart),
+    /// and the daemon replays nothing — so every connection is followed by a
+    /// fresh snapshot for each connected device.
+    func test_aConnectedRoundsStream_resendsEverySessionsSnapshot() {
+        let daemon = FakeDaemon()
+        let hub = CanvasHub(daemon: daemon, status: CanvasStatus())
+        let outboundA = FakeOutbound()
+        let outboundB = FakeOutbound()
+        let sessionA = session(hub, deviceName: "iPad A", installID: "install-A", outbound: outboundA)
+        let sessionB = session(hub, deviceName: "iPad B", installID: "install-B", outbound: outboundB)
+        guard waitUntil("both hellos' snapshots", {
+            outboundA.payloads.count == 1 && outboundB.payloads.count == 1
+        }) else { return }
+
+        hub.start()
+        defer { hub.stop() }
+
+        guard waitUntil("both devices to be re-sent their snapshot", {
+            outboundA.payloads.count == 2 && outboundB.payloads.count == 2
+        }) else { return }
+        XCTAssertNotNil(sessionA)
+        XCTAssertNotNil(sessionB)
+    }
+
     func test_stop_endsConsumptionOfTheDaemonStream() {
         let daemon = FakeDaemon()
         let terminated = expectation(description: "the round-updates stream terminated")
