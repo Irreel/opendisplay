@@ -191,6 +191,30 @@ final class CanvasModelTests: XCTestCase {
         XCTAssertTrue(receiver.messages(ofType: CanvasWire.annotation).isEmpty)
     }
 
+    func test_done_withoutAStroke_storesNothingForALaterHelloToResend() {
+        let model = drawingModel(strokes: 0)
+        model.done(sketchPNG: sketch)
+        model.welcomeReceived(canvas: true)
+
+        XCTAssertTrue(receiver.messages(ofType: CanvasWire.annotation).isEmpty)
+    }
+
+    /// A `done` the state machine will refuse must not touch the payload a
+    /// stranded round is still waiting to resend.
+    func test_done_whileWaitingToResend_keepsTheStrandedSketch() {
+        let model = drawingModel()
+        model.done(sketchPNG: sketch)
+        receiver.completeSend(false)
+        XCTAssertEqual(model.drawState, .retry)
+
+        model.done(sketchPNG: Data([0x01, 0x02, 0x03]))
+        model.welcomeReceived(canvas: true)
+
+        let annotations = receiver.messages(ofType: CanvasWire.annotation)
+        XCTAssertEqual(annotations.count, 2)
+        XCTAssertEqual(AnnotationMessage(json: annotations[1])?.sketchPNG, sketch)
+    }
+
     func test_sendCompletingTrue_returnsLiveAndClearsTheStrokes() {
         let model = drawingModel()
         model.note = "note"
@@ -203,6 +227,25 @@ final class CanvasModelTests: XCTestCase {
 
         model.strokesCleared()
         XCTAssertFalse(model.shouldClearStrokes)
+    }
+
+    /// `.sending` and `.retry` are states the user is otherwise blind to: the
+    /// picture is live again, Draw is disabled, and nothing says why.
+    func test_sendIndicator_followsTheSendThroughARetry() {
+        let model = drawingModel()
+        XCTAssertEqual(model.sendIndicator, CanvasModel.SendIndicator.none)
+
+        model.done(sketchPNG: sketch)
+        XCTAssertEqual(model.sendIndicator, .sending)
+
+        receiver.completeSend(false)
+        XCTAssertEqual(model.sendIndicator, .waitingToResend)
+
+        model.welcomeReceived(canvas: true)
+        XCTAssertEqual(model.sendIndicator, .sending)
+
+        receiver.completeSend(true)
+        XCTAssertEqual(model.sendIndicator, CanvasModel.SendIndicator.none)
     }
 
     func test_sendCompletingFalse_retriesAndResendsTheSamePayloadOnTheNextHello() {
@@ -377,6 +420,26 @@ final class CanvasModelTests: XCTestCase {
 
         model.pingReceived(channel: "nonsense", project: nil)
         XCTAssertEqual(model.channel, ChannelState.none)
+    }
+
+    /// The Mac's channel and project only mean anything while the Mac is on
+    /// the other end: a hop that cannot be up must not read "working" (P1).
+    func test_linkLoss_clearsTheChannelAndProjectUntilTheNextPing() {
+        let model = makeModel()
+        model.pingReceived(channel: "attached", project: "opendisplay")
+
+        receiver.isConnected = false
+        model.connectionChanged(connected: false)
+        XCTAssertEqual(model.channel, ChannelState.none)
+        XCTAssertNil(model.project)
+
+        receiver.isConnected = true
+        model.connectionChanged(connected: true)
+        XCTAssertEqual(model.channel, ChannelState.none, "still nothing until the Mac says so")
+
+        model.pingReceived(channel: "attached", project: "opendisplay")
+        XCTAssertEqual(model.channel, .attached)
+        XCTAssertEqual(model.project, "opendisplay")
     }
 
     // MARK: - Draw Mode availability

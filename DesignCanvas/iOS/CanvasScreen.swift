@@ -203,6 +203,13 @@ struct CanvasScreen: View {
             }
             .buttonStyle(.bordered)
             .accessibilityLabel("Agent replies")
+
+            // SENDING and RETRY are otherwise invisible: the picture is live
+            // again and Draw is disabled with nothing to explain it.
+            if canvas.sendIndicator != .none {
+                Divider().frame(height: 26)
+                SendChip(indicator: canvas.sendIndicator)
+            }
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 6)
@@ -245,6 +252,45 @@ extension DrawModeStateMachine.Notice {
             return "Rotating rebuilds the Mac's display, so Draw Mode ended. Your sketch was kept."
         case .interruptedByLinkLoss:
             return "The connection dropped, so Draw Mode ended. Your sketch was kept."
+        }
+    }
+}
+
+/// Where a sketch that has left Draw Mode has got to (`technical_doc.md`
+/// section 11: a link that drops mid-upload must read as "will resend").
+private struct SendChip: View {
+    let indicator: CanvasModel.SendIndicator
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: icon)
+                .font(.caption)
+                .foregroundStyle(indicator == .waitingToResend ? .orange : .secondary)
+            Text(title)
+                .font(.caption.weight(.medium))
+                .lineLimit(1)
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(label)
+    }
+
+    private var icon: String {
+        indicator == .waitingToResend ? "clock.arrow.circlepath" : "paperplane"
+    }
+
+    private var title: String {
+        switch indicator {
+        case .sending, .none: return "Sending sketch…"
+        case .waitingToResend: return "Sketch kept — will resend"
+        }
+    }
+
+    private var label: String {
+        switch indicator {
+        case .sending, .none:
+            return "Sending the sketch to the Mac"
+        case .waitingToResend:
+            return "Sketch kept — it will be resent when the Mac reconnects"
         }
     }
 }

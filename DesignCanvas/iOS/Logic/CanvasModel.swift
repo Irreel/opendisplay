@@ -91,6 +91,25 @@ final class CanvasModel: ObservableObject {
     /// Done is live only in DRAWING with at least one stroke (ruling 7).
     var canSend: Bool { machine.canSend }
 
+    /// What is happening to a sketch that has left Draw Mode but not landed.
+    /// SENDING and RETRY look identical to a user otherwise — the picture is
+    /// live again and Draw is disabled with nothing to explain it — and
+    /// technical_doc.md section 11 requires a link drop mid-upload to be
+    /// visible as "will resend".
+    enum SendIndicator: Equatable {
+        case none
+        case sending
+        case waitingToResend
+    }
+
+    var sendIndicator: SendIndicator {
+        switch drawState {
+        case .sending: return .sending
+        case .retry: return .waitingToResend
+        case .live, .freezing, .drawing: return .none
+        }
+    }
+
     // MARK: - Draw Mode
 
     /// Freeze the picture and ask the Mac to keep the same frame (M1, D9).
@@ -118,6 +137,11 @@ final class CanvasModel: ObservableObject {
     /// Mode was entered with, so a late live frame cannot change what the Mac
     /// crops.
     func done(sketchPNG: Data) {
+        // Only build and store the message when the machine will accept it.
+        // Otherwise a Done the machine refuses — no strokes, or a round still
+        // stranded in RETRY — would leave its payload behind as the thing the
+        // next `hello` resends.
+        guard canSend else { return }
         let trimmed = note.trimmingCharacters(in: .whitespacesAndNewlines)
         pendingAnnotation = AnnotationMessage(sketchPNG: sketchPNG,
                                               zoomRect: entryZoomRect,
@@ -152,6 +176,14 @@ final class CanvasModel: ObservableObject {
         // that the answer may have changed.
         objectWillChange.send()
         guard !connected else { return }
+        // The channel and the project are things a *connected* Mac told us.
+        // With the Mac gone the second hop cannot be up, and P1 asks the panel
+        // to show both hops honestly rather than leave the last ping's answer
+        // standing. The next ping repopulates them; the receiver's own
+        // `CanvasReceiverState` only resets when a new connection is adopted,
+        // which can be much later.
+        channel = .none
+        project = nil
         apply(.linkLost)
     }
 
