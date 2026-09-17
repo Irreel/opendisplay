@@ -268,6 +268,10 @@ targets:
     sources:
       - DesignCanvas/Tests
       - DesignCanvas/Shared
+      # The iPad app's pure logic (Foundation + Combine + CoreGraphics only),
+      # so the zoom maths and the Draw Mode view-model are unit-tested here
+      # rather than through a running app (Task 12).
+      - DesignCanvas/iOS/Logic
       - DesignCanvas/Mac/Engine
       # The menu-bar shell's logic, minus the three files that can only exist
       # inside the app: the @main scene, the SwiftUI menu, and the real engine
