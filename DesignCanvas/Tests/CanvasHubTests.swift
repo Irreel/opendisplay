@@ -73,6 +73,43 @@ final class CanvasHubTests: XCTestCase {
         XCTAssertNotNil(kept)
     }
 
+    /// C1: the hub is the one thing that outlives the session a link drop
+    /// kills, so it is where a frozen frame waits for the sketch the iPad will
+    /// re-send after the reconnect.
+    func test_aReplacementSessionFromTheHubInheritsTheParkedFreezeCapture() {
+        let daemon = FakeDaemon()
+        let hub = CanvasHub(daemon: daemon, status: CanvasStatus())
+        let outbound = FakeOutbound()
+        let first = hub.makeSession(deviceName: "iPad A")
+        first.canvasPeerDidHello(CanvasPeer(installID: "install-A", deviceKind: "ipad"), outbound: outbound)
+        first.canvasDidEncodeFrame(
+            TestImages.solidBGRAPixelBuffer(width: 16, height: 12, color: TestImages.RGBA(0, 0, 200)),
+            captureMs: 1_000
+        )
+        var freeze = FreezeMessage(captureMs: 1_000, zoomRect: .full, t: 1_700_000_000_000).json
+        freeze["type"] = CanvasWire.freeze
+        first.canvasDidReceive(type: CanvasWire.freeze, object: freeze, outbound: outbound)
+        guard waitUntil("the frozen frame to be posted", { daemon.captureCalls.count == 1 }) else { return }
+        first.canvasLinkDidDrop()
+
+        let second = hub.makeSession(deviceName: "iPad A")
+        let secondOutbound = FakeOutbound()
+        second.canvasPeerDidHello(CanvasPeer(installID: "install-A", deviceKind: "ipad"), outbound: secondOutbound)
+        var annotation = AnnotationMessage(
+            sketchPNG: Data(),
+            zoomRect: .full,
+            viewport: CanvasViewport(width: 16, height: 12, scale: 2),
+            note: nil,
+            t: 1_700_000_001_000
+        ).json
+        annotation["type"] = CanvasWire.annotation
+        second.canvasDidReceive(type: CanvasWire.annotation, object: annotation, outbound: secondOutbound)
+
+        guard waitUntil("the resent annotation to be uploaded", { daemon.annotationCalls.count == 1 }) else { return }
+        XCTAssertEqual(daemon.annotationCalls[0].sourceCaptureId, "capture-1")
+        XCTAssertEqual(daemon.captureCalls.count, 1)
+    }
+
     func test_stop_endsConsumptionOfTheDaemonStream() {
         let daemon = FakeDaemon()
         let terminated = expectation(description: "the round-updates stream terminated")

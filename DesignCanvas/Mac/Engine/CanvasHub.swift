@@ -18,6 +18,10 @@ final class CanvasHub {
     private let status: CanvasStatus
     private var sessions: [WeakSession] = []
     private var consumer: Task<Void, Never>?
+    /// Outlives sessions, which is the whole point: a frozen frame and the
+    /// identity of the round it belongs to wait here while the sender rebuilds
+    /// the session a link drop killed (C1).
+    private let parking = CanvasCaptureParkingLot()
 
     init(daemon: DaemonAPI, status: CanvasStatus) {
         self.daemon = daemon
@@ -34,7 +38,7 @@ final class CanvasHub {
     /// A session for one device, wired to the same daemon and status and
     /// registered for round updates.
     func makeSession(deviceName: String) -> CanvasSession {
-        let session = CanvasSession(deviceName: deviceName, daemon: daemon, status: status)
+        let session = CanvasSession(deviceName: deviceName, daemon: daemon, status: status, parking: parking)
         prune()
         sessions.append(WeakSession(session: session))
         return session

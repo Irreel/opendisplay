@@ -69,6 +69,9 @@ final class CanvasSession: SenderCanvasDelegate {
     private let status: CanvasStatus
     private let now: () -> Date
     private let pipeline: UploadPipeline
+    /// Shared with every other session the hub built, so a frozen frame and a
+    /// round's identity survive the session that first saw them (C1).
+    private let parking: CanvasCaptureParkingLot
 
     private let lock = NSLock()
     private var ring = FrameRing()
@@ -78,16 +81,22 @@ final class CanvasSession: SenderCanvasDelegate {
     private weak var outbound: CanvasOutbound?
     private var heldCapture: UploadPipeline.FreezeCapture?
 
+    /// `parking` defaults to a private lot so a session is constructible
+    /// without a hub (tests, and any future single-session caller): it then
+    /// only ever finds what it parked itself, which is the old in-session
+    /// behaviour.
     init(
         deviceName: String,
         daemon: DaemonAPI,
         status: CanvasStatus,
+        parking: CanvasCaptureParkingLot = CanvasCaptureParkingLot(),
         workQueue: DispatchQueue = DispatchQueue(label: "canvas.work", qos: .utility),
         now: @escaping () -> Date = Date.init,
         sleep: @escaping (TimeInterval) async -> Void = { try? await Task.sleep(nanoseconds: UInt64($0 * 1e9)) }
     ) {
         self.daemon = daemon
         self.status = status
+        self.parking = parking
         self.now = now
         self.pipeline = UploadPipeline(
             deviceName: deviceName,
@@ -178,20 +187,19 @@ final class CanvasSession: SenderCanvasDelegate {
         }
     }
 
-    /// Idempotent, because one drop can be reported more than once. Queued
-    /// uploads and the ring stay: the round the designer already pressed Done
-    /// on must still reach Claude Code, and the next hello freezes against the
-    /// same frames.
+    /// Idempotent, because one drop can be reported more than once.
+    ///
+    /// Only the link is forgotten. Queued uploads, the ring and — since C1 —
+    /// the held freeze capture all stay: the round the designer already
+    /// pressed Done on must still reach Claude Code; the next hello freezes
+    /// against the same frames; and a drop in SENDING is answered by the iPad
+    /// re-sending the same `annotation` after the next `hello` (ruling 5), so
+    /// the frame that sketch belongs to has to still be there — here if the
+    /// session survives, in the parking lot if it does not.
     func canvasLinkDidDrop() {
         lock.lock()
         outbound = nil
-        let hadCapture = heldCapture != nil
-        heldCapture = nil
         lock.unlock()
-
-        if hadCapture {
-            Log.info("canvas: link dropped — discarding the held freeze capture")
-        }
     }
 
     func canvasPingFields() -> [String: String] { status.pingFields }
@@ -225,7 +233,14 @@ final class CanvasSession: SenderCanvasDelegate {
         lock.lock()
         let hadPrevious = heldCapture != nil
         heldCapture = capture
+        let installID = peer?.installID
         lock.unlock()
+        // Parked as well as held, so the session that serves the reconnect
+        // after a link drop inherits it. A new freeze from this device
+        // replaces whatever was parked: the designer has moved on.
+        if let installID {
+            parking.park(capture, installID: installID, at: now())
+        }
         pipeline.enqueue(capture: capture)
 
         if hadPrevious {
@@ -236,11 +251,16 @@ final class CanvasSession: SenderCanvasDelegate {
 
     // MARK: - annotation
 
-    /// Hands the held freeze capture and the sketch to the upload pipeline
-    /// and returns: the composite and the upload are the pipeline's work, not
-    /// the sender queue's. `createdAt` is stamped here rather than when the
-    /// upload finally lands, so retries keep their original order in the
-    /// store.
+    /// Hands the freeze capture and the sketch to the upload pipeline and
+    /// returns: the composite and the upload are the pipeline's work, not the
+    /// sender queue's. `createdAt` is stamped here rather than when the upload
+    /// finally lands, so retries keep their original order in the store.
+    ///
+    /// The capture is this session's held one, or — after a link drop rebuilt
+    /// the session under the iPad's re-send — the one parked for this device
+    /// (C1). A `t` already accepted from this device is that re-send arriving
+    /// after the Mac had in fact taken the round: it is acknowledged by being
+    /// dropped, never uploaded twice.
     private func handleAnnotation(_ object: [String: Any]) {
         guard let message = AnnotationMessage(json: object) else {
             Log.info("canvas: unparseable annotation")
@@ -254,13 +274,24 @@ final class CanvasSession: SenderCanvasDelegate {
             Log.info("canvas: dropping annotation — no peer has said hello yet")
             return
         }
-        guard let capture = heldCapture else {
-            lock.unlock()
+        lock.unlock()
+
+        guard !parking.hasAccepted(t: message.t, installID: installID) else {
+            Log.info("canvas: annotation t=\(message.t) was already accepted — dropping the re-send")
+            return
+        }
+
+        lock.lock()
+        let held = heldCapture
+        heldCapture = nil
+        lock.unlock()
+
+        guard let capture = held ?? parking.parkedCapture(installID: installID, now: createdAt) else {
             Log.info("canvas: dropping annotation — no freeze capture is held")
             return
         }
-        heldCapture = nil
-        lock.unlock()
+        parking.removeParkedCapture(installID: installID)
+        parking.recordAccepted(t: message.t, installID: installID)
 
         pipeline.enqueue(annotation: UploadPipeline.AnnotationJob(
             capture: capture,

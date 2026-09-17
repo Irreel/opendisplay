@@ -24,11 +24,29 @@ final class UploadPipeline {
         let image: CGImage
         let width: Int
         let height: Int
+
+        private let lock = NSLock()
+        private var storedCaptureID: String?
+
         /// Set by the capture job, read (and cleared, on `.captureNotFound`)
-        /// by the annotation job. Both run on this pipeline, which is serial
-        /// and hands the capture job out first, so the two accesses are
-        /// ordered by the queue itself and need no lock.
-        var captureID: String?
+        /// by the annotation job. Usually both run on the same serial
+        /// pipeline, which hands the capture job out first — but a capture
+        /// parked across a link drop (`CanvasCaptureParkingLot`) is posted by
+        /// one session's pipeline and consumed by the next session's, so the
+        /// two accesses are not always on the same queue. Once per freeze and
+        /// once per annotation, so the lock costs nothing that matters.
+        var captureID: String? {
+            get {
+                lock.lock()
+                defer { lock.unlock() }
+                return storedCaptureID
+            }
+            set {
+                lock.lock()
+                storedCaptureID = newValue
+                lock.unlock()
+            }
+        }
 
         init(image: CGImage) {
             self.image = image
