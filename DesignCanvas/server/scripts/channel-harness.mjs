@@ -19,6 +19,14 @@
 // Both children are spawned on a dynamically allocated free SERVER_PORT so the
 // harness never collides with a developer's running daemon (or a concurrent
 // harness run), and against a fresh temp store + log path.
+//
+// Timeout handling: the whole flow (`runFlow`) is raced against a rejection
+// that fires when the watchdog aborts an AbortController. This means a real
+// hang REJECTS the race (instead of calling process.exit() from inside the
+// timer, which would skip the try/finally entirely) — so the single
+// try/catch/finally below is the one and only cleanup path, on both success
+// and any failure, including a timeout. `HARNESS_TIMEOUT_MS` overrides the
+// default 60s timeout, for tests of this behavior itself.
 
 import { spawn } from 'node:child_process';
 import { createServer } from 'node:net';
@@ -30,20 +38,13 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 
-const OVERALL_TIMEOUT_MS = 60_000;
+const OVERALL_TIMEOUT_MS = Number(process.env.HARNESS_TIMEOUT_MS ?? 60_000);
 const root = fileURLToPath(new URL('../', import.meta.url)); // DesignCanvas/server/
 const entry = 'dist/index.js';
 const png = Buffer.from(
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAFgwJ/luzc4wAAAABJRU5ErkJggg==',
   'base64',
 );
-
-// Force-exit if anything hangs, so a stuck child or a missed await always
-// produces a non-zero exit and a one-line reason instead of a silent hang.
-const watchdog = setTimeout(() => {
-  process.stderr.write(`channel harness FAILED: timed out after ${OVERALL_TIMEOUT_MS}ms\n`);
-  process.exit(1);
-}, OVERALL_TIMEOUT_MS);
 
 const storeDir = await mkdtemp(join(tmpdir(), 'design-canvas-channel-store-'));
 const logPath = join(storeDir, 'server.log');
@@ -61,7 +62,59 @@ let channelTransport = null;
 let channelStderr = '';
 const channelNotifications = [];
 
+// The watchdog only ever aborts the controller — it never touches process
+// exit or cleanup directly, so there is exactly one place (below) that does
+// either of those things.
+const controller = new AbortController();
+const watchdog = setTimeout(() => {
+  controller.abort(new Error(`Timed out after ${OVERALL_TIMEOUT_MS}ms`));
+}, OVERALL_TIMEOUT_MS);
+
 try {
+  await Promise.race([runFlow(controller.signal), abortRejection(controller.signal)]);
+  process.stdout.write(
+    'channel harness: OK (1 notification with Device:/Zoom region:, annotation served, reply recorded and applied)\n',
+  );
+} catch (error) {
+  process.stderr.write(`channel harness FAILED: ${error?.stack ?? error}\n`);
+  if (channelStderr.trim()) {
+    process.stderr.write(`--- --channel stderr ---\n${channelStderr}\n`);
+  }
+  process.exitCode = 1;
+} finally {
+  clearTimeout(watchdog);
+  // Tear down BOTH children cleanly, on success, a failed assertion, AND a
+  // timeout. Capture the channel child's pid BEFORE closing the client: the
+  // SDK's transport nulls its process reference once close() runs, so
+  // reading .pid afterward would always be null and killByPid would never
+  // actually fire for a channel child that didn't shut down gracefully.
+  const channelPid = channelTransport?.pid ?? null;
+  await client?.close().catch(() => {});
+  killByPid(channelPid);
+  killChild(daemon);
+  await rm(storeDir, { recursive: true, force: true });
+}
+// Force prompt termination now that cleanup has fully run (both children
+// killed, temp dir removed). Without this, an abandoned runFlow() — the
+// loser of the race above, e.g. still polling a now-dead daemon inside
+// waitFor — would keep scheduling timers and hold the event loop open for
+// up to its own inner timeout (several more seconds) before the process
+// actually exited on its own.
+process.exit(process.exitCode ?? 0);
+
+/** Rejects once `signal` aborts, with the abort's reason. Never resolves. */
+function abortRejection(signal) {
+  return new Promise((_resolve, reject) => {
+    const onAbort = () => reject(signal.reason instanceof Error ? signal.reason : new Error(String(signal.reason)));
+    if (signal.aborted) {
+      onAbort();
+      return;
+    }
+    signal.addEventListener('abort', onAbort, { once: true });
+  });
+}
+
+async function runFlow(signal) {
   // 1. Build (the harness runs against dist/).
   await build();
 
@@ -81,7 +134,7 @@ try {
       process.stderr.write(`daemon exited early with code ${code}\n${daemonStderr}`);
     }
   });
-  await waitForHealth(port);
+  await waitForHealth(port, signal);
 
   // 3. Spawn the --channel subscriber. The harness is the MCP client on its
   //    stdio. The MCP SDK's StdioClientTransport spawns the child and performs
@@ -111,7 +164,7 @@ try {
   const capture = await postJson(port, '/v1/captures', {
     screenshotBase64: png.toString('base64'),
     viewport: { w: 800, h: 600 },
-  });
+  }, signal);
   const annotation = await postJson(port, '/v1/annotations', {
     compositeBase64: png.toString('base64'),
     sketchBase64: png.toString('base64'),
@@ -120,14 +173,14 @@ try {
     zoomRect: { x: 0.25, y: 0.1, w: 0.5, h: 0.4 },
     device: { id: 'harness-ipad', name: 'Harness iPad' },
     note: { text: 'Make the primary button larger.' },
-  });
+  }, signal);
   const annotationId = String(annotation.annotationId);
 
   // 5a. Exactly one channel notification arrives at the harness via the
   //     --channel child's MCP stdio.
-  await waitFor(() => channelNotifications.length >= 1, 8000, 'channel notification');
+  await waitFor(() => channelNotifications.length >= 1, 8000, 'channel notification', signal);
   // Allow a beat for any (unwanted) duplicates to surface before asserting "exactly one".
-  await delay(500);
+  await delay(500, undefined, { signal });
   if (channelNotifications.length !== 1) {
     throw new Error(
       `Expected exactly 1 channel notification, got ${channelNotifications.length}: ` +
@@ -149,12 +202,13 @@ try {
   // 5b. The annotation's servedAt becomes non-null (the subscriber marked it served).
   await waitFor(
     async () => {
-      const list = await getJson(port, '/v1/annotations');
+      const list = await getJson(port, '/v1/annotations', signal);
       const found = list.annotations.find((a) => String(a.id) === annotationId);
       return found != null && found.servedAt !== null;
     },
     8000,
     'annotation servedAt',
+    signal,
   );
 
   // 6. Call design_canvas_reply back over the same MCP connection, as Claude
@@ -174,30 +228,14 @@ try {
   // 7. /v1/rounds reports the annotation as applied.
   await waitFor(
     async () => {
-      const { rounds } = await getJson(port, '/v1/rounds?device=harness-ipad');
+      const { rounds } = await getJson(port, '/v1/rounds?device=harness-ipad', signal);
       const round = rounds.find((r) => r.annotationId === annotationId);
       return round != null && round.status === 'applied';
     },
     8000,
     '/v1/rounds reporting applied',
+    signal,
   );
-
-  process.stdout.write(
-    'channel harness: OK (1 notification with Device:/Zoom region:, annotation served, reply recorded and applied)\n',
-  );
-} catch (error) {
-  process.stderr.write(`channel harness FAILED: ${error?.stack ?? error}\n`);
-  if (channelStderr.trim()) {
-    process.stderr.write(`--- --channel stderr ---\n${channelStderr}\n`);
-  }
-  process.exitCode = 1;
-} finally {
-  // Tear down BOTH children cleanly, on success and failure.
-  await client?.close().catch(() => {});
-  killByPid(channelTransport?.pid);
-  killChild(daemon);
-  await rm(storeDir, { recursive: true, force: true });
-  clearTimeout(watchdog);
 }
 
 function killChild(child) {
@@ -233,11 +271,11 @@ function run(command, args) {
   });
 }
 
-async function waitForHealth(targetPort) {
+async function waitForHealth(targetPort, signal) {
   await waitFor(
     async () => {
       try {
-        const response = await fetch(`http://127.0.0.1:${targetPort}/v1/health`);
+        const response = await fetch(`http://127.0.0.1:${targetPort}/v1/health`, { signal });
         return response.ok;
       } catch {
         return false;
@@ -245,14 +283,16 @@ async function waitForHealth(targetPort) {
     },
     5000,
     'daemon health',
+    signal,
   );
 }
 
-async function postJson(targetPort, path, body) {
+async function postJson(targetPort, path, body, signal) {
   const response = await fetch(`http://127.0.0.1:${targetPort}${path}`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(body),
+    signal,
   });
   if (!response.ok) {
     throw new Error(`${path} failed: ${response.status} ${await response.text()}`);
@@ -260,19 +300,20 @@ async function postJson(targetPort, path, body) {
   return response.json();
 }
 
-async function getJson(targetPort, path) {
-  const response = await fetch(`http://127.0.0.1:${targetPort}${path}`);
+async function getJson(targetPort, path, signal) {
+  const response = await fetch(`http://127.0.0.1:${targetPort}${path}`, { signal });
   if (!response.ok) {
     throw new Error(`${path} failed: ${response.status} ${await response.text()}`);
   }
   return response.json();
 }
 
-async function waitFor(predicate, timeoutMs, what) {
+async function waitFor(predicate, timeoutMs, what, signal) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
+    if (signal?.aborted) throw signal.reason instanceof Error ? signal.reason : new Error(String(signal.reason));
     if (await predicate()) return;
-    await delay(50);
+    await delay(50, undefined, { signal });
   }
   throw new Error(`Timed out after ${timeoutMs}ms waiting for ${what ?? 'condition'}`);
 }
