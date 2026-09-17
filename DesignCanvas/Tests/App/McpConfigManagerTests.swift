@@ -24,15 +24,36 @@ final class McpConfigManagerTests: XCTestCase {
         XCTAssertEqual(try designCanvas(in: repo)["command"] as? String, "/usr/bin/node")
     }
 
-    /// Headline fix: an existing entry that already runs `--channel` is used as-is, regardless of
-    /// its command/path, and the file is NOT rewritten.
-    func testCompatibleEntryUsedAsIs() throws {
+    /// M9: `--channel` in the args is not enough. A project shared with, or carried over
+    /// from, ai.cst.2 has a `design-canvas` entry naming *that* product's channel server —
+    /// which would be spawned by Claude Code and would talk to a different daemon, or none.
+    /// The entry must also point at the node path and server entry this app is configured
+    /// with. `.needsUpdate` never rewrites anything by itself: the menu offers the explicit
+    /// "Update .mcp.json entry" button.
+    func testForeignChannelEntryNeedsUpdate() throws {
         let repo = tempRepo()
         try writeConfig(#"{"mcpServers":{"design-canvas":{"command":"designtool","args":["--channel"]}}}"#, to: repo)
         let result = try McpConfigManager().ensureEntry(repoRoot: repo, command: "/usr/bin/node", args: ["/srv/index.js", "--channel"])
-        XCTAssertEqual(result, .alreadyCompatible)
-        // file untouched — still the user's own command
+        XCTAssertEqual(result, .needsUpdate)
+        // still not rewritten by ensureEntry — that is updateEntry's job
         XCTAssertEqual(try designCanvas(in: repo)["command"] as? String, "designtool")
+    }
+
+    /// The same server entry under a different node binary (a Homebrew upgrade, nvm) is
+    /// also an update: Claude Code spawns the command in the file, not the one this app
+    /// resolved.
+    func testEntryWithADifferentNodePathNeedsUpdate() throws {
+        let repo = tempRepo()
+        try writeConfig(#"{"mcpServers":{"design-canvas":{"command":"/opt/homebrew/bin/node","args":["/srv/index.js","--channel"]}}}"#, to: repo)
+        let result = try McpConfigManager().ensureEntry(repoRoot: repo, command: "/usr/bin/node", args: ["/srv/index.js", "--channel"])
+        XCTAssertEqual(result, .needsUpdate)
+    }
+
+    func testEntryWithADifferentServerEntryNeedsUpdate() throws {
+        let repo = tempRepo()
+        try writeConfig(#"{"mcpServers":{"design-canvas":{"command":"/usr/bin/node","args":["/elsewhere/index.js","--channel"]}}}"#, to: repo)
+        let result = try McpConfigManager().ensureEntry(repoRoot: repo, command: "/usr/bin/node", args: ["/srv/index.js", "--channel"])
+        XCTAssertEqual(result, .needsUpdate)
     }
 
     func testMatchingEntryCompatible() throws {
@@ -41,6 +62,16 @@ final class McpConfigManagerTests: XCTestCase {
         _ = try mgr.ensureEntry(repoRoot: repo, command: "/usr/bin/node", args: ["/srv/index.js", "--channel"])
         let again = try mgr.ensureEntry(repoRoot: repo, command: "/usr/bin/node", args: ["/srv/index.js", "--channel"])
         XCTAssertEqual(again, .alreadyCompatible)
+    }
+
+    /// Order and extra arguments are the user's business: what matters is that Claude Code
+    /// will spawn this node binary, on this server entry, in channel mode.
+    func testMatchingEntryWithReorderedOrExtraArgsIsCompatible() throws {
+        let repo = tempRepo()
+        try writeConfig(#"{"mcpServers":{"design-canvas":{"command":"/usr/bin/node","args":["--channel","/srv/index.js","--verbose"]}}}"#, to: repo)
+        let result = try McpConfigManager().ensureEntry(repoRoot: repo, command: "/usr/bin/node", args: ["/srv/index.js", "--channel"])
+        XCTAssertEqual(result, .alreadyCompatible)
+        XCTAssertEqual(try designCanvas(in: repo)["args"] as? [String], ["--channel", "/srv/index.js", "--verbose"])
     }
 
     /// A stale entry from before the run-mode rename (`--mcp`) is flagged for update, not used.
