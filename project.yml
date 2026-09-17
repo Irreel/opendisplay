@@ -212,6 +212,9 @@ targets:
       - DesignCanvas/Mac/Engine
       - Mac/Log.swift
       - Mac/LogPolicies.swift
+      # CanvasSession conforms to SenderCanvasDelegate and talks back through
+      # CanvasOutbound, both declared here (Task 3).
+      - Mac/SenderCanvasHooks.swift
     settings:
       base:
         TEST_HOST: ""
