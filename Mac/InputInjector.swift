@@ -22,7 +22,7 @@ private enum SystemClickMetrics {
 /// Turns normalized touch coordinates from the phone into mouse events on a
 /// target display. Touch semantics: finger down = left button down, finger
 /// move = drag, finger up = button up — i.e. the phone acts as a touchscreen.
-final class InputInjector {
+final class InputInjector: InputSink {
 
     private let displayID: CGDirectDisplayID
     private var isDown = false

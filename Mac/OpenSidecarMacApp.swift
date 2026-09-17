@@ -543,7 +543,10 @@ final class SenderController: ObservableObject {
         let sender = MacSender(transport: transport, name: name, mode: mode,
                                quality: quality, displaySerial: Self.displaySerial(for: id),
                                identityOffset: identityOffset(for: id),
-                               awaitingWake: awaitingWake)
+                               awaitingWake: awaitingWake,
+                               // OpenDisplay forwards input: hand the sender the
+                               // injector for whatever display it ends up with.
+                               inputSinkFactory: { InputInjector(displayID: $0) })
         let session = DeviceSession(id: id, target: target, name: name, sender: sender)
         if case .wifi(let result) = target {
             session.wifiServiceName = serviceName(of: result)

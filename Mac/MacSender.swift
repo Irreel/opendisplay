@@ -204,7 +204,18 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
 
     private var lastHello: PhoneInfo?
     private var helloContinuation: CheckedContinuation<PhoneInfo, Error>?
-    private var inputInjector: InputInjector?
+    // Where receiver input goes, built per display by `inputSinkFactory`.
+    // OpenDisplay passes the factory that builds an InputInjector; a session
+    // that passes none (Design Canvas) forwards no input at all and never
+    // needs Accessibility.
+    private let inputSinkFactory: InputSinkFactory?
+    private var inputInjector: InputSink?
+    // A Design Canvas session's engine. Held weak — the object that owns this
+    // sender owns it too. Non-nil is what makes this a canvas session: the
+    // 16 MiB inbound cap, `welcome.canvas`, no input forwarding, and the
+    // frame/message callbacks below. All of it is dead weight when nil, which
+    // is every OpenDisplay session.
+    private weak var canvasDelegate: SenderCanvasDelegate?
 
     // Liveness: both sides ping every 2s; if nothing arrives for 5s the link
     // is half-open (e.g. usbmuxd accepted but the device is gone) — reconnect.
@@ -347,7 +358,9 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
 
     init(transport: SenderTransport, name: String, mode: CaptureMode,
          quality: StreamQuality = .best, displaySerial: UInt32 = 0x0001,
-         identityOffset: UInt32 = 0, awaitingWake: Bool = false) {
+         identityOffset: UInt32 = 0, awaitingWake: Bool = false,
+         inputSinkFactory: InputSinkFactory? = nil,
+         canvasDelegate: SenderCanvasDelegate? = nil) {
         self.transport = transport
         self.endpointName = name
         self.mode = mode
@@ -355,6 +368,8 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
         self.displaySerial = displaySerial
         self.baseIdentityOffset = identityOffset
         self.awaitingWake = awaitingWake
+        self.inputSinkFactory = inputSinkFactory
+        self.canvasDelegate = canvasDelegate
         super.init()
     }
 
@@ -415,7 +430,9 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
             // Touch back-channel (Milestone 3). Needs Accessibility trust;
             // streaming works without it, so don't interrupt with a prompt —
             // the permission panel's Grant button asks when the user is ready.
-            if !AXIsProcessTrusted() {
+            // A session with no input sink forwards nothing, so it must not
+            // wait on (or even ask about) a permission it will never use.
+            if inputSinkFactory != nil, !AXIsProcessTrusted() {
                 await status("Extending — grant Accessibility for touch input")
                 // Event posting is trust-checked per-post, so it starts working
                 // the moment the user grants — poll just to log/report it.
@@ -549,7 +566,7 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
             }
             throw identityError
         }
-        inputInjector = InputInjector(displayID: vd.displayID)
+        inputInjector = inputSinkFactory?(vd.displayID)
         // Quality scaling: capture/encode below native when requested — the
         // display itself stays native so window layout is unaffected.
         var captureW = (Int(Double(pointsWide * 2) * quality.scale)) & ~1
@@ -641,7 +658,7 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
         let captureW = (Int(Double(pointsWide * 2) * quality.scale)) & ~1
         let captureH = (Int(Double(pointsHigh * 2) * quality.scale)) & ~1
         try await startCapture(display: display, pixelsWide: captureW, pixelsHigh: captureH)
-        inputInjector = InputInjector(displayID: vd.displayID)
+        inputInjector = inputSinkFactory?(vd.displayID)
 
         if UserDefaults.standard.bool(forKey: "testPattern") {
             let id = vd.displayID
