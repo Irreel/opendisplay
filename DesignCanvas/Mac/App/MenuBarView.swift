@@ -132,6 +132,16 @@ struct MenuBarView: View {
                 }
             }
         }
+        // A sketch the engine accepted is the Mac's to deliver, and it keeps
+        // retrying for as long as it takes. Saying so is the difference
+        // between a slow round and a lost one (I3).
+        if model.pendingUploads > 0 {
+            Text(model.pendingUploads == 1
+                 ? "1 sketch waiting for the daemon"
+                 : "\(model.pendingUploads) sketches waiting for the daemon")
+                .font(.caption2)
+                .foregroundColor(.orange)
+        }
     }
 
     @ViewBuilder

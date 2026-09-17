@@ -51,6 +51,16 @@ final class CanvasHub {
         return sessions.count
     }
 
+    /// Sketches accepted from every device and not yet uploaded or dropped.
+    /// The menu shows this, because a daemon that is down otherwise leaves the
+    /// user with no sign that their rounds are still queued (I3). A pipeline
+    /// whose session has been released keeps draining on its own and is no
+    /// longer counted here — nothing can be said about it any more.
+    var pendingUploads: Int {
+        prune()
+        return sessions.reduce(0) { $0 + ($1.session?.pendingUploadCount ?? 0) }
+    }
+
     /// Starts consuming the daemon's round updates. Calling it again while
     /// one consumer is running does nothing.
     func start() {

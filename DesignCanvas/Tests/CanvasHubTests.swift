@@ -134,6 +134,52 @@ final class CanvasHubTests: XCTestCase {
         XCTAssertNotNil(sessionB)
     }
 
+    /// I3: the menu tells the user how many sketches are still waiting for the
+    /// daemon, which means the count has to add up across every device.
+    func test_pendingUploads_sumsWhatEverySessionStillOwes() {
+        let daemon = FakeDaemon()
+        daemon.setAnnotationsAlwaysFail(true)
+        let hub = CanvasHub(daemon: daemon, status: CanvasStatus())
+        XCTAssertEqual(hub.pendingUploads, 0)
+
+        let outboundA = FakeOutbound()
+        let outboundB = FakeOutbound()
+        let sessionA = session(hub, deviceName: "iPad A", installID: "install-A", outbound: outboundA)
+        let sessionB = session(hub, deviceName: "iPad B", installID: "install-B", outbound: outboundB)
+        queueAnnotation(on: sessionA, outbound: outboundA, captureMs: 1_000, daemon: daemon)
+        queueAnnotation(on: sessionB, outbound: outboundB, captureMs: 2_000, daemon: daemon)
+
+        XCTAssertEqual(hub.pendingUploads, 2)
+
+        daemon.setAnnotationsAlwaysFail(false)
+        waitUntil("both queues to drain") { hub.pendingUploads == 0 }
+    }
+
+    /// Freezes one frame and sends a sketch for it, leaving one upload pending.
+    private func queueAnnotation(
+        on session: CanvasSession,
+        outbound: FakeOutbound,
+        captureMs: Int64,
+        daemon: FakeDaemon
+    ) {
+        session.canvasDidEncodeFrame(
+            TestImages.solidBGRAPixelBuffer(width: 8, height: 6, color: TestImages.RGBA(0, 0, 200)),
+            captureMs: captureMs
+        )
+        var freeze = FreezeMessage(captureMs: captureMs, zoomRect: .full, t: 1).json
+        freeze["type"] = CanvasWire.freeze
+        session.canvasDidReceive(type: CanvasWire.freeze, object: freeze, outbound: outbound)
+        var annotation = AnnotationMessage(
+            sketchPNG: Data(),
+            zoomRect: .full,
+            viewport: CanvasViewport(width: 8, height: 6, scale: 2),
+            note: nil,
+            t: Double(captureMs)
+        ).json
+        annotation["type"] = CanvasWire.annotation
+        session.canvasDidReceive(type: CanvasWire.annotation, object: annotation, outbound: outbound)
+    }
+
     func test_stop_endsConsumptionOfTheDaemonStream() {
         let daemon = FakeDaemon()
         let terminated = expectation(description: "the round-updates stream terminated")

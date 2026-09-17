@@ -40,6 +40,10 @@ final class AppModel: ObservableObject {
     /// Mirror of `engine.devices`, republished whenever the engine reports a change. The menu
     /// reads this rather than the engine so the view stays a plain `@ObservedObject` consumer.
     @Published private(set) var devices: [EngineDevice] = []
+    /// Sketches the engine has accepted and not yet delivered to the daemon, refreshed on every
+    /// health poll. Nothing reported this before, so a daemon that was down looked like a sketch
+    /// that had vanished (I3).
+    @Published private(set) var pendingUploads = 0
 
     let nodePath: String
 
@@ -303,6 +307,11 @@ final class AppModel: ObservableObject {
         // every unreachable/foreign outcome to `.none`, which is the honest answer: an app that
         // can't see the daemon can't claim a channel is attached.
         engine?.setChannelState(ChannelState(probe: result))
+
+        // The engine has no change notification for this — it moves on its own upload queue's
+        // schedule — so the 2 s poll is what refreshes the menu's "waiting for the daemon" row.
+        let stillPending = engine?.pendingUploads ?? 0
+        if stillPending != pendingUploads { pendingUploads = stillPending }
 
         // Cheap, non-prompting TCC query — so the permission row goes green on the next tick
         // after the user grants it, instead of staying stale until relaunch.

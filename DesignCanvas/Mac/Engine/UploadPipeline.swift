@@ -71,6 +71,26 @@ final class UploadPipeline {
         case annotation(AnnotationJob)
     }
 
+    /// The most jobs that may wait behind the one in flight. A daemon that is
+    /// down for hours would otherwise grow this queue without limit, and every
+    /// annotation job holds a full-resolution frame.
+    static let maxQueuedJobs = 50
+
+    /// True for a failure that retrying cannot fix. 4xx other than 404, 408
+    /// and 429 is the daemon saying the request itself is wrong (400
+    /// `invalid_request`, 413 `body_too_large`): the same bytes will be
+    /// refused for ever, and a job that retries for ever holds every later
+    /// round behind it (the queue is strictly FIFO on purpose). The three
+    /// exceptions are genuinely worth another go — 404 is the store having
+    /// lost the capture, which the annotation path re-posts, and 408/429 are
+    /// explicitly "later". Everything else (5xx, transport, undecodable) keeps
+    /// the retry behaviour.
+    static func isNonRetryable(_ error: Error) -> Bool {
+        guard case DaemonClientError.badStatus(let code) = error else { return false }
+        guard (400...499).contains(code) else { return false }
+        return code != 404 && code != 408 && code != 429
+    }
+
     private let deviceName: String
     private let daemon: DaemonAPI
     private let workQueue: DispatchQueue
@@ -116,11 +136,30 @@ final class UploadPipeline {
         if case .annotation = job {
             pendingUploads += 1
         }
+        // Over the bound, the OLDEST waiting job goes: the newest sketch is
+        // the one the designer is watching for, and the job already in flight
+        // is not in `jobs` at all, so it can never be the one dropped.
+        var dropped: Job?
+        if jobs.count > Self.maxQueuedJobs {
+            dropped = jobs.removeFirst()
+            if case .annotation = dropped {
+                pendingUploads -= 1
+            }
+        }
         let needsDrainer = !draining
         if needsDrainer {
             draining = true
         }
         lock.unlock()
+
+        if let dropped {
+            switch dropped {
+            case .annotation:
+                Log.info("canvas: upload queue is full (\(Self.maxQueuedJobs)) — dropping the oldest waiting annotation")
+            case .capture:
+                Log.info("canvas: upload queue is full (\(Self.maxQueuedJobs)) — dropping the oldest waiting capture")
+            }
+        }
 
         guard needsDrainer else { return }
         startDraining()
@@ -177,12 +216,13 @@ final class UploadPipeline {
         }
     }
 
-    /// Composites once, then uploads until it succeeds. A sketch that will not
-    /// decode is the one unrecoverable case — retrying cannot change it — so
-    /// that annotation is dropped and the queue moves on. Everything else is
-    /// retried behind `backoff`, which later jobs wait out: losing a round's
-    /// order would show the designer a reply for a sketch they drew after the
-    /// one still in flight.
+    /// Composites once, then uploads until it succeeds or the daemon refuses
+    /// it outright. Two unrecoverable cases are dropped so the queue moves on:
+    /// a sketch that will not decode, and a request the daemon answers with a
+    /// non-retryable 4xx (`isNonRetryable`). Everything else is retried behind
+    /// `backoff`, which later jobs wait out: losing a round's order would show
+    /// the designer a reply for a sketch they drew after the one still in
+    /// flight.
     ///
     /// `backoff` is the drainer's, not this job's, so a daemon that has been
     /// down for a while is not hammered afresh by every queued round; it is
@@ -213,6 +253,9 @@ final class UploadPipeline {
                         height: job.capture.height
                     )
                     job.capture.captureID = captureID
+                } catch where Self.isNonRetryable(error) {
+                    Log.info("canvas: dropping annotation — the daemon refused the capture (\(error))")
+                    return
                 } catch {
                     Log.info("canvas: capture post failed (\(error)); retrying the annotation")
                     await sleep(backoff.next())
@@ -243,6 +286,9 @@ final class UploadPipeline {
                 repostedAfterMissingCapture = true
                 job.capture.captureID = nil
                 Log.info("canvas: the daemon has no such capture; re-posting it")
+            } catch where Self.isNonRetryable(error) {
+                Log.info("canvas: dropping annotation — the daemon refused it (\(error))")
+                return
             } catch {
                 Log.info("canvas: annotation upload failed (\(error)); retrying")
                 await sleep(backoff.next())

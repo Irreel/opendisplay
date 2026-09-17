@@ -18,6 +18,7 @@ import XCTest
 final class FakeSenderEngine: SenderEngine {
     var devices: [EngineDevice] = []
     var onDevicesChanged: (() -> Void)?
+    var pendingUploads = 0
 
     private(set) var startCount = 0
     private(set) var stopCount = 0
@@ -600,6 +601,22 @@ final class AppModelTests: XCTestCase {
 
         model.selectedProject = nil
         XCTAssertEqual(engine.projectNames, ["my-app", nil], "clearing the project clears the iPad's project row")
+    }
+
+    /// I3: a sketch the engine is still holding for a daemon that is down was
+    /// counted by nothing and shown nowhere. The poll is what refreshes it.
+    func testPublishesPendingUploadsOnEveryPoll() async {
+        let (model, probe, engine) = makeEngineModel(childPid: 100)
+        XCTAssertEqual(model.pendingUploads, 0)
+
+        engine.pendingUploads = 3
+        probe.result = .healthy(health(pid: 100, channelCount: 1))
+        await model.pollOnce()
+        XCTAssertEqual(model.pendingUploads, 3)
+
+        engine.pendingUploads = 0
+        await model.pollOnce()
+        XCTAssertEqual(model.pendingUploads, 0)
     }
 
     func testDeviceListChangesRepublish() {

@@ -24,6 +24,10 @@ protocol SenderEngine: AnyObject {
     var devices: [EngineDevice] { get }
     /// Called whenever `devices` changes, so the menu can republish without polling.
     var onDevicesChanged: (() -> Void)? { get set }
+    /// Sketches accepted from the iPads and not yet uploaded to the daemon. Read on the app's
+    /// health poll; the menu says so when it is not zero, because a daemon that is down otherwise
+    /// leaves the user with no sign that their rounds are still queued (I3).
+    var pendingUploads: Int { get }
 
     func start()
     func stop()
