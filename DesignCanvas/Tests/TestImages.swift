@@ -21,6 +21,12 @@ import UniformTypeIdentifiers
 /// destination) never flips row order either — so pixel sampling below needs
 /// no manual flip.
 enum TestImages {
+    /// Matches `Compositor`'s explicit sRGB working space: fixtures built
+    /// with a device-dependent space could hide a real DeviceRGB-vs-sRGB
+    /// mismatch in the code under test by making both sides wrong the same
+    /// way (see the sRGB-tagging tests in CompositorTests).
+    private static let colorSpace = CGColorSpace(name: CGColorSpace.sRGB)!
+
     struct RGBA: Equatable {
         var r: UInt8
         var g: UInt8
@@ -67,7 +73,7 @@ enum TestImages {
             bitsPerComponent: 8,
             bitsPerPixel: 32,
             bytesPerRow: bytesPerRow,
-            space: CGColorSpaceCreateDeviceRGB(),
+            space: colorSpace,
             bitmapInfo: CGBitmapInfo(rawValue: alphaInfo.rawValue),
             provider: provider,
             decode: nil,
@@ -132,7 +138,7 @@ enum TestImages {
             height: height,
             bitsPerComponent: 8,
             bytesPerRow: bytesPerRow,
-            space: CGColorSpaceCreateDeviceRGB(),
+            space: colorSpace,
             bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
         ) else { return nil }
         context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))

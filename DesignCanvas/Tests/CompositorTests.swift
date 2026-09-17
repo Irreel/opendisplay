@@ -141,6 +141,54 @@ final class CompositorTests: XCTestCase {
         XCTAssertEqual(emptyResult.sketchPNG, Data())
     }
 
+    // MARK: - sRGB tagging
+
+    /// Guards the `flatten` path (a non-empty sketch forces a draw into a
+    /// fresh context) against silently going back to an untagged/device
+    /// color space, per the brief's "CoreGraphics + ImageIO + VideoToolbox;
+    /// sRGB" requirement.
+    func test_flattenedComposite_isSRGBTagged() throws {
+        let base = TestImages.solidCGImage(width: 50, height: 50, color: TestImages.RGBA(10, 20, 30))
+        let sketch = TestImages.rectOnTransparentCGImage(width: 50, height: 50, rect: CGRect(x: 0, y: 0, width: 10, height: 10), fill: TestImages.RGBA(255, 0, 0))
+        let sketchPNG = TestImages.pngData(sketch)
+
+        let result = try Compositor.composite(base: base, sketchPNG: sketchPNG, zoomRect: .full)
+
+        guard let source = CGImageSourceCreateWithData(result.compositePNG as CFData, nil),
+              let decoded = CGImageSourceCreateImageAtIndex(source, 0, nil) else {
+            return XCTFail("expected compositePNG to decode")
+        }
+        XCTAssertEqual(decoded.colorSpace?.name, CGColorSpace.sRGB)
+    }
+
+    /// Guards the `scaledDown` path (a base past `maxLongSide` forces a draw
+    /// into a fresh, smaller context) the same way.
+    func test_scaledDownComposite_isSRGBTagged() throws {
+        let base = TestImages.solidCGImage(width: 4000, height: 2000, color: TestImages.RGBA(10, 20, 30))
+
+        let result = try Compositor.composite(base: base, sketchPNG: Data(), zoomRect: .full)
+
+        guard let source = CGImageSourceCreateWithData(result.compositePNG as CFData, nil),
+              let decoded = CGImageSourceCreateImageAtIndex(source, 0, nil) else {
+            return XCTFail("expected compositePNG to decode")
+        }
+        XCTAssertEqual(decoded.colorSpace?.name, CGColorSpace.sRGB)
+    }
+
+    /// `scaledDown`'s own row-order coverage: a base larger than
+    /// `maxLongSide` on its long side, split top/bottom, must keep its top
+    /// half on top after the downscale draw (mirrors the crop-side flip
+    /// guard above, but for the scaling context).
+    func test_scaledDown_preservesTopBottomOrder() throws {
+        let base = TestImages.topBottomCGImage(width: 2000, height: 4000, top: TestImages.RGBA(255, 0, 0), bottom: TestImages.RGBA(0, 0, 255))
+
+        let result = try Compositor.composite(base: base, sketchPNG: Data(), zoomRect: .full)
+
+        XCTAssertEqual(result.compositeSize, CGSize(width: 784, height: 1568))
+        assertColor(TestImages.pixel(inPNG: result.compositePNG, x: 392, y: 0), TestImages.RGBA(255, 0, 0))
+        assertColor(TestImages.pixel(inPNG: result.compositePNG, x: 392, y: 1567), TestImages.RGBA(0, 0, 255))
+    }
+
     // MARK: - cgImage(from:)
 
     func test_cgImage_fromBGRAPixelBuffer() {

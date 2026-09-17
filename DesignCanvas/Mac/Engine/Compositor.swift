@@ -28,6 +28,14 @@ struct CompositeResult {
 enum Compositor {
     static let maxLongSide = 1568
 
+    /// The color space every context this file creates is tagged with.
+    /// `CGColorSpaceCreateDeviceRGB()` is device-dependent — its exact
+    /// meaning isn't fixed by the type system, only by whatever the host
+    /// happens to resolve it to — so an explicit, portable, well-defined
+    /// space is used instead, per the plan's "CoreGraphics + ImageIO +
+    /// VideoToolbox; sRGB" requirement.
+    private static let workingColorSpace = CGColorSpace(name: CGColorSpace.sRGB)!
+
     /// Converts a ring frame back into a `CGImage` for `composite(base:...)`.
     /// Handles `kCVPixelFormatType_32BGRA` and
     /// `kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange`, what
@@ -61,14 +69,18 @@ enum Compositor {
     ///
     /// Coordinates: `NormalizedRect` and `cropRectPixels` are both top-left
     /// origin, matching `CGImage.cropping(to:)`'s own image-space rect, so
-    /// converting the zoom rect to pixels needs no flip. Flattening the
-    /// sketch and scaling the result also need no flip: both only ever draw
-    /// a `CGImage` into a `CGContext` at the context's *full* extent
-    /// (`CGRect(x: 0, y: 0, width:, height:)`), and a full-extent
-    /// `draw(_:in:)` preserves row order regardless of CoreGraphics's
-    /// bottom-left-origin *drawing* space (verified empirically, and
-    /// covered by `test_zoomRect_topHalf_ofRedTopBlueBottom_givesAllRed_notFlipped`,
-    /// which would fail were this wrong).
+    /// converting the zoom rect to pixels needs no flip (guarded by
+    /// `test_zoomRect_topHalf_ofRedTopBlueBottom_givesAllRed_notFlipped`,
+    /// which crops via `pixelCropRect`/`cropping(to:)` and would fail were
+    /// that flipped). Flattening the sketch and scaling the result also need
+    /// no flip: both only ever draw a `CGImage` into a `CGContext` at the
+    /// context's *full* extent (`CGRect(x: 0, y: 0, width:, height:)`), and
+    /// a full-extent `draw(_:in:)` preserves row order regardless of
+    /// CoreGraphics's bottom-left-origin *drawing* space (verified
+    /// empirically). `flatten`'s copy of this is guarded by
+    /// `test_sketch_opaqueOverridesTransparentShowsBase` (a flipped flatten
+    /// would draw the sketch rect at the mirrored row) and `scaledDown`'s by
+    /// `test_scaledDown_preservesTopBottomOrder`.
     static func composite(base: CGImage, sketchPNG: Data, zoomRect: NormalizedRect) throws -> CompositeResult {
         guard base.width > 0, base.height > 0 else { throw CompositorError.emptyBase }
 
@@ -167,7 +179,7 @@ enum Compositor {
             height: height,
             bitsPerComponent: 8,
             bytesPerRow: 0,
-            space: CGColorSpaceCreateDeviceRGB(),
+            space: workingColorSpace,
             bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
         ) else { return nil }
         let rect = CGRect(x: 0, y: 0, width: width, height: height)
@@ -194,7 +206,7 @@ enum Compositor {
             height: scaledHeight,
             bitsPerComponent: 8,
             bytesPerRow: 0,
-            space: CGColorSpaceCreateDeviceRGB(),
+            space: workingColorSpace,
             bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
         ) else { return image }
         context.interpolationQuality = .high
