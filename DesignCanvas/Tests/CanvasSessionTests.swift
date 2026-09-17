@@ -556,5 +556,41 @@ final class CanvasSessionTests: XCTestCase {
         status.projectName = nil
         XCTAssertEqual(session.canvasPingFields(), [CanvasWire.pingChannelKey: "detached"])
     }
+
+    // MARK: - lifetime
+
+    func test_aSessionWithAJobInFlight_isNotKeptAliveByItsOwnUploadPipeline() {
+        let daemon = FakeDaemon()
+        let outbound = FakeOutbound()
+        // Suspending the work queue parks the job inside its composite hop,
+        // which is the longest a job ever holds anything of the session's.
+        let workQueue = DispatchQueue(label: "test.canvas.work", qos: .utility)
+        var session: CanvasSession? = CanvasSession(
+            deviceName: "Zhao's iPad",
+            daemon: daemon,
+            status: CanvasStatus(),
+            workQueue: workQueue,
+            now: Date.init,
+            sleep: { _ in }
+        )
+        weak var released = session
+        hello(session!, outbound: outbound, installID: "install-A")
+        freeze(session!, outbound: outbound, daemon: daemon, captureMs: 1_000, colour: TestImages.RGBA(0, 0, 200))
+
+        workQueue.suspend()
+        defer { workQueue.resume() }
+        session!.canvasDidReceive(
+            type: CanvasWire.annotation,
+            object: annotationJSON(sketch: Data()),
+            outbound: outbound
+        )
+        XCTAssertEqual(session!.pendingUploadCount, 1)
+
+        session = nil
+
+        // The pipeline drops what it is holding rather than keeping the
+        // session alive for a round nobody is waiting on any more.
+        waitUntil("the released session to deallocate", { released == nil })
+    }
 }
 

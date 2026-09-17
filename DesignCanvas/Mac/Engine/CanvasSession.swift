@@ -432,20 +432,26 @@ final class CanvasSession: SenderCanvasDelegate {
         var repostedAfterMissingCapture = false
 
         while isAlive() {
-            if job.capture.captureID == nil {
+            // The capture the freeze posted, or — when that post failed, or
+            // the daemon has since lost it — one posted here from the
+            // composite's own copy of the untouched frame.
+            let captureID: String
+            if let posted = job.capture.captureID {
+                captureID = posted
+            } else {
                 do {
-                    job.capture.captureID = try await daemon.postCapture(
+                    captureID = try await daemon.postCapture(
                         png: composite.screenshotPNG,
                         width: job.capture.width,
                         height: job.capture.height
                     )
+                    job.capture.captureID = captureID
                 } catch {
                     Log.info("canvas: capture post failed (\(error)); retrying the annotation")
                     await sleep(backoff.next())
                     continue
                 }
             }
-            guard let captureID = job.capture.captureID else { continue }
 
             let upload = AnnotationUpload(
                 sourceCaptureId: captureID,
