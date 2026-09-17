@@ -159,6 +159,7 @@ targets:
       - MacTests
       - Mac/ControlFramePolicy.swift
       - Mac/SenderCanvasHooks.swift
+      - Mac/SenderDiscoveryConfig.swift
       - Mac/DisplayArrangement.swift
       - Mac/Log.swift
       - Mac/LogPolicies.swift
