@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp } from 'node:fs/promises';
+import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -10,11 +10,15 @@ const silentLogger = { event: async () => {} } as unknown as ConstructorParamete
   typeof DesignCanvasStore
 >[0];
 
-async function storeWithAnnotation() {
+async function storeWithAnnotation(captureCreatedAt?: string) {
   const root = await mkdtemp(join(tmpdir(), 'dc-claim-'));
   const store = new DesignCanvasStore(silentLogger, createStorePaths(root));
   await store.ensure();
-  const capture = await store.createCapture({ screenshot: Buffer.from('p'), viewport: { w: 1, h: 1 } });
+  const capture = await store.createCapture({
+    screenshot: Buffer.from('p'),
+    viewport: { w: 1, h: 1 },
+    ...(captureCreatedAt ? { createdAt: captureCreatedAt } : {}),
+  });
   const ann = await store.createAnnotation({
     composite: Buffer.from('c'),
     sketch: Buffer.from('s'),
@@ -23,7 +27,7 @@ async function storeWithAnnotation() {
     zoomRect: null,
     device: { id: 'device-1', name: 'iPad' },
   });
-  return { store, id: ann.id };
+  return { store, id: ann.id, captureId: capture.id };
 }
 
 test('first claim wins, concurrent second claim loses', async () => {
@@ -57,4 +61,20 @@ test('serving annotation is excluded from pending until lease expires', async ()
   const reset = await store.reconcileStaleClaims(-1);
   assert.equal(reset, 1);
   assert.equal((await store.pendingAnnotations()).length, 1);
+});
+
+test('claim carries capturedAt from the source capture', async () => {
+  const captureCreatedAt = '2026-02-01T00:00:00.000Z';
+  const { store, id } = await storeWithAnnotation(captureCreatedAt);
+  const claimed = await store.claimAnnotation(id);
+  assert.equal(claimed?.capturedAt, captureCreatedAt);
+});
+
+test('claim falls back to the annotation createdAt when the capture is gone', async () => {
+  const { store, id, captureId } = await storeWithAnnotation('2026-02-01T00:00:00.000Z');
+  await rm(join(store.paths.captures, captureId), { recursive: true, force: true });
+  const annotation = await store.getAnnotation(id);
+  const claimed = await store.claimAnnotation(id);
+  assert.equal(claimed?.capturedAt, annotation?.meta.createdAt);
+  assert.notEqual(claimed?.capturedAt, '2026-02-01T00:00:00.000Z');
 });

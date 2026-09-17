@@ -165,7 +165,11 @@ async function route(
       });
       return;
     }
-    sendJson(response, 200, { meta: claimed.meta, compositePath: claimed.compositePath });
+    sendJson(response, 200, {
+      meta: claimed.meta,
+      compositePath: claimed.compositePath,
+      capturedAt: claimed.capturedAt,
+    });
     return;
   }
 

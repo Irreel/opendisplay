@@ -61,9 +61,11 @@ test('loopback claim/served endpoints drive the annotation lifecycle', async () 
     const claimBody = (await claim.json()) as {
       compositePath: string;
       meta: { id: string };
+      capturedAt: string;
     };
     assert.equal(typeof claimBody.compositePath, 'string');
     assert.equal(claimBody.meta.id, annotationId);
+    assert.equal(typeof claimBody.capturedAt, 'string');
 
     const secondClaim = await fetch(`${base}/v1/annotations/${annotationId}/claim`, {
       method: 'POST',

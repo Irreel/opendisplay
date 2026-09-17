@@ -46,6 +46,11 @@ export interface AnnotationWithPath {
   sketchPath: string | null;
 }
 
+export interface ClaimedAnnotation extends AnnotationWithPath {
+  /** The source capture's createdAt, or the annotation's own createdAt when the capture is gone. */
+  capturedAt: string;
+}
+
 export interface SetReplyInput {
   status: ReplyStatus;
   message: string | null;
@@ -200,7 +205,7 @@ export class DesignCanvasStore {
   async claimAnnotation(
     id: string,
     leaseMs = CLAIM_LEASE_MS,
-  ): Promise<AnnotationWithPath | null> {
+  ): Promise<ClaimedAnnotation | null> {
     return this.withLock(id, async () => {
       const annotation = await this.getAnnotation(id);
       if (!annotation) return null;
@@ -210,7 +215,9 @@ export class DesignCanvasStore {
       const meta = { ...annotation.meta, claimedAt: new Date().toISOString() };
       await writeJson(join(this.paths.annotations, id, 'meta.json'), meta);
       await this.logger.event('annotation.claimed', { annotationId: id });
-      return { ...annotation, meta };
+      const capture = await this.getCapture(meta.sourceCaptureId);
+      const capturedAt = capture?.meta.createdAt ?? meta.createdAt;
+      return { ...annotation, meta, capturedAt };
     });
   }
 
