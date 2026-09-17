@@ -51,3 +51,59 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY=""
+
+      # The DesignCanvasMac scheme's test action also builds the DesignCanvasMac
+      # app target (like OpenSidecarMac above), so this is both the Design
+      # Canvas Swift test suite and a compile check for the Mac app.
+      - name: Run Design Canvas Swift tests
+        run: |
+          xcodebuild test \
+            -project OpenSidecar.xcodeproj \
+            -scheme DesignCanvasMac \
+            -destination 'platform=macOS' \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY=""
+
+      # No iOS simulator/device run here (no signing, no hardware) — this is a
+      # compile check only, same as OpenSidecariOS would be if it were built here.
+      - name: Build Design Canvas iOS app
+        run: |
+          xcodebuild build \
+            -project OpenSidecar.xcodeproj \
+            -scheme DesignCanvasiOS \
+            -destination 'generic/platform=iOS' \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY=""
+
+  node:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: DesignCanvas/server/pnpm-lock.yaml
+
+      # --frozen-lockfile: a lockfile drift should fail CI, not silently update.
+      - name: Install dependencies
+        run: pnpm --dir DesignCanvas/server install --frozen-lockfile
+
+      - name: Typecheck
+        run: pnpm --dir DesignCanvas/server typecheck
+
+      - name: Unit tests
+        run: pnpm --dir DesignCanvas/server test
+
+      - name: Channel harness (two-process MCP topology)
+        run: pnpm --dir DesignCanvas/server test:channel
+
+      - name: End-to-end round script (no devices)
+        run: pnpm --dir DesignCanvas/server test:e2e
