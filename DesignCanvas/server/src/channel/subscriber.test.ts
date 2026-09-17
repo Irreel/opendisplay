@@ -72,11 +72,11 @@ test('subscriber claims a pending annotation, notifies, and marks it served', as
   const { port } = server.address() as AddressInfo;
   const base = `http://127.0.0.1:${port}`;
 
-  const notified: string[] = [];
+  const notified: { id: string; capturedAt: string }[] = [];
   const fakeChannel = {
     attached: true,
-    notifyAnnotation: async (a: { meta: { id: string } }) => {
-      notified.push(a.meta.id);
+    notifyAnnotation: async (a: { meta: { id: string }; capturedAt: string }) => {
+      notified.push({ id: a.meta.id, capturedAt: a.capturedAt });
     },
   } as unknown as ChannelNotifier;
 
@@ -88,7 +88,10 @@ test('subscriber claims a pending annotation, notifies, and marks it served', as
     const annotationId = await postAnnotation(base, captureId);
 
     await waitFor(() => notified.length === 1, 3000);
-    assert.deepEqual(notified, [annotationId]);
+    assert.deepEqual(notified.map((n) => n.id), [annotationId]);
+    // The claim response's capturedAt (Task 6) is passed through to notifyAnnotation.
+    assert.equal(typeof notified[0]?.capturedAt, 'string');
+    assert.ok((notified[0]?.capturedAt.length ?? 0) > 0);
 
     // The annotation is now served — a re-claim must 409.
     const reclaim = await fetch(`${base}/v1/annotations/${annotationId}/claim`, { method: 'POST' });

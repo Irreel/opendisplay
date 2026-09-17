@@ -64,11 +64,12 @@ async function handleId(
       // 409: someone else won or it is already served. Anything else: skip.
       return;
     }
-    const { meta, compositePath } = (await claim.json()) as {
+    const { meta, compositePath, capturedAt } = (await claim.json()) as {
       meta: AnnotationMeta;
       compositePath: string;
+      capturedAt: string;
     };
-    await channel.notifyAnnotation({ meta, compositePath, sketchPath: null });
+    await channel.notifyAnnotation({ meta, compositePath, capturedAt });
     const served = await fetch(`${base}/v1/annotations/${id}/served`, {
       method: 'POST',
       ...(signal ? { signal } : {}),
