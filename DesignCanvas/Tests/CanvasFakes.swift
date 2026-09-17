@@ -52,7 +52,7 @@ final class FakeDaemon: DaemonAPI {
     private var storedAnnotationResults: [Result<String, Error>] = []
     private var storedRoundsResult: Result<[CanvasRound], Error> = .success([])
 
-    private var storedCaptureCalls: [(png: Data, width: Int, height: Int)] = []
+    private var storedCaptureCalls: [(png: Data, width: Int, height: Int, capturedAt: Date)] = []
     private var storedAnnotationCalls: [AnnotationUpload] = []
     private var storedRoundsCalls: [(deviceID: String, limit: Int)] = []
     private var updatesContinuation: AsyncStream<RoundStreamEvent>.Continuation?
@@ -84,7 +84,9 @@ final class FakeDaemon: DaemonAPI {
 
     // MARK: - recorded calls
 
-    var captureCalls: [(png: Data, width: Int, height: Int)] { lock.withLock { storedCaptureCalls } }
+    var captureCalls: [(png: Data, width: Int, height: Int, capturedAt: Date)] {
+        lock.withLock { storedCaptureCalls }
+    }
 
     var annotationCalls: [AnnotationUpload] { lock.withLock { storedAnnotationCalls } }
 
@@ -94,9 +96,9 @@ final class FakeDaemon: DaemonAPI {
 
     func probe() async -> HealthProbeResult { .refused }
 
-    func postCapture(png: Data, width: Int, height: Int) async throws -> String {
+    func postCapture(png: Data, width: Int, height: Int, capturedAt: Date) async throws -> String {
         let result: Result<String, Error> = lock.withLock {
-            storedCaptureCalls.append((png, width, height))
+            storedCaptureCalls.append((png, width, height, capturedAt))
             let scripted = storedCaptureResults.isEmpty ? nil : storedCaptureResults.removeFirst()
             return scripted ?? .success("capture-\(storedCaptureCalls.count)")
         }

@@ -247,7 +247,13 @@ final class CanvasSession: SenderCanvasDelegate {
 
         send(type: CanvasWire.frozen, FrozenMessage(ok: true).json, via: outbound)
 
-        let capture = UploadPipeline.FreezeCapture(image: image)
+        // Stamped with the frame's own millisecond — the same clock the video
+        // telemetry's `cap` uses, which is Unix epoch ms — so the store and the
+        // channel's "Captured at" describe the moment the designer froze (M2).
+        let capture = UploadPipeline.FreezeCapture(
+            image: image,
+            capturedAt: Date(timeIntervalSince1970: Double(found.captureMs) / 1000)
+        )
         lock.lock()
         let hadPrevious = heldCapture != nil
         heldCapture = capture

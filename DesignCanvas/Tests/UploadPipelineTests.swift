@@ -25,7 +25,8 @@ final class UploadPipelineTests: XCTestCase {
 
     private func capture(posted id: String? = "capture-1") -> UploadPipeline.FreezeCapture {
         let capture = UploadPipeline.FreezeCapture(
-            image: TestImages.solidCGImage(width: 8, height: 6, color: TestImages.RGBA(0, 0, 200))
+            image: TestImages.solidCGImage(width: 8, height: 6, color: TestImages.RGBA(0, 0, 200)),
+            capturedAt: Date(timeIntervalSince1970: 1_700_000_000)
         )
         capture.captureID = id
         return capture

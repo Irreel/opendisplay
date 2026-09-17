@@ -87,7 +87,11 @@ enum DaemonClientError: Error, Equatable {
 /// One dispatched Server-Sent Event, decoded from a byte stream by `SSEParser`.
 protocol DaemonAPI: AnyObject {
     func probe() async -> HealthProbeResult
-    func postCapture(png: Data, width: Int, height: Int) async throws -> String
+    /// `capturedAt` is the frame's own time (the ring entry's `captureMs`), not now:
+    /// the daemon otherwise stamps its receipt time, which is minutes late for a
+    /// capture that waited out a retry, and that stamp is the "Captured at" the
+    /// channel reports to the model (M2).
+    func postCapture(png: Data, width: Int, height: Int, capturedAt: Date) async throws -> String
     func postAnnotation(_ upload: AnnotationUpload) async throws -> String
     func rounds(deviceID: String, limit: Int) async throws -> [CanvasRound]
     /// Reconnects forever with backoff until the stream is cancelled (see
@@ -150,13 +154,14 @@ final class DaemonClient: DaemonAPI {
 
     // MARK: - postCapture()
 
-    func postCapture(png: Data, width: Int, height: Int) async throws -> String {
+    func postCapture(png: Data, width: Int, height: Int, capturedAt: Date) async throws -> String {
         var request = URLRequest(url: baseURL.appendingPathComponent("v1/captures"))
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "content-type")
         let body: [String: Any] = [
             "screenshotBase64": png.base64EncodedString(),
             "viewport": ["w": width, "h": height],
+            "createdAt": DaemonClient.isoFormatter.string(from: capturedAt),
         ]
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
 

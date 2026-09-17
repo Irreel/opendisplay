@@ -203,7 +203,7 @@ final class CanvasSessionTests: XCTestCase {
         XCTAssertEqual(upload.sourceCaptureId, "capture-1")
         XCTAssertEqual(upload.deviceID, "install-A")
         XCTAssertEqual(upload.deviceName, "Zhao's iPad")
-        XCTAssertEqual(upload.zoomRect, NormalizedRect.full)
+        XCTAssertNil(upload.zoomRect, "a full rect is uploaded as null — the channel's \"full frame\" (M1)")
         XCTAssertEqual(upload.viewport, CanvasSessionTests.testViewport)
         XCTAssertEqual(upload.note, "make this blue")
         XCTAssertEqual(upload.createdAt, createdAt)
@@ -213,6 +213,64 @@ final class CanvasSessionTests: XCTestCase {
         XCTAssertEqual(TestImages.pixel(inPNG: upload.compositePNG, x: 5, y: 20), TestImages.RGBA(0, 0, 200))
 
         waitUntil("the pending count to fall back to zero") { session.pendingUploadCount == 0 }
+    }
+
+    /// M2: "Captured at" is what the channel tells the model the frame is
+    /// from. It was the daemon's own receipt time, minutes late for a round
+    /// that waited out a retry — the frame's own millisecond is right there in
+    /// the ring entry.
+    func test_freeze_postsTheCaptureStampedWithTheFramesOwnTime() {
+        let daemon = FakeDaemon()
+        let outbound = FakeOutbound()
+        // The app's clock is deliberately somewhere else entirely: the stamp
+        // must come from the frame, not from "now".
+        let session = makeSession(daemon: daemon, now: { Date(timeIntervalSince1970: 9_999) })
+        hello(session, outbound: outbound, installID: "install-A")
+
+        freeze(session, outbound: outbound, daemon: daemon, captureMs: 1_700_000_123_456,
+               colour: TestImages.RGBA(0, 0, 200))
+
+        XCTAssertEqual(daemon.captureCalls.count, 1)
+        XCTAssertEqual(daemon.captureCalls[0].capturedAt,
+                       Date(timeIntervalSince1970: 1_700_000_123.456))
+    }
+
+    /// M1: the channel prints "full frame" only for a null `zoomRect`, and the
+    /// engine never sent one — so an un-zoomed sketch was described to the
+    /// model as a crop of the whole screen.
+    func test_annotation_onAFullFrame_uploadsANilZoomRect() {
+        let daemon = FakeDaemon()
+        let outbound = FakeOutbound()
+        let session = makeSession(daemon: daemon)
+        hello(session, outbound: outbound, installID: "install-A")
+        freeze(session, outbound: outbound, daemon: daemon, captureMs: 1_000, colour: TestImages.RGBA(0, 0, 200))
+
+        session.canvasDidReceive(
+            type: CanvasWire.annotation,
+            object: annotationJSON(sketch: Data(), zoomRect: .full),
+            outbound: outbound
+        )
+
+        guard waitUntil("the annotation to be uploaded", { daemon.annotationCalls.count == 1 }) else { return }
+        XCTAssertNil(daemon.annotationCalls[0].zoomRect)
+    }
+
+    func test_annotation_onAZoomedFrame_uploadsTheRect() {
+        let daemon = FakeDaemon()
+        let outbound = FakeOutbound()
+        let session = makeSession(daemon: daemon)
+        hello(session, outbound: outbound, installID: "install-A")
+        freeze(session, outbound: outbound, daemon: daemon, captureMs: 1_000, colour: TestImages.RGBA(0, 0, 200))
+
+        let zoom = NormalizedRect(x: 0.25, y: 0.25, width: 0.5, height: 0.5)
+        session.canvasDidReceive(
+            type: CanvasWire.annotation,
+            object: annotationJSON(sketch: Data(), zoomRect: zoom),
+            outbound: outbound
+        )
+
+        guard waitUntil("the annotation to be uploaded", { daemon.annotationCalls.count == 1 }) else { return }
+        XCTAssertEqual(daemon.annotationCalls[0].zoomRect, zoom)
     }
 
     func test_annotation_withNoPriorFreeze_uploadsNothing() {

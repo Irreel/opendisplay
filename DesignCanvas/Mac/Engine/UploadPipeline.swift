@@ -24,6 +24,11 @@ final class UploadPipeline {
         let image: CGImage
         let width: Int
         let height: Int
+        /// When this frame was captured — the ring entry's own millisecond, not
+        /// when the freeze was handled. It is what the daemon stores as the
+        /// capture's `createdAt` and therefore the "Captured at" the channel
+        /// reports to the model (M2).
+        let capturedAt: Date
 
         private let lock = NSLock()
         private var storedCaptureID: String?
@@ -48,10 +53,11 @@ final class UploadPipeline {
             }
         }
 
-        init(image: CGImage) {
+        init(image: CGImage, capturedAt: Date) {
             self.image = image
             self.width = image.width
             self.height = image.height
+            self.capturedAt = capturedAt
         }
     }
 
@@ -210,7 +216,12 @@ final class UploadPipeline {
             return
         }
         do {
-            capture.captureID = try await daemon.postCapture(png: png, width: capture.width, height: capture.height)
+            capture.captureID = try await daemon.postCapture(
+                png: png,
+                width: capture.width,
+                height: capture.height,
+                capturedAt: capture.capturedAt
+            )
         } catch {
             Log.info("canvas: freeze capture post failed (\(error)); the annotation will re-post it")
         }
@@ -250,7 +261,8 @@ final class UploadPipeline {
                     captureID = try await daemon.postCapture(
                         png: composite.screenshotPNG,
                         width: job.capture.width,
-                        height: job.capture.height
+                        height: job.capture.height,
+                        capturedAt: job.capture.capturedAt
                     )
                     job.capture.captureID = captureID
                 } catch where Self.isNonRetryable(error) {
@@ -268,7 +280,10 @@ final class UploadPipeline {
                 compositePNG: composite.compositePNG,
                 sketchPNG: composite.sketchPNG,
                 viewport: job.viewport,
-                zoomRect: job.zoomRect,
+                // A full rect is uploaded as null, which is what the channel
+                // describes to the model as "full frame" (M1). The composite
+                // above still crops with the real rect.
+                zoomRect: job.zoomRect.isFull ? nil : job.zoomRect,
                 note: job.note,
                 deviceID: job.deviceID,
                 deviceName: deviceName,

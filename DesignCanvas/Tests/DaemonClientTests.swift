@@ -105,7 +105,12 @@ final class DaemonClientTests: XCTestCase {
         let client = makeClient()
         let png = Data([0x01, 0x02, 0x03])
 
-        let captureId = try await client.postCapture(png: png, width: 100, height: 200)
+        let captureId = try await client.postCapture(
+            png: png,
+            width: 100,
+            height: 200,
+            capturedAt: Date(timeIntervalSince1970: 1_700_000_123.456)
+        )
 
         XCTAssertEqual(captureId, "cap_1")
         guard let recorded = StubURLProtocol.recorded.last else { return XCTFail("expected a recorded request") }
@@ -117,6 +122,9 @@ final class DaemonClientTests: XCTestCase {
         guard let viewport = body["viewport"] as? [String: Any] else { return XCTFail("expected viewport") }
         XCTAssertEqual(viewport["w"] as? Int, 100)
         XCTAssertEqual(viewport["h"] as? Int, 200)
+        // M2: without this the daemon stamps its own receipt time, which is
+        // minutes late for a capture that waited out a retry.
+        XCTAssertEqual(body["createdAt"] as? String, "2023-11-14T22:15:23.456Z")
     }
 
     func test_postCapture_throwsBadStatusOn500() async {
@@ -124,7 +132,7 @@ final class DaemonClientTests: XCTestCase {
         let client = makeClient()
 
         do {
-            _ = try await client.postCapture(png: Data([0x01]), width: 1, height: 1)
+            _ = try await client.postCapture(png: Data([0x01]), width: 1, height: 1, capturedAt: Date())
             XCTFail("expected a throw")
         } catch let error as DaemonClientError {
             XCTAssertEqual(error, .badStatus(500))
