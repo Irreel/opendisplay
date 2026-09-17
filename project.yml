@@ -282,6 +282,9 @@ targets:
       # CanvasSession conforms to SenderCanvasDelegate and talks back through
       # CanvasOutbound, both declared here (Task 3).
       - Mac/SenderCanvasHooks.swift
+      # The receiver-side canvas state StreamReceiver owns (Task 11). Pure and
+      # Foundation-only, so it is unit-tested here rather than through a socket.
+      - Shared/CanvasReceiverState.swift
     settings:
       base:
         TEST_HOST: ""
