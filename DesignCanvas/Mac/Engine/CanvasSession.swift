@@ -143,11 +143,50 @@ final class CanvasSession: SenderCanvasDelegate {
 
     // MARK: - SenderCanvasDelegate
 
+    /// Every hello, including the re-hellos a rotation causes: the iPad keeps
+    /// no round history of its own, so the snapshot is what shows a reply
+    /// that landed while it was away (spec section 5.4). A daemon that cannot
+    /// answer still gets an empty snapshot out, so the device is not left
+    /// waiting on one.
     func canvasPeerDidHello(_ peer: CanvasPeer, outbound: CanvasOutbound) {
         lock.lock()
         self.peer = peer
         self.outbound = outbound
         lock.unlock()
+
+        let daemon = self.daemon
+        let deviceID = peer.installID
+        Task {
+            let rounds: [CanvasRound]
+            do {
+                rounds = try await daemon.rounds(deviceID: deviceID, limit: CanvasWire.roundsSnapshotLimit)
+            } catch {
+                Log.info("canvas: rounds snapshot fetch failed (\(error)); sending an empty one")
+                rounds = []
+            }
+            outbound.sendCanvasJSONData(CanvasSession.roundsPayload(RoundsMessage(rounds: rounds)))
+        }
+    }
+
+    /// Relays one round update to the device it belongs to. A drop on the
+    /// floor here (wrong device, or no link) is deliberate: the snapshot the
+    /// next hello sends carries the round anyway.
+    func deliver(_ update: RoundUpdate) {
+        lock.lock()
+        let installID = peer?.installID
+        let outbound = self.outbound
+        lock.unlock()
+
+        guard let outbound, installID == update.deviceID else { return }
+
+        let reply = AgentReplyMessage(
+            annotationId: update.round.annotationId,
+            status: update.round.status,
+            message: update.round.message?.truncatedUTF8(maxBytes: CanvasWire.replyMessageMaxBytes),
+            prUrl: update.round.prUrl,
+            t: (now().timeIntervalSince1970 * 1000).rounded()
+        )
+        send(type: CanvasWire.agentReply, reply.json, via: outbound)
     }
 
     /// Runs at capture rate: one deep copy into the ring and nothing else —
@@ -169,9 +208,23 @@ final class CanvasSession: SenderCanvasDelegate {
         }
     }
 
-    func canvasLinkDidDrop() {}
+    /// Idempotent, because one drop can be reported more than once. Queued
+    /// uploads and the ring stay: the round the designer already pressed Done
+    /// on must still reach Claude Code, and the next hello freezes against the
+    /// same frames.
+    func canvasLinkDidDrop() {
+        lock.lock()
+        outbound = nil
+        let hadCapture = heldCapture != nil
+        heldCapture = nil
+        lock.unlock()
 
-    func canvasPingFields() -> [String: String] { [:] }
+        if hadCapture {
+            Log.info("canvas: link dropped — discarding the held freeze capture")
+        }
+    }
+
+    func canvasPingFields() -> [String: String] { status.pingFields }
 
     // MARK: - freeze
 
@@ -257,6 +310,19 @@ final class CanvasSession: SenderCanvasDelegate {
         var object = body
         object["type"] = type
         outbound.sendCanvasJSON(object)
+    }
+
+    /// `RoundsMessage.encoded` is the only thing that knows how to shrink a
+    /// snapshot under the 32768-byte wire limit (ruling 3), and it produces
+    /// `{"rounds":[…]}`. The control type is spliced in after the opening
+    /// brace rather than re-encoded, so that shrinking is not undone; the
+    /// budget handed to `encoded` is reduced by exactly what the splice adds.
+    private static func roundsPayload(_ message: RoundsMessage) -> Data {
+        let prefix = Data("{\"type\":\"\(CanvasWire.rounds)\",".utf8)
+        let added = prefix.count - 1   // the prefix replaces the leading `{`
+        var payload = prefix
+        payload.append(message.encoded(limit: CanvasWire.senderJSONLimit - added).dropFirst())
+        return payload
     }
 
     // MARK: - upload pipeline
