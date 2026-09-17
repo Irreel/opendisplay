@@ -74,6 +74,11 @@ final class StreamReceiver: ObservableObject {
     @Published var peerSignal: PeerUpdateSignal?
     /// Mac protocol version from the most recent `welcome` message.
     @Published private(set) var macProtocolVersion = WireProtocol.assumedWhenAbsent
+    /// Design Canvas session state, published for SwiftUI. A read-only mirror
+    /// of the state below; everything that changes it goes through
+    /// `mutateCanvas`. On an OpenDisplay session this never leaves its
+    /// defaults, because no OpenDisplay Mac sends `welcome.canvas: true`.
+    @Published private(set) var canvas = CanvasReceiverState()
 
     /// True when the connected Mac understands pencil/proximity wire messages.
     var macSupportsPencilWire: Bool { macProtocolVersion >= WireProtocol.pencilWireVersion }
@@ -227,6 +232,10 @@ final class StreamReceiver: ObservableObject {
     private let maxEncodeHigh: Int?
     /// What to advertise when the user-set service name is empty.
     private let fallbackServiceName: String
+    /// Bonjour service type to advertise under. OpenDisplay's own apps leave
+    /// this at the default; Design Canvas advertises `_designcanvas._tcp` so
+    /// the two products cannot discover (and dial) each other.
+    private let serviceType: String
 
     // Stable per-install identity, advertised in the Bonjour TXT record and
     // sent in every hello. The Mac uses it to recognize "same device, other
@@ -246,7 +255,7 @@ final class StreamReceiver: ObservableObject {
         var txt = NWTXTRecord()
         txt["id"] = Self.installID
         txt["pv"] = String(WireProtocol.version)   // issue #132
-        return NWListener.Service(name: serviceName, type: "_opensidecar._tcp",
+        return NWListener.Service(name: serviceName, type: serviceType,
                                   domain: nil, txtRecord: txt)
     }
 
@@ -296,12 +305,14 @@ final class StreamReceiver: ObservableObject {
 
     init(displayLayer: AVSampleBufferDisplayLayer, deviceKind: String,
          fallbackServiceName: String,
-         maxEncodeWide: Int? = nil, maxEncodeHigh: Int? = nil) {
+         maxEncodeWide: Int? = nil, maxEncodeHigh: Int? = nil,
+         serviceType: String = "_opensidecar._tcp") {
         self.displayLayer = displayLayer
         self.deviceKind = deviceKind
         self.fallbackServiceName = fallbackServiceName
         self.maxEncodeWide = maxEncodeWide
         self.maxEncodeHigh = maxEncodeHigh
+        self.serviceType = serviceType
         displayLayer.videoGravity = .resizeAspect
     }
 
@@ -363,6 +374,109 @@ final class StreamReceiver: ObservableObject {
         }
     }
 
+    // MARK: - Design Canvas (freeze, canvas messages, input suppression)
+    //
+    // `canvasState` is the single source of truth; `canvas` is its published
+    // mirror. It is guarded by a lock rather than by `queue` for two reasons
+    // the queue cannot serve. `setFrozen(true)` has to stop the picture on
+    // the call and not one queue hop later (PRD M1): the receiver queue may
+    // already be parsing frames when the hop is posted, and every one of
+    // those would reach the layer first. And `currentCaptureMs()` answers
+    // synchronously on the caller's thread while the value it reads is
+    // written on the receiver queue. Each hold is a handful of instructions
+    // over a plain struct, so the per-frame read costs nothing measurable.
+    //
+    // All of it is inert on an OpenDisplay session: no OpenDisplay Mac sends
+    // `welcome.canvas: true`, so `route` never delivers anything, nobody
+    // calls `setFrozen`, and `suppressesInput` stays false.
+    private let canvasLock = NSLock()
+    private var canvasState = CanvasReceiverState()      // canvasLock
+    /// Capture ms of the last frame that actually reached the display path —
+    /// never one the freeze or the background pause dropped, because the
+    /// point of it is to name the frame the user is looking at.
+    private var lastEnqueuedCaptureMs: Int64?            // canvasLock
+
+    /// A canvas control message from the Mac (`frozen`, `agentReply`,
+    /// `rounds`), delivered on the main queue.
+    var onCanvasMessage: ((_ type: String, _ object: [String: Any]) -> Void)?
+    /// The Mac's `welcome` landed; the flag is its `canvas` field. Main queue.
+    var onWelcome: ((_ canvas: Bool) -> Void)?
+
+    /// Drop every touch, scroll, pencil and proximity message instead of
+    /// sending it. Set by the app before `start()`; a canvas session leaves
+    /// it on for its whole life, because a canvas Mac injects no input and
+    /// never even compiles the injector.
+    var suppressesInput: Bool {
+        get { readCanvas { $0.suppressesInput } }
+        set { mutateCanvas { $0.suppressesInput = newValue } }
+    }
+
+    private func readCanvas<T>(_ body: (CanvasReceiverState) -> T) -> T {
+        canvasLock.lock()
+        defer { canvasLock.unlock() }
+        return body(canvasState)
+    }
+
+    /// Mutate the state and publish the result, but only when it actually
+    /// changed: `route` runs per inbound message and usually changes nothing,
+    /// and a needless `@Published` write would redraw the UI for it.
+    @discardableResult
+    private func mutateCanvas<T>(_ body: (inout CanvasReceiverState) -> T) -> T {
+        canvasLock.lock()
+        let before = canvasState
+        let result = body(&canvasState)
+        let after = canvasState
+        canvasLock.unlock()
+        if after != before {
+            DispatchQueue.main.async { self.canvas = after }
+        }
+        return result
+    }
+
+    /// Hold the picture on the frame that is on screen, or release it.
+    /// Freezing takes effect on this call: every frame parsed after it is
+    /// dropped before the display layer, so the last one stays put. Frames
+    /// already inside the layer or the decode session may still land — that
+    /// is the tolerance the freeze handshake is built around. Thawing asks
+    /// the Mac for a keyframe the way `setRenderingPaused(false)` does, and
+    /// deliberately does NOT flush: the frozen picture should stay up until
+    /// a live frame replaces it rather than blink to black.
+    func setFrozen(_ frozen: Bool) {
+        guard mutateCanvas({ $0.setFrozen(frozen) }) else { return }
+        queue.async {
+            guard self.connection?.state == .ready else { return }
+            self.sendControl(["type": "kf"])
+        }
+    }
+
+    /// The Mac capture timestamp of the frame on screen — what a `freeze`
+    /// request names so the Mac can find the clean original in its ring. Nil
+    /// until a frame carrying telemetry has been displayed.
+    func currentCaptureMs() -> Int64? {
+        canvasLock.lock()
+        defer { canvasLock.unlock() }
+        return lastEnqueuedCaptureMs
+    }
+
+    /// Put a canvas message (`freeze`, `annotation`) on the wire. The
+    /// completion runs on the main queue and is true only once the socket
+    /// write completed with no error: there is no wire ack for these, so
+    /// that is what "sent" means (plan ruling 5). False means no live
+    /// connection, an unserialisable message, or a failed write.
+    func sendCanvas(_ message: [String: Any], completion: ((Bool) -> Void)? = nil) {
+        let deliver: (Bool) -> Void = { ok in
+            guard let completion else { return }
+            DispatchQueue.main.async { completion(ok) }
+        }
+        queue.async {
+            guard let conn = self.connection, conn.state == .ready else {
+                deliver(false)
+                return
+            }
+            self.sendControl(message, on: conn, completion: deliver)
+        }
+    }
+
     /// The device locked — nobody can see the stream, so tell the Mac and go
     /// silent. Sends "sleeping" (the Mac drops its virtual display so the
     /// cursor isn't stranded on an invisible screen and arms a reconnect),
@@ -406,7 +520,7 @@ final class StreamReceiver: ObservableObject {
                 return
             }
             Log.info("closing session — announcing \(type) to the Mac")
-            self.sendControl(["type": type], on: conn) {
+            self.sendControl(["type": type], on: conn) { _ in
                 self.queue.async { finish() }
             }
             // The send completion may never fire on a dying link — don't
@@ -630,6 +744,9 @@ final class StreamReceiver: ObservableObject {
         for pending in pendingConnections where pending !== conn { pending.cancel() }
         pendingConnections.removeAll()
         resetStreamState()
+        // Whatever the previous Mac was says nothing about this one: a Mac
+        // that is not a canvas sender puts the capability back to false.
+        mutateCanvas { $0.connectionReset() }
         lastCursorSeq = 0   // the sender restarts its cursor sequence per session
         cursorPortAnnounced = false
         // Hide the previous sender's cursor: replayed into a fresh video view
@@ -750,6 +867,8 @@ final class StreamReceiver: ObservableObject {
             macInputP50 = obj["inp50"] as? Double ?? macInputP50
             macInputP95 = obj["inp95"] as? Double ?? macInputP95
             macCapFps = obj["capFps"] as? Int ?? macCapFps
+            // A canvas sender merges its channel and project into the beat.
+            mutateCanvas { $0.handlePing(obj) }
         case "cursor":
             applyCursor(obj)
         case "cursorImg":
@@ -776,6 +895,13 @@ final class StreamReceiver: ObservableObject {
                 let msg = "The OpenDisplay app on your Mac is too old for this \(deviceKind) app. Update OpenDisplay on your Mac to reconnect."
                 DispatchQueue.main.async { self.peerSignal = .updateMac(message: msg) }
             }
+            // Design Canvas capability gate: only `canvas: true` opens it.
+            let isCanvas = mutateCanvas { state -> Bool in
+                state.handleWelcome(obj)
+                return state.macSupportsCanvas
+            }
+            if isCanvas { Log.info("welcome: the Mac is a Design Canvas sender") }
+            if let onWelcome { DispatchQueue.main.async { onWelcome(isCanvas) } }
         case WireMessage.updateRequired:
             // The Mac refuses this pairing until we update from the App Store.
             let message = obj["message"] as? String
@@ -783,7 +909,17 @@ final class StreamReceiver: ObservableObject {
             let store = (obj["store"] as? String).flatMap { URL(string: $0) } ?? AppStore.updateURL
             DispatchQueue.main.async { self.peerSignal = .updateReceiver(message: message, storeURL: store) }
         default:
-            break
+            // Unknown to OpenDisplay. On a canvas session the three canvas
+            // types are handed to the app; everything else is ignored here
+            // exactly as an unknown type always was (PROTOCOL.md 6).
+            switch mutateCanvas({ $0.route(type: type) }) {
+            case .canvasMessage(let canvasType):
+                if let onCanvasMessage {
+                    DispatchQueue.main.async { onCanvasMessage(canvasType, obj) }
+                }
+            case .none:
+                break
+            }
         }
     }
 
@@ -908,6 +1044,7 @@ final class StreamReceiver: ObservableObject {
     /// Stamped in *Mac* clock time (our clock + sync offset) so the Mac can
     /// measure touch→injection latency without doing its own clock sync.
     func sendTouch(phase: String, x: Double, y: Double) {
+        guard readCanvas({ $0.allowsInputSend }) else { return }
         var msg: [String: Any] = ["type": "touch", "phase": phase, "x": x, "y": y]
         if let offset = clockOffsetMs { msg["t"] = nowMs + offset }
         sendControl(msg)
@@ -915,6 +1052,7 @@ final class StreamReceiver: ObservableObject {
 
     /// Two-finger scroll: dx/dy in video pixels (natural-scrolling sign).
     func sendScroll(dx: Double, dy: Double) {
+        guard readCanvas({ $0.allowsInputSend }) else { return }
         sendControl(["type": "scroll", "dx": dx, "dy": dy])
     }
 
@@ -922,6 +1060,7 @@ final class StreamReceiver: ObservableObject {
     /// rotation is always 0 until Apple Pencil Pro barrel roll is wired up.
     func sendPencil(phase: String, x: Double, y: Double,
                     pressure: Double, azimuth: Double, altitude: Double) {
+        guard readCanvas({ $0.allowsInputSend }) else { return }
         var msg: [String: Any] = [
             "type": "pencil",
             "phase": phase,
@@ -936,14 +1075,18 @@ final class StreamReceiver: ObservableObject {
     }
 
     func sendProximity(entering: Bool, x: Double, y: Double) {
+        guard readCanvas({ $0.allowsInputSend }) else { return }
         sendControl(["type": "proximity", "entering": entering, "x": x, "y": y])
     }
 
+    /// The single outbound choke point. The completion's Bool is true only
+    /// when the socket write completed with no error; false means there was
+    /// no connection, the message would not serialise, or the write failed.
     private func sendControl(_ message: [String: Any], on conn: NWConnection? = nil,
-                             completion: (() -> Void)? = nil) {
+                             completion: ((Bool) -> Void)? = nil) {
         guard let conn = conn ?? connection,
               let payload = try? JSONSerialization.data(withJSONObject: message) else {
-            completion?()
+            completion?(false)
             return
         }
         var header = UInt32(payload.count).bigEndian
@@ -951,7 +1094,7 @@ final class StreamReceiver: ObservableObject {
         frame.append(payload)
         conn.send(content: frame, completion: .contentProcessed { error in
             if let error { Log.info("control send error: \(error)") }
-            completion?()
+            completion?(error == nil)
         })
     }
 
@@ -1104,6 +1247,10 @@ final class StreamReceiver: ObservableObject {
         // frames at the door instead of feeding a failing display layer at
         // frame rate. setRenderingPaused(false) re-syncs with a keyframe.
         if renderingPaused { return }
+        // Design Canvas freeze: the user is sketching on the frame that is
+        // already up, so nothing may replace it. setFrozen(false) re-syncs
+        // with a keyframe the same way.
+        if readCanvas({ $0.shouldDropFrames }) { return }
 
         // Build one AVCC buffer: each NALU prefixed with 4-byte big-endian length.
         var avcc = Data(capacity: nalus.reduce(0) { $0 + $1.count + 4 })
@@ -1167,6 +1314,16 @@ final class StreamReceiver: ObservableObject {
                 displayLayer.flush()
             }
             displayLayer.enqueue(sample)
+        }
+
+        // This frame is on its way to glass, so it is the one a freeze would
+        // name. Recorded only here: a frame dropped above never showed. The
+        // range check is not paranoia about our own sender — `cap` is wire
+        // input, and a Double outside Int64 traps on conversion.
+        if let captureMs, captureMs >= 0, captureMs < 9e15 {
+            canvasLock.lock()
+            lastEnqueuedCaptureMs = Int64(captureMs)
+            canvasLock.unlock()
         }
 
         // Per-frame timing for the performance overlay.
@@ -1359,7 +1516,7 @@ final class StreamReceiver: ObservableObject {
                 self.macProtocolVersion = WireProtocol.assumedWhenAbsent
             }
         }
-        if !value { setStatus("Listening on :9000") }
+        if !value { setStatus("Listening on :\(port)") }
         else {
             setStatus("Connected")
             // Remember the first ever successful connection to a Mac so the
