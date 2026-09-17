@@ -158,6 +158,7 @@ targets:
     sources:
       - MacTests
       - Mac/ControlFramePolicy.swift
+      - Mac/SenderCanvasHooks.swift
       - Mac/DisplayArrangement.swift
       - Mac/Log.swift
       - Mac/LogPolicies.swift
