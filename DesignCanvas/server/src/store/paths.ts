@@ -10,7 +10,7 @@ export interface StorePaths {
 export function defaultStoreRoot(): string {
   return (
     process.env['DESIGN_CANVAS_STORE_DIR'] ??
-    join(homedir(), 'Library', 'Application Support', 'DesignTool')
+    join(homedir(), '.claude', 'channels', 'design-canvas')
   );
 }
 

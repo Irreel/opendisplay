@@ -13,6 +13,7 @@ import {
 } from '../shared.js';
 import type { Logger } from '../log.js';
 import { createStorePaths, type StorePaths } from './paths.js';
+import { uuidv7 } from './uuidv7.js';
 
 export interface CreateCaptureInput {
   screenshot: Buffer;
@@ -105,7 +106,7 @@ export class DesignCanvasStore {
 
   async createAnnotation(input: CreateAnnotationInput): Promise<AnnotationMeta> {
     await this.ensure();
-    const id = createSortableId();
+    const id = uuidv7();
     const createdAt = input.createdAt ?? new Date().toISOString();
     const dir = join(this.paths.annotations, id);
     await mkdir(dir, { recursive: true });
