@@ -92,7 +92,7 @@ enum SenderTransport {
 }
 
 @available(macOS 14.0, *)
-final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
+final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate, CanvasOutbound {
 
     // Status surfaced to the UI (updated on main thread).
     @MainActor var onStatus: ((String) -> Void)?
@@ -205,9 +205,9 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
     private var lastHello: PhoneInfo?
     private var helloContinuation: CheckedContinuation<PhoneInfo, Error>?
     // Where receiver input goes, built per display by `inputSinkFactory`.
-    // OpenDisplay passes the factory that builds an InputInjector; a session
-    // that passes none (Design Canvas) forwards no input at all and never
-    // needs Accessibility.
+    // OpenDisplay passes the factory that builds its event injector; a
+    // session that passes none (Design Canvas) forwards no input at all and
+    // never needs Accessibility.
     private let inputSinkFactory: InputSinkFactory?
     private var inputInjector: InputSink?
     // A Design Canvas session's engine. Held weak — the object that owns this
@@ -370,8 +370,21 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
         self.awaitingWake = awaitingWake
         self.inputSinkFactory = inputSinkFactory
         self.canvasDelegate = canvasDelegate
+        if canvasDelegate != nil {
+            // A sketch arrives in one frame and is far bigger than anything
+            // OpenDisplay's receiver sends (PROTOCOL.md section 3).
+            controlFramePolicy = ControlFramePolicy(canvas: true)
+        }
         super.init()
     }
+
+    /// True while a Design Canvas engine is attached. Everything it gates is
+    /// off for an OpenDisplay session.
+    private var isCanvasSession: Bool { canvasDelegate != nil }
+
+    /// Input types a canvas session drops on arrival: it mirrors a display
+    /// and forwards nothing, and its receiver never sends these anyway.
+    private static let inputMessageTypes: Set<String> = ["touch", "scroll", "pencil", "proximity"]
 
     // MARK: - Lifecycle
 
@@ -770,6 +783,9 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
             // Unblock a start() that is still waiting for the hello.
             self?.helloContinuation?.resume(throwing: CancellationError())
             self?.helloContinuation = nil
+            // On `queue` like every other delegate callback, and after the
+            // teardown above: the session is over either way.
+            self?.canvasDelegate?.canvasLinkDidDrop()
         }
     }
 
@@ -815,6 +831,7 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
         guard !goneReported, !stopped else { return }
         goneReported = true
         Log.info(reason)
+        canvasDelegate?.canvasLinkDidDrop()
         Task { @MainActor in self.onDisconnected?() }
     }
 
@@ -825,6 +842,10 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
     /// other path (WiFi, routed Ethernet, the dev loopback) keeps the
     /// redial loop: a drop there is never intent.
     private func linkDied(_ detail: String) {
+        // Whatever happens next (redial or end), the canvas engine's sketch
+        // in flight is gone with this connection — tell it now, not after the
+        // redial decision. Repeats are fine: implementations are idempotent.
+        canvasDelegate?.canvasLinkDidDrop()
         if currentPathDirectLink, case .tcp = transport {
             reportGone("cable link lost (\(detail)) — unplugging means disconnect, ending session")
         } else {
@@ -1434,7 +1455,13 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
                 let sorted = self.inputLatencies.sorted()
                 let inp50 = sorted.isEmpty ? 0 : sorted[sorted.count / 2].rounded()
                 let inp95 = sorted.isEmpty ? 0 : sorted[min(sorted.count - 1, Int(Double(sorted.count) * 0.95))].rounded()
-                self.sendJSONFrame("{\"type\":\"ping\",\"drops\":\(self.dropsTotal),\"encDrops\":\(self.dropsEncTotal),\"netDrops\":\(self.dropsNetTotal),\"pending\":\(self.pendingSends),\"inp50\":\(inp50),\"inp95\":\(inp95),\"capFps\":\(capFps)}")
+                // A canvas session piggybacks its own status (channel state,
+                // project) on the beat the receiver already listens for.
+                self.sendJSONFrame(SenderControlJSON.ping(
+                    drops: self.dropsTotal, encDrops: self.dropsEncTotal,
+                    netDrops: self.dropsNetTotal, pending: self.pendingSends,
+                    inp50: inp50, inp95: inp95, capFps: capFps,
+                    extras: self.canvasDelegate?.canvasPingFields() ?? [:]))
             }
             self.schedulePing()
         }
@@ -1761,6 +1788,10 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
             )
             return
         }
+        // A canvas session forwards no input (no injector, no Accessibility),
+        // so these die here — before the latency accounting, and silently:
+        // they would arrive at input rate if a receiver ever sent them.
+        if isCanvasSession, Self.inputMessageTypes.contains(type) { return }
         switch type {
         case "ping":
             // Echo with our clock so the phone can estimate the offset
@@ -1816,6 +1847,13 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
                 // message types. Sending on every hello is idempotent — the
                 // phone dedupes by content.
                 sendWelcome()
+                // After the welcome, so the engine can answer on a link the
+                // receiver has already been told is a canvas link. Fires on
+                // every hello, rotation re-hellos included — the engine
+                // treats a repeat as the same peer arriving again.
+                canvasDelegate?.canvasPeerDidHello(
+                    CanvasPeer(installID: info.id ?? "", deviceKind: info.kind),
+                    outbound: self)
                 if info.protocolVersion < WireProtocol.minSupportedPeer {
                     Log.info("receiver protocol \(info.protocolVersion) below supported \(WireProtocol.minSupportedPeer) — requesting update")
                     sendUpdateRequired(kind: info.kind)
@@ -1895,20 +1933,33 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
             // without the silence grace and without waiting for a wake.
             Log.info("receiver app closed — ending session")
             Task { @MainActor in self.onPeerClosed?() }
-        default:
-            // Unknown types are a normal consequence of the additive wire
-            // protocol: a newer peer can send messages this build predates.
-            // Log each type once per session, never per message. A peer can
-            // drive this at input rates (a pencil stroke is ~240 messages/sec),
-            // so the policy also caps distinct types and reports that cap once.
-            switch unknownTypeLogPolicy.record(type) {
-            case .logType(let type):
-                Log.info("unknown control message type: \(type) — ignoring (logged once)")
-            case .logSuppression(let limit):
-                Log.info("additional unknown control message types suppressed after \(limit) distinct types")
-            case .none:
-                break
+        case WireMessage.freeze, WireMessage.annotation:
+            // Canvas messages, gated on the capability this sender announced:
+            // without an engine to hand them to they are as unknown as any
+            // other type this build has no use for.
+            guard let canvasDelegate else {
+                logUnknownControlType(type)
+                return
             }
+            canvasDelegate.canvasDidReceive(type: type, object: obj, outbound: self)
+        default:
+            logUnknownControlType(type)
+        }
+    }
+
+    /// Unknown types are a normal consequence of the additive wire protocol:
+    /// a newer peer can send messages this build predates. Log each type once
+    /// per session, never per message. A peer can drive this at input rates
+    /// (a pencil stroke is ~240 messages/sec), so the policy also caps
+    /// distinct types and reports that cap once. On `queue`.
+    private func logUnknownControlType(_ type: String) {
+        switch unknownTypeLogPolicy.record(type) {
+        case .logType(let type):
+            Log.info("unknown control message type: \(type) — ignoring (logged once)")
+        case .logSuppression(let limit):
+            Log.info("additional unknown control message types suppressed after \(limit) distinct types")
+        case .none:
+            break
         }
     }
 
@@ -2093,6 +2144,10 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
         pendingEncodes += 1
         pipelineLock.unlock()
         let capturedAtMs = Int64(Date().timeIntervalSince1970 * 1000)
+        // The same millisecond the receiver sees as this frame's `cap`, which
+        // is what a freeze request names — so the engine keys its ring on it
+        // here, before the encode, rather than guessing afterwards.
+        canvasDelegate?.canvasDidEncodeFrame(pixelBuffer, captureMs: capturedAtMs)
         var frameProperties: CFDictionary?
         if needsKeyframe {
             frameProperties = [kVTEncodeFrameOptionKey_ForceKeyFrame: kCFBooleanTrue!] as CFDictionary
@@ -2283,9 +2338,12 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
     // MARK: - Version handshake (issue #132)
 
     /// Identify ourselves to the receiver: our protocol version and the oldest
-    /// receiver version we still support.
+    /// receiver version we still support. On a canvas session it also carries
+    /// the `canvas` capability flag the receiver gates its canvas messages on.
     private func sendWelcome() {
-        sendJSONFrame("{\"type\":\"\(WireMessage.welcome)\",\"pv\":\(WireProtocol.version),\"min\":\(WireProtocol.minSupportedPeer)}")
+        sendJSONFrame(SenderControlJSON.welcome(pv: WireProtocol.version,
+                                                min: WireProtocol.minSupportedPeer,
+                                                canvas: isCanvasSession))
     }
 
     /// Ask the receiver to update (built via JSONSerialization because the
@@ -2306,6 +2364,44 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
            let json = String(data: data, encoding: .utf8) {
             sendJSONFrame(json)
         }
+    }
+
+    // MARK: - CanvasOutbound
+
+    /// Send a canvas control message. Callable from any thread — the canvas
+    /// engine runs on its own — so the send hops to `queue`, where the
+    /// connection lives, and the Bool answers what can be known here: the
+    /// object serialises, it fits the wire, and the link was up.
+    @discardableResult
+    func sendCanvasJSON(_ object: [String: Any]) -> Bool {
+        guard JSONSerialization.isValidJSONObject(object),
+              let data = try? JSONSerialization.data(withJSONObject: object) else {
+            Log.info("canvas message could not be serialised — dropped")
+            return false
+        }
+        return sendCanvasJSONData(data)
+    }
+
+    /// Same, for bytes the caller already encoded (the rounds snapshot is
+    /// shrunk to fit before it gets here, so it must not be re-encoded).
+    @discardableResult
+    func sendCanvasJSONData(_ data: Data) -> Bool {
+        guard ControlFramePolicy.allowsOutboundJSON(byteCount: data.count) else {
+            Log.info("refusing oversize canvas message (\(data.count) bytes)")
+            return false
+        }
+        guard let json = String(data: data, encoding: .utf8) else {
+            Log.info("canvas message is not UTF-8 — dropped")
+            return false
+        }
+        // connectionReady lives on `queue`; this read is the answer for the
+        // caller, while sendJSONFrame re-checks it there as the real gate.
+        guard connectionReady else {
+            Log.info("canvas message dropped — no live connection to \(endpointName)")
+            return false
+        }
+        queue.async { [weak self] in self?.sendJSONFrame(json) }
+        return true
     }
 
     private func sendJSONFrame(_ json: String) {

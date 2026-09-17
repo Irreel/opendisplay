@@ -34,4 +34,17 @@ enum WireMessage {
     static let updateRequired = "updateRequired"    // Mac -> phone: peer is below the Mac's floor
     static let sleeping = "sleeping"                // phone -> Mac: device locked, reconnect on wake
     static let closing = "closing"                  // phone -> Mac: app quit, end the session for good
+
+    // Design Canvas (see PROTOCOL.md section 10: additive types need no `pv`
+    // bump, and a peer that predates them ignores them). Only exchanged on a
+    // session whose `welcome` carried `canvas: true`; a plain OpenDisplay
+    // session never sends or accepts one. Design Canvas code uses its own
+    // `CanvasWire` constants — these are the same strings, kept here so this
+    // file still describes the whole wire and so MacSender's switch can name
+    // them.
+    static let freeze = "freeze"                    // phone -> Mac: hold the frame I am sketching on
+    static let frozen = "frozen"                    // Mac -> phone: the frozen still, or why not
+    static let annotation = "annotation"            // phone -> Mac: a finished sketch + its note
+    static let agentReply = "agentReply"            // Mac -> phone: a round's status or the agent's reply
+    static let rounds = "rounds"                    // Mac -> phone: recent rounds snapshot
 }
