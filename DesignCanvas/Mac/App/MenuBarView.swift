@@ -15,7 +15,7 @@ struct MenuBarView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            daemonSection
+            statusSection
             resetSection
             Divider()
             devicesSection
@@ -34,8 +34,9 @@ struct MenuBarView: View {
         .frame(width: 320)
     }
 
+    /// The honest answer to "what is running?" (D7): the daemon line, then the session line.
     @ViewBuilder
-    private var daemonSection: some View {
+    private var statusSection: some View {
         switch model.sessionState.daemon {
         case .none:
             Text(DisplayState.noDaemon.statusText)
@@ -50,6 +51,12 @@ struct MenuBarView: View {
         if model.daemonGaveUp {
             Text("Daemon stopped retrying \u{2014} port may be in use")
                 .font(.caption2)
+                .foregroundColor(.orange)
+        }
+        sessionStatus
+        if model.sessionState.secondSubscriber {
+            Text("\u{26A0}\u{FE0E} Two channel connections detected")
+                .font(.caption)
                 .foregroundColor(.orange)
         }
     }
@@ -211,12 +218,6 @@ struct MenuBarView: View {
                 .font(.caption)
                 .foregroundColor(.red)
         }
-        sessionStatus
-        if model.sessionState.secondSubscriber {
-            Text("\u{26A0}\u{FE0E} Two channel connections detected")
-                .font(.caption)
-                .foregroundColor(.orange)
-        }
         if model.sessionStarted {
             Button("Disconnect") { model.disconnect() }
             Text("Disconnect only stops this app tracking the session \u{2014} Claude Code keeps running. Quit it in its Terminal to end the session.")
@@ -227,8 +228,8 @@ struct MenuBarView: View {
 
     /// Driven by `sessionState.display` (re-verified every poll), so it distinguishes a session
     /// this app launched from one it merely observes, and auto-clears when the user quits Claude
-    /// Code. `noDaemon`/`portOccupiedUnknown` are already covered by `daemonSection` above, so
-    /// this row stays empty for those to avoid showing the same fact twice.
+    /// Code. `noDaemon`/`portOccupiedUnknown` are already said by the daemon line directly above
+    /// it, so this row stays empty for those rather than saying the same fact twice.
     @ViewBuilder
     private var sessionStatus: some View {
         switch model.sessionState.display {
