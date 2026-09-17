@@ -139,24 +139,33 @@ real device or simulator, and run.
    to it. That first click is also what makes the Mac auto-reconnect that
    iPad on later launches; **Disconnect** stops both the session and the
    auto-reconnect.
-3. In the Mac app, click **Open Project…** and choose the repo you want
+3. **Move what you want to review onto the new display.** The iPad does
+   *not* mirror your existing screen: connecting it creates an **extra
+   virtual display**, and that display is what the iPad shows and what a
+   sketch is composited onto. It starts out empty, so drag the browser, the
+   simulator, or whatever you are reviewing onto it — in System Settings ▸
+   Displays it appears beside your built-in screen, and you can put it
+   wherever suits you. Nothing on your other screens is captured or sent
+   (PRD open question G1).
+4. In the Mac app, click **Open Project…** and choose the repo you want
    Claude Code to work in (or pick it from **Recent projects**).
-4. Click **Set server build…** and point it at
+5. Click **Set server build…** and point it at
    `DesignCanvas/server/dist/index.js` (built above). The app remembers
    this path.
-5. Click **Start session**. This launches a Terminal window running
+6. Click **Start session**. This launches a Terminal window running
    `claude --dangerously-load-development-channels server:design-canvas`
    in your project directory, and writes (or updates) that project's
    `.mcp.json` with the `design-canvas` channel entry.
-6. **Keep that Terminal window on the mirrored display** (owner decision
-   D20). Claude Code's own permission prompts (tool-use confirmations,
-   etc.) still appear there, and nothing is relayed to the iPad while one
-   is waiting — the mitigation for now is that you can see it because it's
-   on the screen you're mirroring. One consequence: since the terminal is
-   on the mirrored screen, it can end up inside a sketch's captured frame
-   or composite. Zoom into just the region you're drawing on before you
-   draw to keep it out of the crop.
-7. On the iPad: pinch to zoom into the area you want to annotate, enter
+7. **Keep that Terminal window on the mirrored display** (owner decision
+   D20) — the virtual display from step 3, the one the iPad shows. Claude
+   Code's own permission prompts (tool-use confirmations, etc.) still
+   appear there, and nothing is relayed to the iPad while one is waiting —
+   the mitigation for now is that you can see it because it's on the screen
+   you're mirroring. One consequence: since the terminal is on the mirrored
+   screen, it can end up inside a sketch's captured frame or composite.
+   Zoom into just the region you're drawing on before you draw to keep it
+   out of the crop.
+8. On the iPad: pinch to zoom into the area you want to annotate, enter
    Draw Mode, sketch, optionally add a note, and tap Done. The composite
    (your sketch flattened over the clean frame) is pushed to Claude Code as
    soon as it's ready; you'll see the round go from queued to sent, and

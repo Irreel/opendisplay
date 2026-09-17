@@ -121,7 +121,13 @@ Every message in **both directions** is length-prefixed:
   (section 6), distinguished as described in section 4.
 * **Receiver to sender**, the payload MUST be `1` to `2^20 - 1` bytes. The
   official sender treats a length of 0 or `>= 2^20` as a protocol error and
-  stops reading control messages on that connection.
+  **closes the link** — on every session, canvas or not: once a declared
+  length has been rejected the payload boundary is unknown, so reading on
+  would parse this frame's body as the next header. Declaring the link dead
+  and letting the redial policy (section 8.2) decide what happens next is
+  the only safe exit. A payload read that returns fewer bytes than the
+  header declared, and a clean end of stream (no error, no bytes — the peer
+  closed the socket, possibly mid-frame), take that same exit.
 * **Sender to receiver**, no hard maximum is enforced, but control messages
   are constrained by the demux rule below and video frames SHOULD stay in
   the low megabytes (a keyframe of a large panel).
@@ -561,6 +567,12 @@ apps send theirs every **2 s**. An implementation MAY use different
 timeouts but SHOULD keep the 2 s ping cadence so it stays comfortably
 inside its peer's window.
 
+Silence is not the only way a link ends: the official sender also declares
+it dead at once for a control frame whose declared length it rejects, a
+payload read shorter than that length, or a clean end of stream (section
+3) — on every session, canvas or not. None of those waits for the 5 s
+watchdog.
+
 Reconnection policy is the dialing sender's business, not the protocol's.
 For the record, the official sender: redials ~1 s after a failure, gives
 each dial attempt 5 s (a dial to a withdrawn Bonjour name hangs forever
@@ -696,9 +708,14 @@ Field types, exactly as implemented (`DesignCanvas/Shared/CanvasMessages.swift`)
   PNG, transparent — the drawn strokes only; the sender composites this
   over its own clean frame, so no background image crosses the wire);
   `zoomRect` (object, as above); `viewport` (object `{w, h, scale}`: `w`
-  and `h` integers, `scale` a number — the receiver's panel size and UI
-  scale at the time); `note` (string, optional — the user's typed note);
-  `t` (number, as above).
+  and `h` integers, `scale` a number). **`viewport` describes the sketch
+  surface, not the device**: `w` and `h` are the size in points of the rect
+  the video actually covered on screen — the rect the `sketch` PNG was
+  drawn over and is stretched back onto — and `scale` is the screen scale
+  that PNG was rendered at, so `w * scale` by `h * scale` is its pixel
+  size. On a receiver that letterboxes the video, or one zoomed into part
+  of it, that is smaller than the panel. `note` (string, optional — the
+  user's typed note); `t` (number, as above).
 * **`agentReply`** (sender to receiver): `annotationId` (string); `status`
   (string, one of `queued`, `sent`, `applied`, `failed`, `needs_input`);
   `message` (string, optional, at most 2048 UTF-8 bytes — the sender
