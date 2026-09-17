@@ -271,6 +271,62 @@ final class CanvasModelTests: XCTestCase {
         XCTAssertTrue(model.shouldClearStrokes)
     }
 
+    // MARK: - M10: the two dead ends
+
+    /// A sketch bigger than the wire can carry was sent, refused by the send
+    /// guard (PROTOCOL.md 11.4), and answered as a link loss — so it went to
+    /// RETRY and was re-sent, identically, after every hello, for ever.
+    func test_done_withAnOversizeSketch_staysInDrawingAndSaysSo() {
+        let model = drawingModel(strokes: 3)
+        // Base64 is 4 bytes per 3, so this is just over the 15 MiB limit on the
+        // wire while the PNG itself is smaller.
+        let huge = Data(count: CanvasWire.annotationSketchBase64MaxBytes / 4 * 3 + 3)
+        model.note = "please fix"
+
+        model.done(sketchPNG: huge)
+
+        XCTAssertEqual(model.drawState, .drawing, "the designer keeps their sketch and the frozen frame")
+        XCTAssertEqual(model.notice, .sketchTooLarge)
+        XCTAssertTrue(receiver.messages(ofType: CanvasWire.annotation).isEmpty)
+        XCTAssertFalse(model.shouldClearStrokes)
+        XCTAssertEqual(model.note, "please fix")
+
+        // And nothing was stored for a later hello to resend.
+        model.welcomeReceived(canvas: true)
+        XCTAssertTrue(receiver.messages(ofType: CanvasWire.annotation).isEmpty)
+    }
+
+    func test_done_withASketchJustUnderTheLimit_sends() {
+        let model = drawingModel(strokes: 1)
+        let big = Data(count: CanvasWire.annotationSketchBase64MaxBytes / 4 * 3)
+
+        model.done(sketchPNG: big)
+
+        XCTAssertEqual(model.drawState, .sending)
+        XCTAssertEqual(receiver.messages(ofType: CanvasWire.annotation).count, 1)
+    }
+
+    /// RETRY had no exit but a reconnect, so a device that would not reconnect
+    /// soon was stuck with Draw disabled and the "will resend" chip for ever.
+    func test_discard_whileWaitingToResend_givesUpOnTheRound() {
+        let model = drawingModel()
+        model.done(sketchPNG: sketch)
+        receiver.completeSend(false)
+        XCTAssertEqual(model.drawState, .retry)
+
+        model.discard()
+
+        XCTAssertEqual(model.drawState, .live)
+        XCTAssertEqual(model.sendIndicator, CanvasModel.SendIndicator.none)
+        XCTAssertTrue(model.shouldClearStrokes)
+        XCTAssertTrue(model.canEnterDrawMode, "Draw is available again")
+
+        // The stranded payload is gone: the next hello resends nothing.
+        model.strokesCleared()
+        model.welcomeReceived(canvas: true)
+        XCTAssertEqual(receiver.messages(ofType: CanvasWire.annotation).count, 1)
+    }
+
     // MARK: - Leaving Draw Mode without sending
 
     func test_cancel_keepsTheStrokes() {

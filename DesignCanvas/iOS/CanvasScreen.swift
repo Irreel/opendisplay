@@ -209,6 +209,15 @@ struct CanvasScreen: View {
             if canvas.sendIndicator != .none {
                 Divider().frame(height: 26)
                 SendChip(indicator: canvas.sendIndicator)
+                // The only way out of RETRY other than a reconnect (M10): a Mac
+                // that has been quit would otherwise leave Draw disabled and
+                // this chip up for ever.
+                if canvas.sendIndicator == .waitingToResend {
+                    Button("Discard", role: .destructive) { canvas.discard() }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                        .accessibilityLabel("Give up on the sketch waiting to be resent")
+                }
             }
         }
         .padding(.horizontal, 10)
@@ -252,6 +261,8 @@ extension DrawModeStateMachine.Notice {
             return "Rotating rebuilds the Mac's display, so Draw Mode ended. Your sketch was kept."
         case .interruptedByLinkLoss:
             return "The connection dropped, so Draw Mode ended. Your sketch was kept."
+        case .sketchTooLarge:
+            return "That sketch is too large to send. Erase some of it and tap Done again \u{2014} Draw Mode is still open."
         }
     }
 }

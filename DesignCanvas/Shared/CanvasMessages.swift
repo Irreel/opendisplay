@@ -19,6 +19,21 @@ enum CanvasWire {
     static let replyMessageMaxBytes = 2048
     static let roundsSnapshotLimit = 20
     static let shrunkTextMaxBytes = 256
+
+    /// The most base64 an `annotation`'s `sketch` may be (M10). A canvas
+    /// receiver-to-sender frame is capped at 16 MiB (PROTOCOL.md 11.4) and the
+    /// rest of the message — the zoom rect, the viewport, the note — shares that
+    /// budget, so the sketch is held a megabyte short of it. A sketch over the
+    /// limit is refused on the iPad, where the designer still has it, rather
+    /// than by the sender's frame guard, which used to look like a link loss and
+    /// put the round into an endless resend.
+    static let annotationSketchBase64MaxBytes = 15 * 1024 * 1024   // 15728640
+
+    /// Base64's encoded length for `byteCount` raw bytes: four characters per
+    /// three bytes, rounded up, which is what actually crosses the wire.
+    static func base64Length(ofByteCount byteCount: Int) -> Int {
+        (byteCount + 2) / 3 * 4
+    }
 }
 
 // MARK: - Number parsing

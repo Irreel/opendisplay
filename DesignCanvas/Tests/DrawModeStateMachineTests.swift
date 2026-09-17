@@ -181,6 +181,59 @@ final class DrawModeStateMachineTests: XCTestCase {
         XCTAssertEqual(effects, [.sendAnnotation])
     }
 
+    // MARK: - Table row: retry + discard -> live (M10)
+
+    /// RETRY had no exit but a reconnect: a device that will not reconnect soon
+    /// (the Mac app was quit, the designer walked away from the network) sat
+    /// there with Draw disabled and "Sketch kept — will resend" for ever, with
+    /// no way to give up. Discard is that way out. No `resumeSync`: leaving
+    /// DRAWING for SENDING already resumed the picture.
+    func test_retry_discard_returnsToLiveAndClearsStrokes() {
+        var sm = DrawModeStateMachine()
+        _ = sm.handle(.enterDrawMode(now: 0))
+        _ = sm.handle(.frozen(ok: true))
+        _ = sm.handle(.strokeCountChanged(1))
+        _ = sm.handle(.done)
+        _ = sm.handle(.linkLost)
+        XCTAssertEqual(sm.state, .retry)
+
+        let effects = sm.handle(.discard)
+
+        XCTAssertEqual(sm.state, .live)
+        XCTAssertEqual(effects, [.clearStrokes])
+    }
+
+    /// Only discard: cancel means "keep the sketch", which in RETRY is what
+    /// already happens, and it must not silently drop the round.
+    func test_retry_cancel_changesNothing() {
+        var sm = DrawModeStateMachine()
+        _ = sm.handle(.enterDrawMode(now: 0))
+        _ = sm.handle(.frozen(ok: true))
+        _ = sm.handle(.strokeCountChanged(1))
+        _ = sm.handle(.done)
+        _ = sm.handle(.linkLost)
+
+        let effects = sm.handle(.cancel)
+
+        XCTAssertEqual(sm.state, .retry)
+        XCTAssertEqual(effects, [])
+    }
+
+    func test_afterDiscardingFromRetry_aHelloResendsNothing() {
+        var sm = DrawModeStateMachine()
+        _ = sm.handle(.enterDrawMode(now: 0))
+        _ = sm.handle(.frozen(ok: true))
+        _ = sm.handle(.strokeCountChanged(1))
+        _ = sm.handle(.done)
+        _ = sm.handle(.linkLost)
+        _ = sm.handle(.discard)
+
+        let effects = sm.handle(.helloReceived)
+
+        XCTAssertEqual(sm.state, .live)
+        XCTAssertEqual(effects, [])
+    }
+
     // MARK: - Table row: any + strokeCountChanged(n) -> unchanged, records max(0, n)
 
     func test_strokeCountChanged_leavesStateUnchangedAndClampsAtZero() {

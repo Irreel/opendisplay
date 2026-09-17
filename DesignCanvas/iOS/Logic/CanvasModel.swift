@@ -142,6 +142,16 @@ final class CanvasModel: ObservableObject {
         // stranded in RETRY — would leave its payload behind as the thing the
         // next `hello` resends.
         guard canSend else { return }
+        // A sketch too big for one canvas frame used to be refused by the
+        // sender's own size guard, which looks exactly like a link loss from
+        // here — so the round went to RETRY and was re-sent, identically, after
+        // every hello, for ever. Refuse it here instead, where the designer
+        // still has the strokes and can erase some of them (M10).
+        guard CanvasWire.base64Length(ofByteCount: sketchPNG.count)
+                <= CanvasWire.annotationSketchBase64MaxBytes else {
+            notice = .sketchTooLarge
+            return
+        }
         let trimmed = note.trimmingCharacters(in: .whitespacesAndNewlines)
         pendingAnnotation = AnnotationMessage(sketchPNG: sketchPNG,
                                               zoomRect: entryZoomRect,

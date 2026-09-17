@@ -31,6 +31,9 @@ struct DrawModeStateMachine {
         case freezeTimedOut
         case interruptedByRotation
         case interruptedByLinkLoss
+        /// The sketch would not fit in one canvas frame (M10). Draw Mode stays
+        /// open: the designer still has the strokes and can erase some.
+        case sketchTooLarge
     }
 
     enum Effect: Equatable {
@@ -117,6 +120,15 @@ struct DrawModeStateMachine {
         case (.retry, .helloReceived):
             state = .sending
             return [.sendAnnotation]
+
+        // The only way out of RETRY other than a reconnect (M10). Without it a
+        // device that will not reconnect soon — the Mac app was quit, the
+        // designer left the network — sat with Draw disabled and "Sketch kept —
+        // will resend" for ever. No `resumeSync`: leaving DRAWING for SENDING
+        // already let the picture run.
+        case (.retry, .discard):
+            state = .live
+            return [.clearStrokes]
 
         default:
             return []
