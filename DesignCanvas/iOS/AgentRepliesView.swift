@@ -64,7 +64,8 @@ private struct RoundRow: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
 
-            if let prUrl = round.prUrl, let url = URL(string: prUrl) {
+            // http(s) only: the link's text comes from the model (M4).
+            if let url = round.openablePRURL {
                 Link(destination: url) {
                     Label("Open pull request", systemImage: "arrow.up.forward.square")
                         .font(.footnote)

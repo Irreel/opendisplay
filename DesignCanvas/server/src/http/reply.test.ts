@@ -120,6 +120,46 @@ test('a non-string message is rejected with 400 invalid_request', async () => {
   });
 });
 
+// M4: `prUrl` was stored and relayed unchecked, and it ends up in the iPad's
+// replies list as a tappable link. The model is the one filling it in, from
+// whatever it read while working.
+
+test('a prUrl that is not http(s) is rejected with 400 invalid_request', async () => {
+  await withServer(async (base) => {
+    const id = await createAnnotation(base);
+    for (const prUrl of [
+      'javascript:alert(1)',
+      'file:///etc/passwd',
+      'data:text/html,<script>x</script>',
+      'not a url at all',
+      `https://example.test/${'p'.repeat(2100)}`,
+    ]) {
+      const response = await fetch(`${base}/v1/annotations/${id}/reply`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ status: 'applied', prUrl }),
+      });
+      assert.equal(response.status, 400, prUrl.slice(0, 40));
+      const body = (await response.json()) as { error: string };
+      assert.equal(body.error, 'invalid_request');
+    }
+  });
+});
+
+test('an http(s) prUrl is accepted and stored', async () => {
+  await withServer(async (base) => {
+    const id = await createAnnotation(base);
+    const response = await fetch(`${base}/v1/annotations/${id}/reply`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ status: 'applied', prUrl: 'https://github.test/o/r/pull/7' }),
+    });
+    assert.equal(response.status, 200);
+    const { meta } = (await response.json()) as { meta: AnnotationMeta };
+    assert.equal(meta.reply?.prUrl, 'https://github.test/o/r/pull/7');
+  });
+});
+
 test('replying to an unknown annotation id returns 404', async () => {
   await withServer(async (base) => {
     const response = await fetch(`${base}/v1/annotations/does-not-exist/reply`, {

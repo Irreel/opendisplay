@@ -2,7 +2,7 @@
 // here on purpose: this module is exercised directly by reply-tool.test.ts,
 // and the SDK types/wiring stay isolated to index.ts.
 
-import { REPLY_STATUSES, type ReplyStatus } from '../shared.js';
+import { isAllowedPrUrl, PR_URL_MAX_LENGTH, REPLY_STATUSES, type ReplyStatus } from '../shared.js';
 
 export const REPLY_TOOL = {
   name: 'design_canvas_reply',
@@ -65,6 +65,13 @@ export function parseReplyArgs(raw: unknown): ReplyArgs | { error: string } {
   const prUrlRaw = obj['pr_url'];
   if (prUrlRaw !== undefined && typeof prUrlRaw !== 'string') {
     return { error: 'pr_url must be a string.' };
+  }
+  // The same rule the daemon enforces, applied here so a bad value comes back as a
+  // tool error the model can act on rather than a 400 it has to interpret (M4).
+  if (typeof prUrlRaw === 'string' && prUrlRaw.length > 0 && !isAllowedPrUrl(prUrlRaw)) {
+    return {
+      error: `pr_url must be an http(s) URL of at most ${PR_URL_MAX_LENGTH} characters.`,
+    };
   }
 
   const result: ReplyArgs = { annotationId, status };

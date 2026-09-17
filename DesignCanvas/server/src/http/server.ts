@@ -4,6 +4,8 @@ import {
   type AnnotationUploadResponse,
   type HealthResponse,
   HTTP_PATHS,
+  isAllowedPrUrl,
+  PR_URL_MAX_LENGTH,
   REPLY_STATUSES,
   type ReplyStatus,
   ROUNDS_LIMIT,
@@ -408,6 +410,14 @@ async function parseReplyBody(request: IncomingMessage): Promise<SetReplyInput> 
   const prUrl = 'prUrl' in parsed ? parsed.prUrl : undefined;
   if (prUrl !== undefined && typeof prUrl !== 'string') {
     throw new HttpError(400, 'invalid_request', 'prUrl must be a string when present.');
+  }
+  // The model fills this in, and it becomes a tappable link on the iPad (M4).
+  if (typeof prUrl === 'string' && prUrl.length > 0 && !isAllowedPrUrl(prUrl)) {
+    throw new HttpError(
+      400,
+      'invalid_request',
+      `prUrl must be an http(s) URL of at most ${PR_URL_MAX_LENGTH} characters.`,
+    );
   }
   return {
     status: status as ReplyStatus,

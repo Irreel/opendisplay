@@ -21,6 +21,26 @@ export const CAPTURE_SWEEP_MS = 60 * 60 * 1000;
 export const REPLY_STATUSES = ['applied', 'failed', 'needs_input'] as const;
 export type ReplyStatus = (typeof REPLY_STATUSES)[number];
 export const REPLY_MESSAGE_MAX_BYTES = 2048;
+/** Longest `prUrl` accepted, in characters. */
+export const PR_URL_MAX_LENGTH = 2048;
+
+/**
+ * Whether a reply's `prUrl` may be stored and relayed. The model fills this in from
+ * whatever it read while working, and it ends up on the iPad as a tappable link — so
+ * only http(s) with a host, and nothing longer than `PR_URL_MAX_LENGTH` (M4). The
+ * daemon and the channel's reply tool both use this, so the model gets a clear tool
+ * error rather than a 400 it has to interpret.
+ */
+export function isAllowedPrUrl(value: string): boolean {
+  if (value.length > PR_URL_MAX_LENGTH) return false;
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    return false;
+  }
+  return (url.protocol === 'http:' || url.protocol === 'https:') && url.hostname.length > 0;
+}
 export const ROUNDS_LIMIT = 20;
 export type RoundStatus = 'queued' | 'sent' | 'applied' | 'failed' | 'needs_input';
 

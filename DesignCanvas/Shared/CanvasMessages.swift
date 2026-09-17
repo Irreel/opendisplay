@@ -347,6 +347,36 @@ extension RoundsMessage {
     }
 }
 
+// MARK: - Links a round carries
+
+/// The one place that decides whether a URL a round carries may be opened.
+///
+/// `prUrl` is filled in by the model, from whatever it read while doing the
+/// work, and it reaches the iPad's replies list as a tappable link. The daemon
+/// refuses anything but http(s) on the way in and the channel's reply tool
+/// refuses it before that (M4); this is the same rule at the point of use, so
+/// a round that predates those checks, or came from somewhere else, still
+/// cannot open a `javascript:`, `file:` or custom-scheme URL.
+enum CanvasLink {
+    /// Matches the daemon's limit, so the three checks agree.
+    static let maxURLLength = 2048
+
+    static func openableURL(_ text: String?) -> URL? {
+        guard let text else { return nil }
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, trimmed.count <= maxURLLength,
+              let url = URL(string: trimmed),
+              let scheme = url.scheme?.lowercased(), scheme == "http" || scheme == "https",
+              let host = url.host, !host.isEmpty else { return nil }
+        return url
+    }
+}
+
+extension CanvasRound {
+    /// This round's pull-request link, but only when it is safe to open.
+    var openablePRURL: URL? { CanvasLink.openableURL(prUrl) }
+}
+
 // MARK: - String truncation
 
 extension String {

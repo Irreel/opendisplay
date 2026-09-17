@@ -73,6 +73,29 @@ test('parseReplyArgs rejects a non-string pr_url', () => {
   assert.ok('error' in result);
 });
 
+/// M4: the same rule the daemon enforces, applied here so the model gets a tool
+/// error it can act on instead of a 400 it has to interpret.
+test('parseReplyArgs rejects a pr_url that is not an http(s) URL', () => {
+  for (const prUrl of ['javascript:alert(1)', 'file:///etc/passwd', 'nope', `https://x.test/${'p'.repeat(2100)}`]) {
+    const result = parseReplyArgs({ annotation_id: 'abc123', status: 'applied', pr_url: prUrl });
+    assert.ok('error' in result, prUrl.slice(0, 30));
+    assert.match((result as { error: string }).error, /pr_url/);
+  }
+});
+
+test('parseReplyArgs accepts an http(s) pr_url', () => {
+  const result = parseReplyArgs({
+    annotation_id: 'abc123',
+    status: 'applied',
+    pr_url: 'http://localhost:3000/pull/1',
+  });
+  assert.deepEqual(result, {
+    annotationId: 'abc123',
+    status: 'applied',
+    prUrl: 'http://localhost:3000/pull/1',
+  });
+});
+
 test('parseReplyArgs treats an empty message/pr_url as absent', () => {
   const result = parseReplyArgs({
     annotation_id: 'abc123',

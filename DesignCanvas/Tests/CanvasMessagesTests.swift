@@ -449,6 +449,44 @@ final class CanvasMessagesTests: XCTestCase {
         XCTAssertFalse(data.contains(0))
     }
 
+    // MARK: - CanvasLink (M4)
+
+    /// `prUrl` is filled in by the model, from whatever it read while working,
+    /// and lands in the iPad's replies list as a tappable link. Everything but
+    /// http(s) is refused there as well as in the daemon and the channel.
+    func test_openableURL_acceptsOnlyHttpAndHttps() {
+        XCTAssertEqual(CanvasLink.openableURL("https://github.test/o/r/pull/7")?.absoluteString,
+                       "https://github.test/o/r/pull/7")
+        XCTAssertEqual(CanvasLink.openableURL("http://localhost:3000/pull/1")?.absoluteString,
+                       "http://localhost:3000/pull/1")
+        XCTAssertEqual(CanvasLink.openableURL("HTTPS://GitHub.test/x")?.absoluteString,
+                       "HTTPS://GitHub.test/x", "the scheme is compared case-insensitively")
+    }
+
+    func test_openableURL_rejectsEverythingElse() {
+        XCTAssertNil(CanvasLink.openableURL(nil))
+        XCTAssertNil(CanvasLink.openableURL(""))
+        XCTAssertNil(CanvasLink.openableURL("   "))
+        XCTAssertNil(CanvasLink.openableURL("javascript:alert(1)"))
+        XCTAssertNil(CanvasLink.openableURL("file:///etc/passwd"))
+        XCTAssertNil(CanvasLink.openableURL("data:text/html,<script>x</script>"))
+        XCTAssertNil(CanvasLink.openableURL("designcanvas://do-something"))
+        XCTAssertNil(CanvasLink.openableURL("/just/a/path"))
+        XCTAssertNil(CanvasLink.openableURL("https://"), "no host")
+        XCTAssertNil(CanvasLink.openableURL("https://example.test/\(String(repeating: "p", count: 2_100))"),
+                     "over the 2048-character limit")
+    }
+
+    func test_openablePRURL_readsTheRoundsPrUrl() {
+        let round = CanvasRound(annotationId: "a1", createdAt: "t", status: .applied,
+                                message: nil, prUrl: "https://github.test/o/r/pull/7", note: nil)
+        XCTAssertEqual(round.openablePRURL?.absoluteString, "https://github.test/o/r/pull/7")
+
+        let hostile = CanvasRound(annotationId: "a1", createdAt: "t", status: .applied,
+                                  message: nil, prUrl: "javascript:alert(1)", note: nil)
+        XCTAssertNil(hostile.openablePRURL)
+    }
+
     // MARK: - String.truncatedUTF8
 
     func test_truncatedUTF8_ascii() {
