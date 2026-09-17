@@ -161,14 +161,15 @@ test('GET /v1/captures/latest no longer exists (404)', async () => {
   });
 });
 
-/// I5: the Mac app polls health every 2 s, which was two log lines every two
-/// seconds, for ever, in a file that never rotates.
-test('the health poll is not logged, while other requests still are', async () => {
-  const root = await mkdtemp(join(tmpdir(), 'dc-health-log-'));
-  const events: { type: string; path?: unknown }[] = [];
+/** A server whose logger records every event, for the two logging cases below. */
+async function withRecordingServer(
+  run: (base: string, events: Record<string, unknown>[]) => Promise<void>,
+): Promise<void> {
+  const root = await mkdtemp(join(tmpdir(), 'dc-log-'));
+  const events: Record<string, unknown>[] = [];
   const logger = {
     event: async (type: string, fields: Record<string, unknown> = {}) => {
-      events.push({ type, path: fields['path'] });
+      events.push({ type, ...fields });
     },
   };
   const store = new DesignCanvasStore(logger, createStorePaths(root));
@@ -182,15 +183,41 @@ test('the health poll is not logged, while other requests still are', async () =
   });
   try {
     const { port } = server.address() as AddressInfo;
-    await fetch(`http://127.0.0.1:${port}/v1/health`);
-    await fetch(`http://127.0.0.1:${port}/v1/annotations`);
-
-    const http = events.filter((e) => e.type === 'http.request' || e.type === 'http.response');
-    assert.deepEqual(
-      http.map((e) => `${e.type} ${String(e.path)}`),
-      ['http.request /v1/annotations', 'http.response /v1/annotations'],
-    );
+    await run(`http://127.0.0.1:${port}`, events);
   } finally {
     await new Promise<void>((resolve) => server.close(() => resolve()));
   }
+}
+
+/// I5: the Mac app polls health every 2 s, which was two log lines every two
+/// seconds, for ever, in a file that never rotates.
+test('the health poll is not logged, while other requests still are', async () => {
+  await withRecordingServer(async (base, events) => {
+    await fetch(`${base}/v1/health`);
+    await fetch(`${base}/v1/annotations`);
+
+    const http = events.filter((e) => e['type'] === 'http.request' || e['type'] === 'http.response');
+    assert.deepEqual(
+      http.map((e) => `${String(e['type'])} ${String(e['path'])}`),
+      ['http.request /v1/annotations', 'http.response /v1/annotations'],
+    );
+  });
+});
+
+/// M8: the response was logged in a `finally` that ran before the error path
+/// had set the status, so every failed request was recorded as a 200 — the log
+/// said the daemon was fine while the client was being refused.
+test('a failed request is logged with the status it actually answered', async () => {
+  await withRecordingServer(async (base, events) => {
+    const response = await fetch(`${base}/v1/captures`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: '{not json',
+    });
+    assert.equal(response.status, 400);
+
+    const logged = events.find((e) => e['type'] === 'http.response');
+    assert.equal(logged?.['path'], '/v1/captures');
+    assert.equal(logged?.['statusCode'], 400);
+  });
 });

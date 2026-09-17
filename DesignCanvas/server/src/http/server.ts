@@ -54,6 +54,9 @@ export async function startHttpServer(options: HttpServerOptions): Promise<Serve
     resolvedRoundsBus: options.roundsBus ?? new RoundsEventBus(),
   };
   const server = createServer((request, response) => {
+    // `handleRequest` answers its own errors (so the response log records the
+    // status that was actually sent, M8). This catch is the last resort for a
+    // throw from the logging or the error path itself.
     handleRequest(request, response, resolvedOptions).catch((error: unknown) => {
       sendError(response, error);
     });
@@ -98,6 +101,11 @@ async function handleRequest(
 
   try {
     await route(method, url, request, response, options);
+  } catch (error) {
+    // Answered here, not in the caller's `.catch`: that ran after the `finally`
+    // below, so a refused request was logged as a 200 while the client got a
+    // 400 (M8).
+    sendError(response, error);
   } finally {
     if (logged) {
       await options.logger.event('http.response', {
