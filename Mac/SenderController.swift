@@ -124,6 +124,9 @@ struct SenderControllerConfig {
     /// The service browsed for and the port dialed. Its own type because it
     /// is the part that compiles without AppKit — see `SenderDiscoveryConfig`.
     var discovery = SenderDiscoveryConfig()
+    /// The productID and brand of the virtual displays this sender creates. A
+    /// second product must bring its own — see `SenderDisplayIdentity`.
+    var displayIdentity = SenderDisplayIdentity()
     /// How the sender turns a display it just created into an input sink.
     /// Nil forwards no input at all, which is what a canvas session wants.
     var inputSinkFactory: InputSinkFactory? = nil
@@ -519,7 +522,8 @@ final class SenderController: ObservableObject {
                                awaitingWake: awaitingWake,
                                inputSinkFactory: config.inputSinkFactory,
                                canvasDelegate: session.canvasDelegate,
-                               devicePort: config.discovery.devicePort)
+                               devicePort: config.discovery.devicePort,
+                               displayIdentity: config.displayIdentity)
         session.sender = sender
         if case .wifi(let result) = target {
             session.wifiServiceName = serviceName(of: result)

@@ -146,6 +146,8 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate, CanvasOutboun
     // from. A second product's receiver listens elsewhere, so a literal here
     // would silently cost it the cable upgrade.
     private let devicePort: UInt16
+    // The productID base and brand of this product's virtual displays.
+    private let displayIdentity: SenderDisplayIdentity
     private let endpointName: String
     private let mode: CaptureMode
     private let quality: StreamQuality
@@ -368,9 +370,11 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate, CanvasOutboun
          identityOffset: UInt32 = 0, awaitingWake: Bool = false,
          inputSinkFactory: InputSinkFactory? = nil,
          canvasDelegate: SenderCanvasDelegate? = nil,
-         devicePort: UInt16 = 9000) {
+         devicePort: UInt16 = 9000,
+         displayIdentity: SenderDisplayIdentity = SenderDisplayIdentity()) {
         self.transport = transport
         self.devicePort = devicePort
+        self.displayIdentity = displayIdentity
         self.endpointName = name
         self.mode = mode
         self.quality = quality
@@ -482,11 +486,7 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate, CanvasOutboun
             ? CGSize(width: 147, height: 68)
             : CGSize(width: 68, height: 147)
 
-        // USB sessions can start before lockdown resolves the device name —
-        // fall back to the kind from the hello rather than the generic label.
-        let displayName = endpointName.hasPrefix("iPhone / iPad")
-            ? "OpenDisplay — \(info.kind)"
-            : "OpenDisplay — \(endpointName)"
+        let displayName = displayIdentity.displayName(endpointName: endpointName, kind: info.kind)
         // Keep one stable identity across rotations. Reconfiguration below
         // applies a new mode to the existing virtual monitor, so macOS keeps
         // its windows and arrangement attached to this physical device.
@@ -545,7 +545,7 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate, CanvasOutboun
                                           pointsWide: pointsWide, pointsHigh: pointsHigh,
                                           sizeInMillimeters: mm,
                                           serialNum: serial &+ totalOffset,
-                                          productID: 0x4F53 &+ totalOffset,
+                                          productID: displayIdentity.productID(offset: totalOffset),
                                           restoreOrigin: restoreOrigin,
                                           onOriginChange: { origin, currentSize in
                                               DisplayArrangement.save(origin: origin, size: currentSize,

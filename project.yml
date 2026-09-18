@@ -171,6 +171,7 @@ targets:
       - Mac/ControlFramePolicy.swift
       - Mac/SenderCanvasHooks.swift
       - Mac/SenderDiscoveryConfig.swift
+      - Mac/SenderDisplayIdentity.swift
       - Mac/DisplayArrangement.swift
       - Mac/Log.swift
       - Mac/LogPolicies.swift
@@ -229,6 +230,7 @@ targets:
       - Mac/SenderController.swift
       - Mac/SenderCanvasHooks.swift
       - Mac/SenderDiscoveryConfig.swift
+      - Mac/SenderDisplayIdentity.swift
       - Mac/ControlFramePolicy.swift
       - Mac/Usbmux.swift
       - Mac/Log.swift
@@ -333,6 +335,8 @@ targets:
       # CanvasSession conforms to SenderCanvasDelegate and talks back through
       # CanvasOutbound, both declared here (Task 3).
       - Mac/SenderCanvasHooks.swift
+      # Extended by Engine/CanvasDisplayIdentity.swift with Design Canvas's own namespace.
+      - Mac/SenderDisplayIdentity.swift
       # The receiver-side canvas state StreamReceiver owns (Task 11). Pure and
       # Foundation-only, so it is unit-tested here rather than through a socket.
       - Shared/CanvasReceiverState.swift
