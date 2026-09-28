@@ -1,6 +1,6 @@
 # PRD: Design Canvas
 
-**Status:** Draft v0.5, 2026-09-16, after the engineering review. Product requirements only; the technical specification is in `technical_doc.md`.
+**Status:** Draft v0.7, 2026-09-22 (v0.6 was 2026-09-18, after the first hardware sessions; v0.5 was 2026-09-16, after the engineering review). v0.7 adds the Mac-app information architecture from the board after the second dogfooding round. v0.6 recorded the decision on G1: the iPad mirrors the Mac's own screen, and there is no extended display. Product requirements only; the technical specification is in `technical_doc.md`.
 **Owner:** AntheaZ
 **Sources:** [FigJam board "Design Canvas"](https://www.figma.com/board/eMxEcxvPAeNtaoWbsKaa6S/Design-Canvas?node-id=0-1); the ai.cst.2 repo (the earlier build we dogfooded and pivoted from); OpenDisplay.
 
@@ -63,7 +63,9 @@ Design Canvas removes capture by mirroring the Mac live, keeps ai.cst.2's agent 
 
 ## 6. Information architecture
 
-From the board (re-read 2026-09-16). Stack is drawn but deprioritized for the MVP.
+From the board (re-read 2026-09-22). Stack is drawn but deprioritized for the MVP. The Mac-app tree is new on the board since the second dogfooding round; the iPad tree is unchanged.
+
+**iPad**
 
 ```
 Canvas (finger gesture to zoom in and out)
@@ -82,6 +84,18 @@ Panel
 Agent replies (status per round: queued, sent, applied, failed, needs input, PR link)
 ```
 
+**Mac app (menu bar)**
+
+```
+Connection status
+ ├─ iPad: connected or not
+ └─ Claude Code: channel attached or not
+Current project: folder name and directory
+Coding-agent client name (claude, codex, …) — future, not in the MVP
+```
+
+The three Mac items map onto existing requirements: connection status onto D7 (session state) and D2, the project row onto D3. The client name is listed under future versions with the other agents.
+
 ## 7. Requirements
 
 IDs are referenced from the technical doc.
@@ -90,7 +104,7 @@ IDs are referenced from the technical doc.
 
 | ID | Requirement |
 |---|---|
-| D1 | Mirror a display to the iPad over USB or WiFi (OpenDisplay) |
+| D1 | Mirror the Mac's main display to the iPad over USB or WiFi (OpenDisplay's mirror capture). No extra display is created, and there is no extended-display mode |
 | D2 | Menu-bar app keeps the local service running while open |
 | D3 | Menu-bar app picks the project, configures it, and launches Claude Code with the channel; never force-kills Claude Code |
 | D4 | Store every sketch and its clean capture locally; nothing leaves the Mac except into the user's Claude Code session |
@@ -123,7 +137,7 @@ IDs are referenced from the technical doc.
 
 | | Reused | New for Design Canvas |
 |---|---|---|
-| From OpenDisplay | Mirroring over USB and WiFi, pairing, discovery, cursor | Freeze frame, view-only region zoom, local drawing mode, five small control messages |
+| From OpenDisplay | Main-display mirroring over USB and WiFi, pairing, discovery, cursor (OpenDisplay's extended virtual display is not used) | Freeze frame, view-only region zoom, local drawing mode, five small control messages |
 | From ai.cst.2 | Menu-bar app, local service, Claude Code Channel push, PencilKit drawing, sketch store, project setup | Clean capture at Draw Mode entry, reply from Claude Code, one pairing instead of two |
 
 Dropped from ai.cst.2: on-demand hotkey capture, the browser extension, the iPad queue view, the separate 6-digit pairing.
@@ -134,15 +148,16 @@ Design Canvas ships as its own Mac app and iPad app, built on OpenDisplay's code
 
 Numbering is shared with the technical doc. Decided items live there.
 
-- **G1. What is mirrored.** OpenDisplay mirrors an extra virtual display, so the preview must be moved onto it. Users will expect "whatever window is in front." Decide before visual design.
+Decided since v0.5: **G1, what is mirrored** (owner, 2026-09-17, after the first hardware sessions). The iPad mirrors the Mac's main display, whatever is in front; the extra virtual display OpenDisplay defaults to is not offered, not even as an option. Details and consequences are in the technical doc, section 1.
+
 - **G5. Queued rounds.** Without Stack, should the iPad at least show a count of rounds waiting for Claude Code?
 - **G6. Draw Mode edges.** Mostly settled in the technical spec's state machine: cancel keeps strokes, Done is disabled with no strokes, rotation and disconnect keep strokes for resend. Still open: redo and clear-all in the tool panel.
 - **G9. Preview refresh.** The loop assumes the dev server hot-reloads. With no input forwarding, a preview that needs a manual reload means walking to the Mac.
 - **G11. Note entry.** The keyboard covers the canvas. Consider a compact field or entering the note after the sketch.
 - **G12. Tool set.** Arrows, rectangles, and text labels are common in design review and not in the MVP list.
-- **G13. Redaction.** Screenshots of unreleased work go into the agent session. Decide whether a per-project redaction toggle is needed.
+- **G13. Redaction.** Screenshots of unreleased work go into the agent session. Decide whether a per-project redaction toggle is needed. Since G1 this matters more: the whole main display is streamed to the iPad, and a round sent without zooming in captures the entire screen, not only a preview placed on a separate display.
 - **G18. Visual design.** The board's "Design tokens" and "sketches" sections are empty.
-- **G19. Permission prompts.** Claude Code asks for approval in the terminal. From the iPad that looks like a hang. The MVP mitigation is to keep the terminal visible on the mirrored display; the real fix is in future versions.
+- **G19. Permission prompts.** Claude Code asks for approval in the terminal. From the iPad that looks like a hang. The MVP mitigation is to keep the terminal visible on the mirrored screen, which since G1 is the Mac's main display, where the terminal opens anyway; the real fix is in future versions.
 - **G22. Session limits.** Relaunching the menu-bar app orphans a running session; manually started Claude Code sessions are unsupported. Acceptable for alpha, must be documented.
 
 ## 10. Future versions

@@ -1,0 +1,71 @@
+{
+  "meta": {
+    "purpose": "Which context docs depend on which sources. When a source changes, follow the edges to see what to re-check.",
+    "updated": "2026-09-22",
+    "edgeDirection": "from depends on to",
+    "renderArtifact": "python3 DesignCanvas/tools/md2artifact.py prd|tech <out.html>, then publish to the doc's artifact URL"
+  },
+  "nodes": [
+    {
+      "id": "doc.prd",
+      "type": "doc",
+      "label": "PRD: Design Canvas (v0.7)",
+      "md": "DesignCanvas/spec/PRD-DesignCanvas.md",
+      "artifact": "https://claude.ai/artifact/GfzwkDducnwDVcFaHV9fes"
+    },
+    {
+      "id": "doc.mac-ia",
+      "type": "doc",
+      "label": "Design Canvas Mac app: information architecture (v0.2)",
+      "md": "DesignCanvas/spec/mac-app-ia.md",
+      "artifact": "https://claude.ai/artifact/U7YtUQHTkGXcPDC14GTBZD"
+    },
+    {
+      "id": "doc.tech",
+      "type": "doc",
+      "label": "Design Canvas: Technical Specification (v0.3)",
+      "md": "DesignCanvas/spec/technical_doc.md",
+      "artifact": "https://claude.ai/artifact/999F7T6MEdHA4TUYzighG1"
+    },
+    {
+      "id": "src.ai-cst-2",
+      "type": "source",
+      "label": "ai.cst.2 repo (the earlier build, dogfooded and pivoted from)"
+    },
+    {
+      "id": "src.claude-code-channels",
+      "type": "source",
+      "label": "Claude Code Channels reference + fakechat reference channel (read 2026-09-16)"
+    },
+    {
+      "id": "src.figjam",
+      "type": "source",
+      "label": "FigJam board: Design Canvas",
+      "url": "https://www.figma.com/board/eMxEcxvPAeNtaoWbsKaa6S/Design-Canvas?node-id=0-1"
+    },
+    {
+      "id": "src.mac-app-code",
+      "type": "source",
+      "label": "Design Canvas Mac app as built (MenuBarView, DisplayStateCopy, SessionStateClassifier)",
+      "md": "DesignCanvas/Mac/App/MenuBarView.swift"
+    },
+    {
+      "id": "src.opendisplay",
+      "type": "source",
+      "label": "OpenDisplay (PROTOCOL.md pv 3, Mac/MacSender.swift)",
+      "md": "PROTOCOL.md"
+    }
+  ],
+  "edges": [
+    { "from": "doc.prd", "to": "src.ai-cst-2" },
+    { "from": "doc.prd", "to": "src.figjam" },
+    { "from": "doc.prd", "to": "src.opendisplay" },
+    { "from": "doc.mac-ia", "to": "doc.prd" },
+    { "from": "doc.mac-ia", "to": "src.figjam" },
+    { "from": "doc.mac-ia", "to": "src.mac-app-code" },
+    { "from": "doc.tech", "to": "doc.prd" },
+    { "from": "doc.tech", "to": "src.ai-cst-2" },
+    { "from": "doc.tech", "to": "src.claude-code-channels" },
+    { "from": "doc.tech", "to": "src.opendisplay" }
+  ]
+}

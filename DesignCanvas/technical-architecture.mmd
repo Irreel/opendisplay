@@ -1,0 +1,42 @@
+flowchart LR
+  subgraph ipadDevice["iPad app · SwiftUI"]
+    ipad["CanvasScreen / CanvasModel / SketchCanvas / ZoomModel / AgentRepliesView"]
+    receiver["ReceiverAdapter + OpenDisplay StreamReceiver"]
+    ipad <--> receiver
+  end
+  subgraph macHost["Mac host"]
+    subgraph macApp["DesignCanvas Mac app"]
+      shell["AppModel / DaemonSupervisor / McpConfigManager / ClaudeLauncher"]
+      sender["OpenDisplaySenderEngine / SenderController / MacSender"]
+      capture["ScreenCaptureKit → VideoToolbox H.264"]
+      canvas["CanvasHub + per-device CanvasSession / FrameRing / capture parking"]
+      upload["Compositor + retrying UploadPipeline"]
+      capture --> sender
+      sender <-->|"Canvas messages and capture frames"| canvas
+      canvas --> upload
+      shell --> sender
+    end
+    daemon["Node.js HTTP daemon · --http · 127.0.0.1:47100"]
+    channel["Node.js MCP channel · --channel · backlog replay / claim / notify / served"]
+    claude["Claude Code in selected project"]
+    store[("Local PNG + JSON store · ~/.claude/channels/design-canvas/")]
+    project["Selected project source files"]
+    shell -.->|"Supervises + health polls"| daemon
+    shell -.->|"Configures MCP + launches"| claude
+    claude -.->|"Spawns"| channel
+    upload -->|"HTTP multipart: captures and annotations"| daemon
+    daemon -->|"Round history + round.updated SSE"| canvas
+    daemon -->|"Annotation SSE"| channel
+    channel -->|"HTTP list / claim / served / reply"| daemon
+    channel -->|"MCP stdio: annotation notification + composite path"| claude
+    claude -->|"MCP tool: design_canvas_reply"| channel
+    daemon <-->|"Read / write captures and annotations"| store
+    store -->|"Read composite PNG"| claude
+    claude -->|"Apply requested changes"| project
+  end
+  sender -->|"H.264 over framed TCP · Wi-Fi or USB/usbmuxd"| receiver
+  receiver -->|"Canvas JSON: freeze + annotation"| canvas
+  canvas -->|"Canvas JSON: frozen + rounds + agent_reply"| receiver
+  shared["Shared Swift contracts: CanvasMessages + DrawModeStateMachine"]
+  shared -.-> ipad
+  shared -.-> canvas

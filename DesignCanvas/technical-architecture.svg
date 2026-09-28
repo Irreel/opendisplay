@@ -1,0 +1,86 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1680" height="1140" viewBox="0 0 1680 1140"><defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#53657b"/></marker></defs><style>text{font-family:Arial,Helvetica,sans-serif;fill:#182c43}.title{font-size:34px;font-weight:700}.sub{font-size:17px;fill:#61738a}.heading{font-size:23px;font-weight:700}.body{font-size:16px}.small{font-size:14px;fill:#53657b}.label{font-size:15px;fill:#344d68;paint-order:stroke;stroke:#f5f8fc;stroke-width:6px;stroke-linejoin:round}</style><rect width="1680" height="1140" fill="#f5f8fc"/>
+<text x="60" y="65" class="title" text-anchor="start">DesignCanvas · Technical architecture</text>
+<text x="60" y="101" class="sub" text-anchor="start">Live Mac preview → iPad annotation → Claude Code → status returned to the iPad</text>
+<rect x="605" y="146" width="1020" height="828" rx="22" fill="#eaf0f7" stroke="#d4deea" stroke-dasharray="8 6"/>
+<text x="628" y="174" class="small" text-anchor="start">MAC APPLICATION + LOCAL SERVICES</text>
+<rect x="60" y="205" width="400" height="315" rx="16" fill="white" stroke="#36a597" stroke-width="2"/><rect x="60" y="205" width="400" height="8" rx="4" fill="#36a597"/>
+<text x="84" y="243" class="small" text-anchor="start">SWIFTUI · iOS/</text>
+<text x="84" y="279" class="heading" text-anchor="start">iPad app</text>
+<text x="84" y="319" class="body" text-anchor="start">CanvasScreen + CanvasModel</text>
+<text x="84" y="348" class="body" text-anchor="start">SketchCanvas / Draw Mode</text>
+<text x="84" y="377" class="body" text-anchor="start">ZoomModel + AgentRepliesView</text>
+<text x="84" y="406" class="body" text-anchor="start"></text>
+<text x="84" y="435" class="body" text-anchor="start">ReceiverAdapter → StreamReceiver</text>
+<text x="84" y="464" class="body" text-anchor="start">OpenDisplay receiver core</text>
+<rect x="630" y="205" width="400" height="315" rx="16" fill="white" stroke="#4d86ce" stroke-width="2"/><rect x="630" y="205" width="400" height="8" rx="4" fill="#4d86ce"/>
+<text x="654" y="243" class="small" text-anchor="start">SWIFTUI · Mac/App + Mac/Engine</text>
+<text x="654" y="279" class="heading" text-anchor="start">Mac app</text>
+<text x="654" y="319" class="body" text-anchor="start">AppModel / OpenDisplaySenderEngine</text>
+<text x="654" y="348" class="body" text-anchor="start">SenderController → MacSender</text>
+<text x="654" y="377" class="body" text-anchor="start">ScreenCaptureKit → H.264 encoder</text>
+<text x="654" y="406" class="body" text-anchor="start"></text>
+<text x="654" y="435" class="body" text-anchor="start">CanvasHub → per-device CanvasSession</text>
+<text x="654" y="464" class="body" text-anchor="start">FrameRing → Compositor → UploadPipeline</text>
+<rect x="1200" y="205" width="400" height="315" rx="16" fill="white" stroke="#9b79c8" stroke-width="2"/><rect x="1200" y="205" width="400" height="8" rx="4" fill="#9b79c8"/>
+<text x="1224" y="243" class="small" text-anchor="start">NODE.JS + TYPESCRIPT · --http</text>
+<text x="1224" y="279" class="heading" text-anchor="start">HTTP daemon</text>
+<text x="1224" y="319" class="body" text-anchor="start">127.0.0.1:47100 (default)</text>
+<text x="1224" y="348" class="body" text-anchor="start">Capture / annotation uploads</text>
+<text x="1224" y="377" class="body" text-anchor="start">Round history + reply endpoints</text>
+<text x="1224" y="406" class="body" text-anchor="start"></text>
+<text x="1224" y="435" class="body" text-anchor="start">Annotation SSE + round-update SSE</text>
+<text x="1224" y="464" class="body" text-anchor="start">Claims, leases and stale-capture cleanup</text>
+<rect x="630" y="700" width="400" height="235" rx="16" fill="white" stroke="#9b79c8" stroke-width="2"/><rect x="630" y="700" width="400" height="8" rx="4" fill="#9b79c8"/>
+<text x="654" y="738" class="small" text-anchor="start">NODE.JS + TYPESCRIPT · --channel</text>
+<text x="654" y="774" class="heading" text-anchor="start">MCP channel process</text>
+<text x="654" y="814" class="body" text-anchor="start">Subscriber: backlog + live events</text>
+<text x="654" y="843" class="body" text-anchor="start">Claim → notify → mark served</text>
+<text x="654" y="872" class="body" text-anchor="start">MCP SDK over standard input/output</text>
+<text x="654" y="901" class="body" text-anchor="start">design_canvas_reply → HTTP reply</text>
+<rect x="60" y="700" width="400" height="235" rx="16" fill="white" stroke="#bd8a47" stroke-width="2"/><rect x="60" y="700" width="400" height="8" rx="4" fill="#bd8a47"/>
+<text x="84" y="738" class="small" text-anchor="start">AGENT SESSION · ON THE MAC</text>
+<text x="84" y="774" class="heading" text-anchor="start">Claude Code</text>
+<text x="84" y="814" class="body" text-anchor="start">Launched in the selected project</text>
+<text x="84" y="843" class="body" text-anchor="start">Reads the annotated composite PNG</text>
+<text x="84" y="872" class="body" text-anchor="start">Applies changes to project source</text>
+<text x="84" y="901" class="body" text-anchor="start">Reports applied / failed / needs_input</text>
+<rect x="1200" y="700" width="400" height="235" rx="16" fill="white" stroke="#77899c" stroke-width="2"/><rect x="1200" y="700" width="400" height="8" rx="4" fill="#77899c"/>
+<text x="1224" y="738" class="small" text-anchor="start">DesignCanvasStore</text>
+<text x="1224" y="774" class="heading" text-anchor="start">Local filesystem store</text>
+<text x="1224" y="814" class="body" text-anchor="start">~/.claude/channels/design-canvas/</text>
+<text x="1224" y="843" class="body" text-anchor="start">captures/ + annotations/</text>
+<text x="1224" y="872" class="body" text-anchor="start">screenshot.png / sketch.png</text>
+<text x="1224" y="901" class="body" text-anchor="start">composite.png + meta.json</text>
+<path d="M630 263 H460" fill="none" stroke="#53657b" stroke-width="2.2" marker-end="url(#arrow)"/>
+<text x="545" y="233" class="label" text-anchor="middle">H.264 video</text>
+<text x="545" y="253" class="label" text-anchor="middle">Wi-Fi / USB</text>
+<path d="M460 369 H630" fill="none" stroke="#53657b" stroke-width="2.2" marker-end="url(#arrow)" marker-start="url(#arrow)"/>
+<text x="545" y="329" class="label" text-anchor="middle">Canvas JSON</text>
+<text x="545" y="351" class="label" text-anchor="middle">freeze / annotation</text>
+<text x="545" y="410" class="label" text-anchor="middle">frozen / rounds / reply</text>
+<text x="60" y="554" class="small" text-anchor="start">Device listener: TCP 9100 · Bonjour _designcanvas._tcp</text>
+<text x="60" y="579" class="small" text-anchor="start">USB uses usbmuxd; canvas input forwarding is disabled.</text>
+<path d="M1030 272 H1200" fill="none" stroke="#53657b" stroke-width="2.2" marker-end="url(#arrow)"/>
+<text x="1115" y="236" class="label" text-anchor="middle">HTTP multipart</text>
+<text x="1115" y="255" class="label" text-anchor="middle">captures + sketches</text>
+<path d="M1200 408 H1030" fill="none" stroke="#53657b" stroke-width="2.2" marker-end="url(#arrow)"/>
+<text x="1115" y="373" class="label" text-anchor="middle">Rounds + SSE</text>
+<text x="1115" y="393" class="label" text-anchor="middle">status / replies</text>
+<path d="M1400 520 V700" fill="none" stroke="#53657b" stroke-width="2.2" marker-end="url(#arrow)"/>
+<text x="1418" y="595" class="label" text-anchor="start">Read / write</text>
+<text x="1418" y="618" class="label" text-anchor="start">PNG + JSON</text>
+<path d="M1200 480 H1115 V638 H890 V700" fill="none" stroke="#53657b" stroke-width="2.2" marker-end="url(#arrow)" marker-start="url(#arrow)"/>
+<text x="1005" y="591" class="label" text-anchor="middle">Loopback HTTP + annotation SSE</text>
+<text x="1005" y="615" class="label" text-anchor="middle">list / claim / served / reply</text>
+<path d="M630 812 H460" fill="none" stroke="#53657b" stroke-width="2.2" marker-end="url(#arrow)" marker-start="url(#arrow)"/>
+<text x="545" y="762" class="label" text-anchor="middle">MCP stdio</text>
+<text x="545" y="786" class="label" text-anchor="middle">events + reply tool</text>
+<path d="M1200 900 H1100 V1003 H260 V935" fill="none" stroke="#53657b" stroke-width="2.2" marker-end="url(#arrow)"/>
+<text x="760" y="995" class="label" text-anchor="middle">Composite image path → Claude reads the local PNG</text>
+<text x="60" y="630" class="small" text-anchor="start">SHARED CONTRACT</text>
+<text x="60" y="655" class="small" text-anchor="start">Shared/CanvasMessages.swift + DrawModeStateMachine.swift</text>
+<text x="630" y="554" class="small" text-anchor="start">Lifecycle: DaemonSupervisor starts / monitors the daemon.</text>
+<text x="60" y="1048" class="small" text-anchor="start">Mac AppModel also configures .mcp.json and launches Claude Code; Claude Code spawns the channel process.</text>
+<text x="60" y="1076" class="small" text-anchor="start">Sources: Mac/Engine/CanvasSession.swift · CanvasHub.swift · Mac/App/OpenDisplaySenderEngine.swift · iOS/ReceiverAdapter.swift</text>
+<text x="60" y="1099" class="small" text-anchor="start">server/src/index.ts · http/server.ts · channel/{index,subscriber}.ts · store/{store,paths}.ts · ../Mac/MacSender.swift</text>
+</svg>
