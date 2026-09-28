@@ -79,8 +79,8 @@ final class AppModel: ObservableObject {
     private var launchStartedAt: Date?
     private var launchTimedOutFlag = false
     /// The most recent raw probe outcome, kept for `resetProcesses()` to decide
-    /// `refusedUnknownOccupant` without re-probing.
-    private var lastProbeResult: HealthProbeResult = .refused
+    /// `refusedUnknownOccupant` without re-probing, and shown raw in the Details window.
+    private(set) var lastProbeResult: HealthProbeResult = .refused
     /// Display of the previous poll; used only to detect the ownedAttached -> count 0 transition.
     private var previousDisplay: DisplayState = .noDaemon
     /// How many polls in a row have seen a healthy daemon report zero channel subscribers.

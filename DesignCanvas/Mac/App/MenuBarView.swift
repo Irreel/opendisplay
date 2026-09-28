@@ -1,273 +1,222 @@
-// Ported from ai.cst.2 `apps/desktop/DesignCanvasDesktop/MenuBarView.swift`.
-//
-// The capture section is gone (no hotkey, no "Capture frontmost window", no last-capture label)
-// and so is the iPad URL row — the iPad reaches the Mac over the OpenDisplay connection, not
-// over LAN HTTP, so there is no URL to show. In their place: the device list the engine
-// publishes, and a Screen Recording row, which is the one permission the sender needs.
-//
-// Every branch here reads a value that is tested elsewhere (`SessionStateClassifier`,
-// `DisplayState.statusText`, `AppModel.devices`); this file just draws them.
+// The popover, laid out per `DesignCanvas/spec/mac-app-ia.md` section 3: a summary line, the
+// two connection rows (iPad, Claude Code) in the board's order, the project, and a footer.
+// Every word, tint and action comes from `MenuPresentation`, which is tested; this file only
+// draws rows and maps each `RowAction` to an `AppModel` call. Developer settings and the raw
+// daemon state live in `SettingsView` and `DetailsView`, opened as windows because a
+// window-style `MenuBarExtra` cannot present a sheet.
 
 import SwiftUI
 
 struct MenuBarView: View {
     @ObservedObject var model: AppModel
+    @Environment(\.openWindow) private var openWindow
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            statusSection
-            resetSection
-            Divider()
-            devicesSection
-            Divider()
-            screenRecordingSection
-            Divider()
-            serverBuildSection
+        VStack(alignment: .leading, spacing: 10) {
+            Text(MenuPresentation.summary(screenRecordingGranted: model.screenRecordingGranted,
+                                          iPadConnected: iPadConnected,
+                                          claude: claudeRow))
+                .font(.headline)
+                .fixedSize(horizontal: false, vertical: true)
+            connectionSection
             Divider()
             projectSection
             Divider()
-            sessionSection
-            Divider()
-            Button("Quit") { model.quit() }
+            footer
         }
         .padding(12)
         .frame(width: 320)
     }
 
-    /// The honest answer to "what is running?" (D7): the daemon line, then the session line.
-    @ViewBuilder
-    private var statusSection: some View {
-        switch model.sessionState.daemon {
-        case .none:
-            Text(DisplayState.noDaemon.statusText)
-                .foregroundColor(DisplayState.noDaemon.statusTint)
-        case .unknownOccupant:
-            Text(DisplayState.portOccupiedUnknown.statusText)
-                .foregroundColor(DisplayState.portOccupiedUnknown.statusTint)
-        case .owned, .foreign:
-            Text("Daemon: running")
-                .foregroundColor(.green)
-        }
-        if model.daemonGaveUp {
-            Text("Daemon stopped retrying \u{2014} port may be in use")
-                .font(.caption2)
-                .foregroundColor(.orange)
-        }
-        sessionStatus
-        if model.sessionState.secondSubscriber {
-            Text("\u{26A0}\u{FE0E} Two channel connections detected")
-                .font(.caption)
-                .foregroundColor(.orange)
-        }
+    // MARK: - Derived state
+
+    private var iPadConnected: Bool { !model.devices.isEmpty }
+
+    private var startBlocker: StartBlocker? {
+        if model.selectedProject == nil { return .noProject }
+        if model.serverEntry == nil { return .noServerBuild }
+        return nil
     }
 
-    /// Offers a way out of "existing session"/"foreign daemon"/"unknown occupant" states without
-    /// silently killing Claude Code (spec section 6): reset only ever stops argv-verified
-    /// Design Canvas helper processes (see `ProcessResetService`).
-    @ViewBuilder
-    private var resetSection: some View {
-        switch model.sessionState.display {
-        case .existingSessionDetected, .foreignDaemon, .portOccupiedUnknown:
-            VStack(alignment: .leading, spacing: 4) {
-                Button("Reset Design Canvas Processes") { Task { await model.resetProcesses() } }
-                    .disabled(model.isResetting)
-                Text("Stops Design Canvas helper processes. May detach an existing Claude Code channel. Never quits Claude Code or edits your files.")
-                    .font(.caption2)
-                    .foregroundColor(.secondary)
-                if model.sessionState.display == .existingSessionDetected {
-                    Button("Start New After Reset") { Task { await model.startNewAfterReset() } }
-                        .disabled(model.isResetting)
-                }
-                if let outcome = model.lastResetOutcome {
-                    resetOutcomeStatus(outcome)
-                }
-            }
-        case .noDaemon, .daemonOnly, .launchPending, .launchTimedOut, .ownedAttached:
-            EmptyView()
-        }
+    private var claudeRow: RowPresentation {
+        MenuPresentation.claudeCodeRow(
+            display: model.sessionState.display,
+            daemonGaveUp: model.daemonGaveUp,
+            secondSubscriber: model.sessionState.secondSubscriber,
+            pendingUploads: model.pendingUploads,
+            startBlocker: startBlocker
+        )
     }
 
-    /// One status line, priority order: an unknown occupant we refused to touch is the more
-    /// important safety fact, so it wins over a "some processes didn't stop" report.
-    @ViewBuilder
-    private func resetOutcomeStatus(_ outcome: ResetOutcome) -> some View {
-        if outcome.refusedUnknownOccupant {
-            Text("Port 47100 is held by an unknown process \u{2014} not touched.")
-                .font(.caption2)
-                .foregroundColor(.orange)
-        } else if !outcome.failedPids.isEmpty {
-            Text("Some processes did not stop (see Activity Monitor).")
-                .font(.caption2)
-                .foregroundColor(.red)
-        }
-    }
+    // MARK: - Connection status
 
     @ViewBuilder
-    private var devicesSection: some View {
-        Text("iPads")
-            .font(.caption)
-            .foregroundColor(.secondary)
-        if model.devices.isEmpty && model.discoveredDevices.isEmpty {
-            Text("No iPad connected \u{2014} open Design Canvas on the iPad")
-                .font(.caption2)
-                .foregroundColor(.secondary)
-        } else {
-            ForEach(model.devices) { device in
-                HStack {
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text(device.name)
-                            .font(.caption)
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-                        Text(device.status)
-                            .font(.caption2)
-                            .foregroundColor(.secondary)
-                            .lineLimit(1)
-                            .truncationMode(.middle)
+    private var connectionSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if !model.screenRecordingGranted || (model.devices.isEmpty && model.discoveredDevices.isEmpty) {
+                let row = MenuPresentation.iPadPlaceholder(screenRecordingGranted: model.screenRecordingGranted)
+                connectionRow(title: "iPad", detail: nil, row: row) { perform(row.action, deviceId: nil) }
+            } else {
+                ForEach(model.devices) { device in
+                    let row = MenuPresentation.deviceRow(device)
+                    connectionRow(title: device.name, detail: device.onUSB ? "USB" : "WiFi", row: row) {
+                        perform(row.action, deviceId: device.id)
                     }
-                    Spacer()
-                    Text(device.onUSB ? "USB" : "WiFi")
-                        .font(.caption2)
-                        .foregroundColor(.secondary)
-                    Button("Disconnect") { model.disconnectDevice(id: device.id) }
-                        .font(.caption2)
+                }
+                ForEach(model.discoveredDevices) { device in
+                    let row = MenuPresentation.discoveredRow(device)
+                    connectionRow(title: device.name, detail: device.transport, row: row) {
+                        perform(row.action, deviceId: device.id)
+                    }
                 }
             }
-            // The only way to start a WiFi iPad: the sender auto-connects a WiFi
-            // device only once the user has connected to it from a UI, and this
-            // is that UI (I1, PRD D1).
-            ForEach(model.discoveredDevices) { device in
-                HStack {
-                    Text(device.name)
-                        .font(.caption)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                    Spacer()
-                    Text(device.transport)
-                        .font(.caption2)
-                        .foregroundColor(.secondary)
-                    Button("Connect") { model.connectDevice(id: device.id) }
-                        .font(.caption2)
-                }
+            let claude = claudeRow
+            connectionRow(title: "Claude Code", detail: nil, row: claude) { perform(claude.action, deviceId: nil) }
+            if let warning = model.configWarning {
+                Text(warning)
+                    .font(.caption2)
+                    .foregroundColor(.red)
+                    .fixedSize(horizontal: false, vertical: true)
             }
-        }
-        // A sketch the engine accepted is the Mac's to deliver, and it keeps
-        // retrying for as long as it takes. Saying so is the difference
-        // between a slow round and a lost one (I3).
-        if model.pendingUploads > 0 {
-            Text(model.pendingUploads == 1
-                 ? "1 sketch waiting for the daemon"
-                 : "\(model.pendingUploads) sketches waiting for the daemon")
-                .font(.caption2)
-                .foregroundColor(.orange)
         }
     }
 
+    /// One row: name, optional transport, state word in its tint, then the row's action (if
+    /// any) on the trailing edge; the sub-line, when present, sits under the name.
     @ViewBuilder
-    private var screenRecordingSection: some View {
-        HStack {
-            Text("Screen Recording: \(model.screenRecordingGranted ? "granted" : "not granted")")
-                .font(.caption)
-                .foregroundColor(model.screenRecordingGranted ? .green : .red)
-            if !model.screenRecordingGranted {
-                Spacer()
-                Button("Grant") { model.openScreenRecordingSettings() }
+    private func connectionRow(title: String, detail: String?, row: RowPresentation, action: @escaping () -> Void) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            HStack(spacing: 6) {
+                Circle()
+                    .fill(color(row.tint))
+                    .frame(width: 7, height: 7)
+                Text(title)
+                    .font(.body)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                if let detail {
+                    Text(detail)
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                }
+                Spacer(minLength: 8)
+                Text(row.word)
+                    .font(.callout)
+                    .foregroundColor(color(row.tint))
+                if let rowAction = row.action {
+                    Button(label(rowAction), action: action)
+                        .controlSize(.small)
+                        .disabled(!row.actionEnabled || (rowAction == .start && model.startDisabled))
+                }
             }
-        }
-        if !model.screenRecordingGranted {
-            Text("Design Canvas mirrors the screen, so it needs Screen Recording. Granting it in System Settings takes effect after a relaunch.")
-                .font(.caption2)
-                .foregroundColor(.secondary)
+            if let subline = row.subline {
+                Text(subline)
+                    .font(.caption2)
+                    .foregroundColor(row.tint == .secondary ? .secondary : color(row.tint))
+                    .padding(.leading, 13)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
     }
 
-    @ViewBuilder
-    private var serverBuildSection: some View {
-        HStack {
-            Text("Server build: \(model.serverEntry == nil ? "unset" : "set")")
-                .font(.caption)
-            Spacer()
-            Button(model.serverEntry == nil ? "Set server build\u{2026}" : "Set\u{2026}") { model.setServerBuild() }
-        }
-        if let serverEntry = model.serverEntry {
-            Text(serverEntry)
-                .font(.caption2)
-                .foregroundColor(.secondary)
-                .lineLimit(1)
-                .truncationMode(.middle)
+    private func perform(_ action: RowAction?, deviceId: String?) {
+        switch action {
+        case .start:
+            model.startSession()
+        case .retry:
+            // Two dead ends share the button: a launch that timed out (start over) and a
+            // supervisor that gave up (a reset restarts it, see `AppModel.resetProcesses`).
+            if model.daemonGaveUp {
+                Task { await model.resetProcesses() }
+            } else {
+                model.disconnect()
+                model.startSession()
+            }
+        case .disconnect:
+            if let deviceId { model.disconnectDevice(id: deviceId) } else { model.disconnect() }
+        case .connect:
+            if let deviceId { model.connectDevice(id: deviceId) }
+        case .grant:
+            model.openScreenRecordingSettings()
+        case .details:
+            open("details")
+        case .none:
+            break
         }
     }
+
+    // MARK: - Project
 
     @ViewBuilder
     private var projectSection: some View {
-        Text("Recent projects")
-            .font(.caption)
-            .foregroundColor(.secondary)
-        if model.recentProjects.isEmpty {
-            Text("None")
-                .font(.caption2)
-                .foregroundColor(.secondary)
-        } else {
-            ForEach(model.recentProjects, id: \.self) { url in
-                Button(url.lastPathComponent) { model.selectRecent(url) }
-                    .buttonStyle(.link)
+        HStack(alignment: .top) {
+            VStack(alignment: .leading, spacing: 1) {
+                if let project = model.selectedProject {
+                    Text(project.lastPathComponent)
+                        .font(.body)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    Text(project.deletingLastPathComponent().path)
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                } else {
+                    Text("No project selected")
+                        .foregroundColor(.secondary)
+                }
             }
-        }
-        Button("Open Project\u{2026}") { model.pickProject() }
-        if let project = model.selectedProject {
-            Text("Selected: \(project.path)")
-                .font(.caption2)
-                .foregroundColor(.secondary)
-                .lineLimit(1)
-                .truncationMode(.middle)
-        }
-    }
-
-    @ViewBuilder
-    private var sessionSection: some View {
-        Button("Start session") { model.startSession() }
-            .disabled(model.selectedProject == nil || model.serverEntry == nil || model.startDisabled)
-        if model.selectedProject == nil {
-            Text("No project selected")
-                .font(.caption)
-                .foregroundColor(.secondary)
-        } else if model.serverEntry == nil {
-            Text("No server build set")
-                .font(.caption)
-                .foregroundColor(.secondary)
-        }
-        if model.needsMcpUpdate {
-            Text("This project's .mcp.json has an outdated design-canvas entry.")
-                .font(.caption)
-                .foregroundColor(.orange)
-            Button("Update .mcp.json entry") { model.updateMcpEntry() }
-        }
-        if let warning = model.configWarning {
-            Text(warning)
-                .font(.caption)
-                .foregroundColor(.red)
-        }
-        if model.sessionStarted {
-            Button("Disconnect") { model.disconnect() }
-            Text("Disconnect only stops this app tracking the session \u{2014} Claude Code keeps running. Quit it in its Terminal to end the session.")
-                .font(.caption2)
-                .foregroundColor(.secondary)
+            Spacer()
+            Menu("Change\u{2026}") {
+                ForEach(model.recentProjects.prefix(3), id: \.self) { url in
+                    Button(url.lastPathComponent) { model.selectRecent(url) }
+                }
+                if !model.recentProjects.isEmpty { Divider() }
+                Button("Open Folder\u{2026}") { model.pickProject() }
+            }
+            .controlSize(.small)
+            .fixedSize()
         }
     }
 
-    /// Driven by `sessionState.display` (re-verified every poll), so it distinguishes a session
-    /// this app launched from one it merely observes, and auto-clears when the user quits Claude
-    /// Code. `noDaemon`/`portOccupiedUnknown` are already said by the daemon line directly above
-    /// it, so this row stays empty for those rather than saying the same fact twice.
+    // MARK: - Footer
+
     @ViewBuilder
-    private var sessionStatus: some View {
-        switch model.sessionState.display {
-        case .noDaemon, .portOccupiedUnknown:
-            EmptyView()
-        default:
-            Text(model.sessionState.display.statusText)
-                .font(.caption)
-                .foregroundColor(model.sessionState.display.statusTint)
+    private var footer: some View {
+        HStack {
+            Button("Details\u{2026}") { open("details") }
+            Button("Settings\u{2026}") { open("settings") }
+            Spacer()
+            Button("Quit") { model.quit() }
+        }
+        .controlSize(.small)
+    }
+
+    // MARK: - Helpers
+
+    /// A menu-bar app has no key window, so the new window must be brought forward by hand.
+    private func open(_ id: String) {
+        openWindow(id: id)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    private func color(_ tint: MenuTint) -> Color {
+        switch tint {
+        case .secondary: return .secondary
+        case .green: return .green
+        case .orange: return .orange
+        case .red: return .red
+        }
+    }
+
+    private func label(_ action: RowAction) -> String {
+        switch action {
+        case .start: return "Start"
+        case .retry: return "Retry"
+        case .disconnect: return "Disconnect"
+        case .connect: return "Connect"
+        case .grant: return "Grant"
+        case .details: return "Details\u{2026}"
         }
     }
 }
