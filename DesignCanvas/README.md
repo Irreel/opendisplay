@@ -14,10 +14,17 @@ from the iPad: it is a display and a sketchpad, never a remote control.
 **Status:** the Node half (daemon, channel, this whole round lifecycle) is
 proven end to end without hardware — see
 [`server/scripts/e2e-round.mjs`](server/scripts/e2e-round.mjs) and
-`pnpm --dir DesignCanvas/server test:e2e` below. **Nothing in this feature
-has run against real devices yet.** [`spec/device-checklist.md`](spec/device-checklist.md)
-is the manual pass that still needs to happen on real hardware before this
-is considered proven end to end.
+`pnpm --dir DesignCanvas/server test:e2e` below. **On real devices, only
+the first step is proven.** The first hardware sessions (2026-09-17, one
+Mac and one iPad over USB) got as far as the iPad connecting on its own
+and showing the Mac's stream. They also found two defects, both fixed —
+a `start` script that never launched the daemon, and macOS refusing to
+bring the sender's virtual displays online — and settled what the iPad
+shows: the Mac's own screen, mirror only (see "First session"). The
+mirror-only build itself, WiFi, zoom, Draw Mode and its freeze, a full
+round, and replies on the iPad have **not** been run on hardware yet.
+[`spec/device-checklist.md`](spec/device-checklist.md) is the manual pass
+that still has to happen before this is considered proven end to end.
 
 ## What's in here
 
@@ -63,7 +70,8 @@ DesignCanvas/
 Design Canvas also adds a handful of small, inert-by-default hooks to
 OpenDisplay's own code, so those apps behave exactly as before unless a
 Design Canvas object is actually injected: `Mac/ControlFramePolicy.swift`,
-`Mac/SenderCanvasHooks.swift`, `Mac/SenderController.swift` (all new), plus
+`Mac/SenderCanvasHooks.swift`, `Mac/SenderController.swift`,
+`Mac/CaptureMode.swift` (all new), plus
 small additions to `Mac/MacSender.swift`, `Shared/Protocol.swift`,
 `Shared/StreamReceiver.swift`, and a new `Shared/CanvasReceiverState.swift`
 and `iOS/ReceiverModel.swift`. `PROTOCOL.md` section 11 is the normative
@@ -139,14 +147,17 @@ real device or simulator, and run.
    to it. That first click is also what makes the Mac auto-reconnect that
    iPad on later launches; **Disconnect** stops both the session and the
    auto-reconnect.
-3. **Move what you want to review onto the new display.** The iPad does
-   *not* mirror your existing screen: connecting it creates an **extra
-   virtual display**, and that display is what the iPad shows and what a
-   sketch is composited onto. It starts out empty, so drag the browser, the
-   simulator, or whatever you are reviewing onto it — in System Settings ▸
-   Displays it appears beside your built-in screen, and you can put it
-   wherever suits you. Nothing on your other screens is captured or sent
-   (PRD open question G1).
+3. **The iPad now mirrors your Mac's screen.** Whatever is in front on the
+   Mac is what the iPad shows and what a sketch is composited onto — no
+   extra display appears, and there is nothing to drag anywhere (owner
+   decision on PRD open question G1, 2026-09-17). With more than one
+   monitor attached, it is the first display macOS reports, normally the
+   main one. Two consequences: **everything on
+   that screen is streamed to the iPad**, and whatever is inside the region
+   you sketch on becomes part of the image Claude Code receives — so zoom in
+   on the area you mean before you draw. The mirror keeps the Mac's aspect
+   ratio, so expect letterbox bars on the iPad; zoom and sketch coordinates
+   are relative to the picture, not the bars.
 4. In the Mac app, click **Open Project…** and choose the repo you want
    Claude Code to work in (or pick it from **Recent projects**).
 5. Click **Set server build…** and point it at
@@ -156,15 +167,15 @@ real device or simulator, and run.
    `claude --dangerously-load-development-channels server:design-canvas`
    in your project directory, and writes (or updates) that project's
    `.mcp.json` with the `design-canvas` channel entry.
-7. **Keep that Terminal window on the mirrored display** (owner decision
-   D20) — the virtual display from step 3, the one the iPad shows. Claude
-   Code's own permission prompts (tool-use confirmations, etc.) still
-   appear there, and nothing is relayed to the iPad while one is waiting —
-   the mitigation for now is that you can see it because it's on the screen
-   you're mirroring. One consequence: since the terminal is on the mirrored
-   screen, it can end up inside a sketch's captured frame or composite.
-   Zoom into just the region you're drawing on before you draw to keep it
-   out of the crop.
+7. **Keep that Terminal window on the mirrored screen** (owner decision
+   D20) — the one from step 3, which is where it opens unless you move it
+   to another monitor. Claude Code's own permission prompts (tool-use
+   confirmations, etc.) still appear there, and nothing is relayed to the
+   iPad while one is waiting — the mitigation for now is that you can see
+   it because it's on the screen you're mirroring. One consequence: since
+   the terminal is on the mirrored screen, it can end up inside a sketch's
+   captured frame or composite. Zoom into just the region you're drawing on
+   before you draw to keep it out of the crop.
 8. On the iPad: pinch to zoom into the area you want to annotate, enter
    Draw Mode, sketch, optionally add a note, and tap Done. The composite
    (your sketch flattened over the clean frame) is pushed to Claude Code as
@@ -207,6 +218,17 @@ files. Treat the daemon as trusting everything already running on your Mac.
 
 ## Known limits
 
+- **Mirroring streams the screen at its native pixel size.** That is what
+  makes a zoomed-in sketch sharp, but H.264 tops out around 4096×2304: a 5K
+  main display at the default quality is rejected by the encoder frame
+  after frame (the same ceiling OpenDisplay upstream issue #271 describes
+  for a 5K receiver). Until the app has a
+  quality control of its own, `defaults write com.designcanvas.mac quality
+  balanced` (75%) or `fast` (50%) brings it under the ceiling; relaunch
+  afterwards. Debug builds use the `com.designcanvas.mac.debug` domain.
+- **Mirror only.** Design Canvas has no extended display: the sender it is
+  built on can create one, but here the capture mode is fixed, and a
+  stored `mode` default or a `-mode` launch argument is ignored.
 - **No reply timeout.** A round that Claude Code never replies to (the
   channel wasn't loaded, the model never called the tool, or it's stuck
   behind a permission prompt) stays `sent` forever — there is no timeout or

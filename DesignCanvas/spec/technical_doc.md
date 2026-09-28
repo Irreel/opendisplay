@@ -1,6 +1,6 @@
 # Design Canvas: Technical Specification
 
-**Status:** Draft v0.2, 2026-09-16, after the engineering review of the same day. Companion to `PRD-DesignCanvas.md` v0.4. Requirement IDs (D, C, M, P) and gap numbers (G) are shared with the PRD.
+**Status:** Draft v0.3, 2026-09-18, after the first hardware sessions (v0.2 was 2026-09-16, after the engineering review of the same day). Companion to `PRD-DesignCanvas.md` v0.6. Requirement IDs (D, C, M, P) and gap numbers (G) are shared with the PRD.
 **Sources:** ai.cst.2 (tech-doc v0.5, desktop-app.md, ADR-0001 to ADR-0004, `packages/server/src/channel/index.ts`); OpenDisplay `PROTOCOL.md` (pv 3) and `Mac/MacSender.swift`; the Claude Code Channels reference and the fakechat reference channel, both read 2026-09-16.
 
 **Document history**
@@ -9,6 +9,7 @@
 |---|---|
 | 2026-09-16 v0.1 | Split from the PRD |
 | 2026-09-16 v0.2 | Engineering review applied: GPL-3.0 final and in-app engine; no input forwarding; frame ring instead of a fresh still; Mac composites, sketch-only wire; canvas frame cap with chunked reads; trust-on-first-use accepted; no captureId round-trip; rounds snapshot; store under `~/.claude/channels`; single DaemonClient; Draw Mode state machine; `sourceLabel` removed; size guards on sender-to-iPad JSON; review outputs and report appended |
+| 2026-09-18 v0.3 | G1 decided after the first hardware sessions: mirror the Mac's main display, no extended display. Sections 1, 3, 5.6, 7 and 10 updated; section 11 left as the dated record of the 2026-09-16 review |
 
 ## 1. Architecture
 
@@ -17,7 +18,7 @@ Mac                                                          iPad
 ┌───────────────────────────────────────────────┐
 │ Design Canvas menu-bar app (Swift, one process)│
 │  ├─ SenderEngine module (OpenDisplay-derived)  │
-│  │    virtual display, frame ring, H.264 ──────┼──USB/WiFi──▶ Design Canvas app
+│  │    main-display capture, frame ring, H.264 ─┼──USB/WiFi──▶ Design Canvas app
 │  │    freeze / annotation / agentReply / rounds│            (OpenDisplay receiver core
 │  │    NO input injection                       │             + Draw Mode + Agent replies)
 │  ├─ DaemonClient (HTTP + SSE, loopback)        │
@@ -31,11 +32,18 @@ Mac                                                          iPad
 | Process | Lifetime | Owns |
 |---|---|---|
 | Menu-bar app | While open | Daemon supervision with crash-loop guard, project picker, `.mcp.json` management, Start session, Reset, session-state classifier, status UI (D2, D3, D7). Hosts the engine module and the DaemonClient |
-| SenderEngine module (in-process) | With the app | Virtual display, ScreenCaptureKit stream, frame ring, encoder, the only connection to the iPad, the only LAN-facing code. Behind a `SenderEngine` protocol so it is fakeable in tests. No input injection (D1, D9, D10) |
+| SenderEngine module (in-process) | With the app | ScreenCaptureKit stream of the Mac's main display (mirror only; no virtual display is created), frame ring, encoder, the only connection to the iPad, the only LAN-facing code. Behind a `SenderEngine` protocol so it is fakeable in tests. No input injection (D1, D9, D10) |
 | `designtool --http` | While the app is open | HTTP on `127.0.0.1` only, filesystem store, SSE event stream. Single writer to the store (D4, D8) |
 | `designtool --channel` | While Claude Code has it spawned | MCP over stdio: `claude/channel` capability plus the reply tool. Subscribes to the daemon; claims, emits, marks served (D5, D6) |
 
 **Decided in review.** The engine is an in-app module, not a separate process: with GPL-3.0 as the final license (section 7) the process boundary had no remaining purpose. The iPad never controls the Mac: no `touch`, `scroll`, `pencil`, or `proximity` is sent on a canvas session, the engine omits `InputInjector`, and the app never requests Accessibility. Screen Recording is the only TCC grant.
+
+**Decided after the first hardware sessions (G1, owner, 2026-09-17).** Design Canvas mirrors the Mac's main display and has no extended display. It runs OpenDisplay's existing mirror capture path: ScreenCaptureKit captures the first display macOS reports (normally the main one) at its native pixel size times the quality scale, and no `CGVirtualDisplay` is created. The mode is fixed rather than defaulted (`SenderControllerConfig.fixedMode = .mirror`, resolved by `CaptureMode.resolve(stored:fixed:)`), so a stored `mode` default or a `-mode` launch argument cannot select extend. OpenDisplay itself keeps its user-selectable mode. Consequences:
+
+- The stream has the Mac's resolution and aspect ratio, not the iPad's. The iPad aspect-fits it, so there are letterbox bars, and `zoomRect` is normalized to the picture rather than to the iPad's screen (`ZoomModel.fittedRect`), so a crop lines up wherever the bars fall. `hello`'s panel size and `maxEncodeWide/High` do not size a mirrored stream, and a rotation re-`hello` rebuilds nothing.
+- The encode size follows the Mac's panel, for example 3024x1964 for a 1512x982-point Retina panel. H.264 tops out near 4096x2304, so a 5K main display at the default quality exceeds it (OpenDisplay upstream #271 describes the same ceiling). Until the app has a quality control of its own, the sender's `quality` default (`balanced` 75%, `fast` 50%) is the workaround.
+- Everything on the main display is streamed to the iPad, and a round sent without zooming in captures the whole screen. This widens G13 (redaction) and is why D20's terminal ends up in frame.
+- No virtual display means none of macOS's saved per-display state is involved. The first hardware session failed on exactly that: macOS held state under which the display identities it was offered never came online (OpenDisplay upstream #206 and #221), so nothing was ever captured.
 
 **Invariants carried from ai.cst.2.** The daemon is the only writer to the store. An annotation is immutable once written; only its meta state changes. The channel directory is the only code that imports the MCP SDK (lint-enforced). No code in Design Canvas calls an LLM or edits user source. Every request, notification, reply, and state change is logged as JSON lines.
 
@@ -63,7 +71,7 @@ Additive JSON control messages, no `pv` bump, gated on `welcome.canvas: true`. A
 
 ## 3. Capture at freeze and Draw Mode
 
-**Frame ring (D15).** The engine keeps a ring of the last ~2 s of captured frames keyed by capture ms, stored downscaled to the encode size so memory stays bounded. On `freeze` it picks the frame whose capture ms matches the iPad's `captureMs` (nearest, within one frame interval), converts to PNG, and posts it to the daemon as the capture. The base frame is therefore the exact frame the user drew on, in clean pre-encode pixels. There is no iPad fallback frame: `frozen.ok:false` means no frame exists yet, which cannot happen in Draw Mode; the iPad then leaves Draw Mode with a message and keeps the strokes.
+**Frame ring (D15).** The engine keeps a ring of recently captured frames keyed by capture ms, stored at the encode size so memory stays bounded. As built, the ring is a frame count, the last 16 frames, not ~2 s: deep copies of two seconds of full frames would cost hundreds of MB (implementation plan, ruling 6). Under mirroring (G1) the encode size is the Mac's panel, so the bound is about 16 x 8.9 MB = 143 MB for a 3024x1964 stream in the default 420v pixel format, against about 75 MB for an iPad-sized 2048x1536 stream. On `freeze` it picks the frame whose capture ms matches the iPad's `captureMs` (nearest, within one frame interval), converts to PNG, and posts it to the daemon as the capture. The base frame is therefore the exact frame the user drew on, in clean pre-encode pixels. There is no iPad fallback frame: `frozen.ok:false` means no frame exists yet, which cannot happen in Draw Mode; the iPad then leaves Draw Mode with a message and keeps the strokes.
 
 **Join (review 4A).** The engine holds the last freeze capture per connection. On `annotation` it attaches that capture, the install id, and the device name, and posts to the daemon. A second `freeze` before Done discards the first capture with a log line. No capture id crosses the wire.
 
@@ -159,7 +167,7 @@ The notification carries the composite's file path; Claude Code's Read tool rend
 - Claude Code only. claude.ai login only (Console API keys cannot use Channels).
 - Development flag required until marketplace listing.
 - Protocol may change; the channel adapter is isolated.
-- Terminal permission prompts still fire and no reply arrives while one waits (G19). **Owner decision (D20):** the MVP mitigation is to keep the terminal window on the mirrored display so the prompt is visible from the iPad. Consequence, recorded from the outside voice and accepted: the clean capture and composite may include the terminal, which then travels back into Claude Code's context; zooming into the preview region before drawing keeps it out of the crop.
+- Terminal permission prompts still fire and no reply arrives while one waits (G19). **Owner decision (D20):** the MVP mitigation is to keep the terminal window on the mirrored display so the prompt is visible from the iPad. Since G1 that is the Mac's main display, where the terminal opens anyway; with more than one monitor it must stay on the main one. Consequence, recorded from the outside voice and accepted: the clean capture and composite may include the terminal, which then travels back into Claude Code's context; zooming into the preview region before drawing keeps it out of the crop.
 - **Unverified assumptions kept by owner decision (D22):** that Read on the store path never prompts, and that the `.mcp.json` entry does not trigger the project-MCP trust prompt for the user or for collaborators who inherit the committed file. If either prompts, the fix is an app-managed allow rule or a user-scoped MCP config.
 - Manually launched Claude Code sessions are unsupported; the app recognizes only a channel it started (ADR-0004).
 
@@ -174,10 +182,10 @@ From ai.cst.2 ADR-0004. Daemon identity is self-reported on `/v1/health` (`pid`,
 ## 7. Packaging and license (G14, G27, decided)
 
 - **License: GPL-3.0, final.** Design Canvas is a derivative of OpenDisplay and stays under the same license. No engine process boundary, no clean-room receiver, no dual-license request.
-- **Separate app built on OpenDisplay's code.** New Design Canvas targets in the OpenDisplay project (`project.yml`, xcodegen) compile `Shared/`, the `Mac/` sender pieces minus `InputInjector`, and the iOS receiver. Design Canvas-specific code lives in new directories: engine wrapper, frame ring, compositor, DaemonClient, Draw Mode, Agent replies, and the menu-bar shell reused from ai.cst.2 (`AppModel`, `DaemonSupervisor`, `ClaudeLauncher`, `McpConfigManager`, `SessionStateClassifier`, `ProcessResetService`, `ProjectRecents`).
+- **Separate app built on OpenDisplay's code.** New Design Canvas targets in the OpenDisplay project (`project.yml`, xcodegen) compile `Shared/`, the `Mac/` sender pieces minus `InputInjector`, and the iOS receiver. Since G1 the virtual-display pieces (`VirtualDisplay.swift`, `DisplayArrangement.swift`, `TestPatternWindow.swift`, the private `CGVirtualDisplay` header) are compiled in but never run: OpenDisplay's `MacSender.swift` references them, and leaving them out would mean conditional compilation inside an upstream file. Design Canvas-specific code lives in new directories: engine wrapper, frame ring, compositor, DaemonClient, Draw Mode, Agent replies, and the menu-bar shell reused from ai.cst.2 (`AppModel`, `DaemonSupervisor`, `ClaudeLauncher`, `McpConfigManager`, `SessionStateClassifier`, `ProcessResetService`, `ProjectRecents`).
 - **Own identity.** Distinct product names, bundle ids, and icons on both platforms, with OpenDisplay's Debug-id separation so dev builds do not invalidate release TCC grants. Screen Recording only; no Accessibility.
 - **Own discovery.** The iPad advertises `_designcanvas._tcp` with the same TXT keys, so OpenDisplay senders and Design Canvas iPads do not dial each other.
-- **Distribution.** Mac: outside the Mac App Store (private CGVirtualDisplay API; Developer ID, notarized, Sparkle with its own appcast). iPad: App Store or TestFlight. CI: the existing `tests.yml` pattern (unsigned `xcodebuild test` on the Mac scheme, build of the receiver scheme) extended to the new targets; release pipeline mirrors `release.yml`.
+- **Distribution.** Mac: outside the Mac App Store (Developer ID, notarized, Sparkle with its own appcast). Since G1 the private CGVirtualDisplay API is no longer used at runtime, but it is still linked (see above), and the app supervises a Node process and launches Terminal, which an App Store sandbox would not allow. iPad: App Store or TestFlight. CI: the existing `tests.yml` pattern (unsigned `xcodebuild test` on the Mac scheme, build of the receiver scheme) extended to the new targets; release pipeline mirrors `release.yml`.
 
 ## 8. Changes from ai.cst.2
 
@@ -201,7 +209,7 @@ If pursued, add an agent backend abstraction in the daemon with two implementati
 
 ## 10. Decisions and open technical questions
 
-**Decided.** G2 Channels with one reply tool. G3 payload: sketch, note, viewport, zoom rect, device, reply; composite built on the Mac. G4 minimal reply. G7 no input forwarding, so no gesture handoff exists; zoom is view-only. G8 crop when zoomed. G14 separate app, in-app engine module, own ids and Bonjour type. G15 iPad and macOS only. G16 UUID v7 per round with reply stored. G20 base frame from the engine's ring at the iPad's capture time; no fallback frame. G21 OpenDisplay pairing only; daemon loopback-only. G23 file path in the notification. G24 device tagging. G25 canvas cap 16 MiB with chunked reads. G26 store under `~/.claude/channels/design-canvas/`. G27 GPL-3.0 final. Security: trust-on-first-use for the MVP.
+**Decided.** G1 the iPad mirrors the Mac's main display; no extended display, and the capture mode is fixed (section 1; owner, 2026-09-17, after the first hardware sessions). G2 Channels with one reply tool. G3 payload: sketch, note, viewport, zoom rect, device, reply; composite built on the Mac. G4 minimal reply. G7 no input forwarding, so no gesture handoff exists; zoom is view-only. G8 crop when zoomed. G14 separate app, in-app engine module, own ids and Bonjour type. G15 iPad and macOS only. G16 UUID v7 per round with reply stored. G20 base frame from the engine's ring at the iPad's capture time; no fallback frame. G21 OpenDisplay pairing only; daemon loopback-only. G23 file path in the notification. G24 device tagging. G25 canvas cap 16 MiB with chunked reads. G26 store under `~/.claude/channels/design-canvas/`. G27 GPL-3.0 final. Security: trust-on-first-use for the MVP.
 
 **Open.**
 

@@ -1,7 +1,7 @@
 // The seam between the menu-bar shell and the sender.
 //
-// The real engine (`OpenDisplaySenderEngine`) drives a virtual display, a ScreenCaptureKit
-// stream, an encoder and a socket, none of which a unit test can stand up — and none of which
+// The real engine (`OpenDisplaySenderEngine`) drives a ScreenCaptureKit stream of the Mac's
+// screen, an encoder and a socket, none of which a unit test can stand up — and none of which
 // compile into a hostless test bundle. So the shell only ever talks to this protocol, and the
 // tests hand it a fake (spec section 1: "behind a `SenderEngine` protocol so it is fakeable in
 // tests").

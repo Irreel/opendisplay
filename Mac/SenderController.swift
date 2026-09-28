@@ -124,9 +124,9 @@ struct SenderControllerConfig {
     /// The service browsed for and the port dialed. Its own type because it
     /// is the part that compiles without AppKit — see `SenderDiscoveryConfig`.
     var discovery = SenderDiscoveryConfig()
-    /// The productID and brand of the virtual displays this sender creates. A
-    /// second product must bring its own — see `SenderDisplayIdentity`.
-    var displayIdentity = SenderDisplayIdentity()
+    /// The one capture mode this product supports. Nil leaves it to the user
+    /// (`mode` default / `-mode`, else extend), which is OpenDisplay.
+    var fixedMode: CaptureMode? = nil
     /// How the sender turns a display it just created into an input sink.
     /// Nil forwards no input at all, which is what a canvas session wants.
     var inputSinkFactory: InputSinkFactory? = nil
@@ -156,8 +156,9 @@ final class SenderController: ObservableObject {
     // (debugging escape hatch, e.g. an iproxy or SSH tunnel).
     @Published var host = UserDefaults.standard.string(forKey: "host") ?? "127.0.0.1"
     @Published var port: String
-    // `-mode mirror` / `-mode extend` launch argument also works.
-    @Published var mode = CaptureMode(rawValue: UserDefaults.standard.string(forKey: "mode") ?? "") ?? .extend
+    // `-mode mirror` / `-mode extend` launch argument also works — unless the
+    // product fixes the mode (`SenderControllerConfig.fixedMode`). Set in init.
+    @Published var mode: CaptureMode
     @Published var quality = StreamQuality(rawValue: UserDefaults.standard.string(forKey: "quality") ?? "") ?? .best {
         didSet { UserDefaults.standard.set(quality.rawValue, forKey: "quality") }
     }
@@ -211,6 +212,8 @@ final class SenderController: ObservableObject {
         self.config = config
         port = UserDefaults.standard.string(forKey: "port")
             ?? String(config.discovery.devicePort)
+        mode = CaptureMode.resolve(stored: UserDefaults.standard.string(forKey: "mode"),
+                                   fixed: config.fixedMode)
         startBrowsing()
         usbWatcher = UsbmuxDeviceWatcher { [weak self] devices in
             guard let self else { return }
@@ -522,8 +525,7 @@ final class SenderController: ObservableObject {
                                awaitingWake: awaitingWake,
                                inputSinkFactory: config.inputSinkFactory,
                                canvasDelegate: session.canvasDelegate,
-                               devicePort: config.discovery.devicePort,
-                               displayIdentity: config.displayIdentity)
+                               devicePort: config.discovery.devicePort)
         session.sender = sender
         if case .wifi(let result) = target {
             session.wifiServiceName = serviceName(of: result)

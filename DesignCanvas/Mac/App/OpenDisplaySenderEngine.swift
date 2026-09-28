@@ -39,10 +39,9 @@ final class OpenDisplaySenderEngine: SenderEngine {
         // sender and a Design Canvas iPad never dial each other — including over USB, where
         // there is no service type to tell them apart (plan ruling 1).
         config.discovery = SenderDiscoveryConfig(bonjourType: "_designcanvas._tcp", devicePort: 9100)
-        // Its own virtual-display identity too: the same cabled iPad hashes to the same display
-        // serial in both products, and macOS keys saved display state — including the state that
-        // keeps an identity from ever coming online — on vendor/product/serial.
-        config.displayIdentity = .designCanvas
+        // The iPad shows the Mac's own screen. Design Canvas has no extended display, so the
+        // mode is fixed rather than defaulted: a stored `mode = extend` cannot select it.
+        config.fixedMode = .designCanvas
         // No input sink, ever: a canvas session forwards no touch, scroll, pencil or proximity,
         // and this app never asks for Accessibility (spec section 1).
         config.inputSinkFactory = nil
