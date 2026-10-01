@@ -90,19 +90,24 @@ struct MenuBarView: View {
                 Circle()
                     .fill(color(row.tint))
                     .frame(width: 7, height: 7)
+                // The name wins the width fight: the state is a short word (see
+                // `MenuPresentation.deviceRow`), so it is the one that may truncate.
                 Text(title)
                     .font(.body)
                     .lineLimit(1)
                     .truncationMode(.middle)
+                    .layoutPriority(1)
                 if let detail {
                     Text(detail)
                         .font(.caption2)
                         .foregroundColor(.secondary)
+                        .fixedSize()
                 }
                 Spacer(minLength: 8)
                 Text(row.word)
                     .font(.callout)
                     .foregroundColor(color(row.tint))
+                    .lineLimit(1)
                 if let rowAction = row.action {
                     Button(label(rowAction), action: action)
                         .controlSize(.small)

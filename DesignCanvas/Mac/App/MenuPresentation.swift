@@ -103,8 +103,29 @@ enum MenuPresentation {
                                subline: "Open Design Canvas on the iPad", action: nil)
     }
 
+    /// The sender's statuses are sentences ("Mirroring to device (2048×1536)", "Device found —
+    /// open the OpenDisplay app on it…"). The row keeps a one-word state so the device name,
+    /// not the state, is what survives a 320-point popover; the one sentence that tells the
+    /// user to do something becomes the sub-line, in this app's words.
     static func deviceRow(_ device: EngineDevice) -> RowPresentation {
-        RowPresentation(word: device.status, tint: .green, subline: nil, action: .disconnect)
+        let status = device.status
+        let word: String
+        var subline: String?
+        if status.hasPrefix("Device found") {
+            word = "Found"
+            subline = "Open Design Canvas on the iPad"
+        } else if status.hasPrefix("Waiting") {
+            word = "Waiting\u{2026}"
+        } else if status.hasPrefix("Mirroring") {
+            word = "Mirroring"
+        } else if status.hasPrefix("Extending") {
+            word = "Extending"
+        } else if status.hasPrefix("Connected") {
+            word = "Connected"
+        } else {
+            word = status
+        }
+        return RowPresentation(word: word, tint: .green, subline: subline, action: .disconnect)
     }
 
     static func discoveredRow(_ device: DiscoveredDevice) -> RowPresentation {

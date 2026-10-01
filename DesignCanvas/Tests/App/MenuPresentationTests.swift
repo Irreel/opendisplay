@@ -143,6 +143,40 @@ final class MenuPresentationTests: XCTestCase {
         XCTAssertEqual(row.action, .disconnect)
     }
 
+    // The sender's status strings are sentences; the row keeps a short state word so the
+    // device name is never the thing that truncates in a 320-point popover.
+
+    func testFoundDeviceGetsAShortWordAndTheNextStepUnderneath() {
+        let row = MenuPresentation.deviceRow(EngineDevice(
+            id: "d1", name: "iPhone / iPad",
+            status: "Device found \u{2014} open the OpenDisplay app on it\u{2026}", onUSB: true))
+        XCTAssertEqual(row.word, "Found")
+        XCTAssertEqual(row.subline, "Open Design Canvas on the iPad")
+        XCTAssertEqual(row.action, .disconnect)
+    }
+
+    func testMirroringStatusDropsTheResolution() {
+        let row = MenuPresentation.deviceRow(EngineDevice(
+            id: "d1", name: "iPadz", status: "Mirroring to device (3024\u{00D7}1964)", onUSB: true))
+        XCTAssertEqual(row.word, "Mirroring")
+        XCTAssertNil(row.subline)
+    }
+
+    func testConnectedToEndpointDropsTheEndpointName() {
+        let row = MenuPresentation.deviceRow(EngineDevice(
+            id: "d1", name: "iPadz", status: "Connected to iPadz", onUSB: true))
+        XCTAssertEqual(row.word, "Connected")
+        XCTAssertNil(row.subline)
+    }
+
+    func testWaitingStatusesCollapseToWaiting() {
+        for status in ["Waiting for receiver at iPadz\u{2026}", "Waiting for the device to connect\u{2026}"] {
+            let row = MenuPresentation.deviceRow(EngineDevice(id: "d1", name: "iPadz", status: status, onUSB: true))
+            XCTAssertEqual(row.word, "Waiting\u{2026}", status)
+            XCTAssertNil(row.subline, status)
+        }
+    }
+
     func testDiscoveredDeviceIsAvailable() {
         let row = MenuPresentation.discoveredRow(DiscoveredDevice(id: "d2", name: "Studio iPad", transport: "WiFi"))
         XCTAssertEqual(row.word, "Available")
