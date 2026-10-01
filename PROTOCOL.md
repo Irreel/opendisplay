@@ -737,8 +737,13 @@ Field types, exactly as implemented (`DesignCanvas/Shared/CanvasMessages.swift`)
 `ping` (sender to receiver, section 6.2) gains two additive string fields,
 sent only on a canvas session:
 
-* `channel` — one of `attached`, `detached`, `none`: whether a local
-  agent-channel process is currently subscribed on the sender's machine.
+* `channel` — one of `attached`, `detached`, `existing`, `none`: the
+  sender's verdict on its agent-channel hop, the same one its own menu
+  shows. `attached` means a channel process this sender launched is
+  subscribed; `existing` means one it did not launch is (a session the
+  user started by hand); `detached` means the local daemon is up with no
+  channel; `none` means no usable daemon. A receiver that does not know a
+  value reads it as `none`.
 * `project` — the selected project folder's name; absent when none is
   selected.
 

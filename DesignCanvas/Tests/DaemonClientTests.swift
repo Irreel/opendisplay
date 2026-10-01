@@ -45,17 +45,18 @@ final class DaemonClientTests: XCTestCase {
         guard case .healthy(let decoded) = result else { return XCTFail("expected .healthy, got \(result)") }
         XCTAssertEqual(decoded.status, "ok")
         XCTAssertEqual(decoded.channelCount, 2)
-        XCTAssertEqual(ChannelState(probe: result), .attached)
     }
 
-    func test_probe_healthyOn200_withNoChannel_isDetached() async {
+    func test_probe_healthyOn200_withNoChannel() async {
         let health = #"{"status":"ok","version":"1.0.0","channelAttached":false,"channelCount":0}"#
         StubURLProtocol.scripts = [.init(body: Data(health.utf8))]
         let client = makeClient()
 
         let result = await client.probe()
 
-        XCTAssertEqual(ChannelState(probe: result), .detached)
+        guard case .healthy(let decoded) = result else { return XCTFail("expected .healthy, got \(result)") }
+        XCTAssertEqual(decoded.channelCount, 0)
+        XCTAssertFalse(decoded.channelAttached)
     }
 
     func test_probe_foreignResponseOn200Garbage() async {
@@ -65,7 +66,6 @@ final class DaemonClientTests: XCTestCase {
         let result = await client.probe()
 
         XCTAssertEqual(result, .foreignResponse)
-        XCTAssertEqual(ChannelState(probe: result), .none)
     }
 
     func test_probe_badStatusOn500() async {
@@ -75,7 +75,6 @@ final class DaemonClientTests: XCTestCase {
         let result = await client.probe()
 
         XCTAssertEqual(result, .badStatus(500))
-        XCTAssertEqual(ChannelState(probe: result), .none)
     }
 
     func test_probe_timedOut() async {
@@ -85,7 +84,6 @@ final class DaemonClientTests: XCTestCase {
         let result = await client.probe()
 
         XCTAssertEqual(result, .timedOut)
-        XCTAssertEqual(ChannelState(probe: result), .none)
     }
 
     func test_probe_refusedOnConnectionRefused() async {
@@ -95,7 +93,6 @@ final class DaemonClientTests: XCTestCase {
         let result = await client.probe()
 
         XCTAssertEqual(result, .refused)
-        XCTAssertEqual(ChannelState(probe: result), .none)
     }
 
     // MARK: - postCapture()

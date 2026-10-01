@@ -16,7 +16,7 @@ struct ConnectionStatusView: View {
                 StatusDot(state: linkState)
                     .accessibilityLabel("\(deviceKind) to Mac: \(linkState.title)")
                 StatusDot(state: channelState)
-                    .accessibilityLabel("Mac to Claude Code: \(channelState.title)")
+                    .accessibilityLabel("Mac to Claude Code: \(channelTitle)")
                 Text(model.project ?? "unselected")
                     .font(.subheadline.weight(.medium))
                     .lineLimit(1)
@@ -37,9 +37,15 @@ struct ConnectionStatusView: View {
     private var channelState: StatusDot.State {
         switch model.channel {
         case .attached: return .up
-        case .detached: return .warning
+        case .existing, .detached: return .warning
         case .none: return .down
         }
+    }
+
+    /// `existing` is orange like `detached`, but it is not "not ready": sketches do reach a
+    /// session — one the Mac app didn't start, which is what the Mac's own menu says too.
+    private var channelTitle: String {
+        model.channel == .existing ? "another session" : channelState.title
     }
 }
 
@@ -141,6 +147,7 @@ struct ConnectionDetailView: View {
     private var channelDescription: String {
         switch model.channel {
         case .attached: return "Attached"
+        case .existing: return "Another session"
         case .detached: return "Detached"
         case .none: return receiver.connected ? "No session" : "Unknown"
         }

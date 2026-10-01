@@ -146,9 +146,15 @@ enum RoundStatus: String {
     }
 }
 
+/// The Mac's verdict on its Claude Code hop, relayed to the iPad in `ping.channel` (P1). It is
+/// the menu's verdict (D7), not the daemon's raw subscriber count: `attached` is this app's own
+/// session, `existing` is a session the app did not start (the menu's "Another session"),
+/// `detached` a daemon with no channel, `none` no usable daemon. A receiver reads an unknown
+/// string as `none`, which is how an older iPad sees `existing`.
 enum ChannelState: String {
     case attached
     case detached
+    case existing
     case none
 }
 

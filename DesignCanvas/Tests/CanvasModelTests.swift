@@ -540,6 +540,10 @@ final class CanvasModelTests: XCTestCase {
         XCTAssertEqual(model.channel, .detached)
         XCTAssertNil(model.project)
 
+        model.pingReceived(channel: "existing", project: "site")
+        XCTAssertEqual(model.channel, .existing, "a session the Mac app didn't start is attached")
+        XCTAssertEqual(model.project, "site")
+
         model.pingReceived(channel: "nonsense", project: nil)
         XCTAssertEqual(model.channel, ChannelState.none)
     }

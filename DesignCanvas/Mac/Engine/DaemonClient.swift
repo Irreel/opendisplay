@@ -27,21 +27,6 @@ enum HealthProbeResult: Equatable {
     case foreignResponse
 }
 
-extension ChannelState {
-    /// A channel process is attached only once the daemon reports at least
-    /// one live SSE subscriber; any other outcome (unhealthy, foreign,
-    /// unreachable) can't distinguish "no channel" from "no daemon", so both
-    /// collapse to `.none`.
-    init(probe: HealthProbeResult) {
-        switch probe {
-        case .healthy(let health):
-            self = (health.channelCount ?? 0) > 0 ? .attached : .detached
-        case .refused, .timedOut, .badStatus, .foreignResponse:
-            self = .none
-        }
-    }
-}
-
 /// Everything needed to build one `POST /v1/annotations` upload. Field names
 /// mirror the daemon's meta JSON keys (see `task-6-report.md`), not the wire
 /// `AnnotationMessage` from the iPad, since a zoom rect / viewport / note

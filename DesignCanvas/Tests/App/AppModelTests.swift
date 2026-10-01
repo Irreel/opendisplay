@@ -583,10 +583,14 @@ final class AppModelTests: XCTestCase {
         XCTAssertEqual(engine.startCount, 1, "the engine runs for the app's whole life, started once at launch")
     }
 
-    func testPushesChannelStateAfterEveryPoll() async {
+    func testPushesTheMenusChannelVerdictAfterEveryPoll() async {
         let (model, probe, engine) = makeEngineModel(childPid: 100)
 
+        // A channel is attached, but this app run never clicked Start: the menu says
+        // "Another session", and the iPad must hear the same thing, not "attached".
         probe.result = .healthy(health(pid: 100, channelCount: 1))
+        await model.pollOnce()
+        model.sessionStarted = true
         await model.pollOnce()
         probe.result = .healthy(health(pid: 100, channelCount: 0))
         await model.pollOnce()
@@ -594,8 +598,8 @@ final class AppModelTests: XCTestCase {
         await model.pollOnce()
 
         XCTAssertEqual(
-            engine.channelStates, [.attached, .detached, .none],
-            "the iPad's channel row is whatever the last poll saw — a channel, a daemon with none, or no daemon at all"
+            engine.channelStates, [.existing, .attached, .detached, .none],
+            "the iPad's channel dot follows the menu's D7 verdict — someone else's session, ours, a daemon with none, or no daemon at all"
         )
     }
 

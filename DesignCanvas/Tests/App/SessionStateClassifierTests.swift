@@ -138,6 +138,29 @@ final class SessionStateClassifierTests: XCTestCase {
         ]
     }
 
+    /// What the iPad's second dot is told (`ping.channel`), derived from the same verdict the
+    /// menu shows (D7): the Mac's own session is `attached`, somebody else's is `existing`, a
+    /// daemon with no channel is `detached`, and no usable daemon is `none`.
+    func testChannelStateRelaysTheMenusVerdictNotTheRawCount() {
+        func relay(_ input: SessionStateClassifier.Input) -> ChannelState {
+            ChannelState(session: SessionStateClassifier.classify(input))
+        }
+        XCTAssertEqual(relay(.init(probe: .healthy(health(pid: 100, channelCount: 1)), supervisedChildPid: 100, pinnedInstanceId: nil, sessionStarted: true, launchTimedOut: false)),
+                       .attached, "owned")
+        XCTAssertEqual(relay(.init(probe: .healthy(health(pid: 100, channelCount: 1)), supervisedChildPid: 100, pinnedInstanceId: nil, sessionStarted: false, launchTimedOut: false)),
+                       .existing, "attached, but not by this app run")
+        XCTAssertEqual(relay(.init(probe: .healthy(health(pid: 200, channelCount: 1)), supervisedChildPid: 100, pinnedInstanceId: nil, sessionStarted: true, launchTimedOut: false)),
+                       .existing, "a foreign daemon's channel is never ours")
+        XCTAssertEqual(relay(.init(probe: .healthy(health(pid: 100, channelCount: 0)), supervisedChildPid: 100, pinnedInstanceId: nil, sessionStarted: false, launchTimedOut: false)),
+                       .detached, "daemon up, no channel")
+        XCTAssertEqual(relay(.init(probe: .healthy(health(pid: 100, channelCount: 0)), supervisedChildPid: 100, pinnedInstanceId: nil, sessionStarted: true, launchTimedOut: false)),
+                       .detached, "launch pending is still no channel")
+        XCTAssertEqual(relay(.init(probe: .refused, supervisedChildPid: nil, pinnedInstanceId: nil, sessionStarted: false, launchTimedOut: false)),
+                       .none, "no daemon")
+        XCTAssertEqual(relay(.init(probe: .foreignResponse, supervisedChildPid: nil, pinnedInstanceId: nil, sessionStarted: false, launchTimedOut: false)),
+                       .none, "port occupied by something else")
+    }
+
     func testDecisionTable() {
         for c in makeCases() {
             let result = SessionStateClassifier.classify(c.input)

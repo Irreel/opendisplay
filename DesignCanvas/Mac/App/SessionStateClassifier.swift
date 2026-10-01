@@ -103,3 +103,23 @@ enum SessionStateClassifier {
         return false
     }
 }
+
+extension ChannelState {
+    /// The iPad's channel dot (`ping.channel`) is the menu's own verdict, so the two can never
+    /// disagree: a channel this app run launched is `attached`; one it didn't is `existing`
+    /// ("Another session" on the Mac), whichever daemon holds it; a daemon with no channel,
+    /// including one whose Claude Code is still launching, is `detached`; no usable daemon is
+    /// `none`.
+    init(session: SessionState) {
+        switch session.daemon {
+        case .none, .unknownOccupant:
+            self = .none
+        case .owned, .foreign:
+            switch session.channel {
+            case .owned: self = .attached
+            case .existing: self = .existing
+            case .none, .launchPending: self = .detached
+            }
+        }
+    }
+}

@@ -34,6 +34,7 @@ final class CanvasMessagesTests: XCTestCase {
     func test_channelState_rawValues() {
         XCTAssertEqual(ChannelState.attached.rawValue, "attached")
         XCTAssertEqual(ChannelState.detached.rawValue, "detached")
+        XCTAssertEqual(ChannelState.existing.rawValue, "existing")
         XCTAssertEqual(ChannelState.none.rawValue, "none")
     }
 

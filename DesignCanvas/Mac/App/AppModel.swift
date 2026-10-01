@@ -323,10 +323,9 @@ final class AppModel: ObservableObject {
         sessionState = newState
         previousDisplay = newState.display
 
-        // The iPad's channel row is whatever this poll saw. `ChannelState(probe:)` collapses
-        // every unreachable/foreign outcome to `.none`, which is the honest answer: an app that
-        // can't see the daemon can't claim a channel is attached.
-        engine?.setChannelState(ChannelState(probe: result))
+        // The iPad's channel dot hears the same verdict the menu shows (D7), so the two can't
+        // disagree: a channel this app run didn't launch is `existing`, never `attached`.
+        engine?.setChannelState(ChannelState(session: newState))
 
         // The engine has no change notification for this — it moves on its own upload queue's
         // schedule — so the 2 s poll is what refreshes the menu's "waiting for the daemon" row.

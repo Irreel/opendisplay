@@ -63,7 +63,7 @@ Additive JSON control messages, no `pv` bump, gated on `welcome.canvas: true`. A
 | `agentReply` | Mac to iPad | `annotationId`, `status`, `message`? (≤ 2 KB), `prUrl`?, `t` | Claude Code's outcome (D6, M8) |
 | `rounds` | Mac to iPad | `rounds[]` of `{annotationId, createdAt, status, message?, prUrl?, note?}` | Snapshot of the last 20 rounds for this device, sent after every `hello` (M8) |
 
-`ping` (sender to receiver) gains two additive string fields: `channel` (`attached`, `detached`, `none`) and `project` (selected folder name, absent when unselected) (P1).
+`ping` (sender to receiver) gains two additive string fields: `channel` and `project` (selected folder name, absent when unselected) (P1). `channel` is the Mac menu's D7 verdict, not the daemon's raw subscriber count, so the iPad's dot can never contradict the Mac's row: `attached` (this app's own session), `existing` (a session the app did not start — the menu's "Another session"), `detached` (daemon up, no channel), `none` (no usable daemon). A receiver reads an unknown value as `none`.
 
 **Frame length policy (review 2A and D16).** Today `Mac/MacSender.swift:1664` rejects any receiver-to-sender frame of 1 MiB or more with a bare `return`, which never re-arms the read and silently stops all control input while video continues. Replace with a `ControlFramePolicy` struct: cap 1 MiB without `canvas`, 16 MiB with it; payloads are read in 256 KiB chunks and `lastReceived` is bumped per chunk so the 5 s watchdog (line 1424) sees bytes flowing during a slow upload; an oversize frame calls `linkDied` with a log line. Tested in the hostless MacTests target.
 
