@@ -1,5 +1,6 @@
 // The whole iPad product in one screen: the mirror (C1) under a view-only
-// zoom (C2), a floating panel with connection status (P1, P2), the Draw Mode
+// zoom (C2) — or, when the designer picks it, a blank page in its place
+// (spec/PRD-BlankCanvas.md) — a floating panel with connection status (P1, P2), the Draw Mode
 // entry (P3) and the replies list (M8), and — while Draw Mode is on — the
 // sketch surface over the frozen frame.
 //
@@ -31,6 +32,9 @@ struct CanvasScreen: View {
     @State private var viewSize = CGSize.zero
     /// Runs only while a freeze is outstanding (2 s at the most).
     @State private var freezeTicker: AnyCancellable?
+    /// The designer's surface, remembered across launches (B1). The model
+    /// decides whether it can be honoured with the Mac that is connected.
+    @AppStorage("canvasSurface") private var storedSurface = CanvasSurface.mirror.rawValue
     @Environment(\.scenePhase) private var scenePhase
 
     private var receiver: StreamReceiver { receiverModel.receiver }
@@ -48,8 +52,14 @@ struct CanvasScreen: View {
         }
     }
 
-    /// Where the video is on screen: what the sketch has to line up with.
-    private var videoRect: CGRect {
+    /// The blank page is up in place of the mirror.
+    private var isBlank: Bool { canvas.surface == .blank }
+
+    /// What the sketch has to line up with: the part of the view the video
+    /// covers, or the whole view when the surface is the blank page — which is
+    /// also the rect the Mac sizes its white page from (`viewport`).
+    private var surfaceRect: CGRect {
+        if isBlank { return CGRect(origin: .zero, size: viewSize) }
         let drawn = zoom.transformedRect(viewSize: viewSize, videoSize: receiver.videoSize)
         let visible = drawn.intersection(CGRect(origin: .zero, size: viewSize))
         return visible.isNull ? CGRect(origin: .zero, size: viewSize) : visible
@@ -92,7 +102,21 @@ struct CanvasScreen: View {
         .onChange(of: sketch.strokeCount) { count in
             canvas.strokesChanged(count: count)
         }
+        // The designer's own switch. Picking Blank goes straight into Draw
+        // Mode; Cancel there brings this panel back, on the page.
+        .onChange(of: storedSurface) { raw in
+            canvas.chooseSurface(CanvasSurface(rawValue: raw) ?? .mirror,
+                                 pageViewport: CanvasViewport(width: Int(viewSize.width.rounded()),
+                                                              height: Int(viewSize.height.rounded()),
+                                                              scale: Double(UIScreen.main.scale)))
+        }
+        // The zoom belongs to the mirror; it must not carry over to a page,
+        // nor come back stale when the mirror does.
+        .onChange(of: canvas.surface) { _ in
+            zoom.reset()
+        }
         .onAppear {
+            canvas.preferredSurface = CanvasSurface(rawValue: storedSurface) ?? .mirror
             UIApplication.shared.isIdleTimerDisabled = true
             receiverModel.start()
         }
@@ -126,7 +150,12 @@ struct CanvasScreen: View {
         ZStack {
             Color.black
 
-            if isStreaming {
+            if isBlank {
+                // Rendered here, not streamed: it needs no frame from the Mac,
+                // so it is up even before the mirror's first picture (B4).
+                Color.white
+                    .accessibilityLabel("Blank canvas")
+            } else if isStreaming {
                 CanvasVideoView(displayLayer: receiver.displayLayer,
                                 videoSize: receiver.videoSize,
                                 zoom: $zoom)
@@ -136,8 +165,8 @@ struct CanvasScreen: View {
 
             if isInDrawMode {
                 SketchCanvas(controller: sketch)
-                    .frame(width: videoRect.width, height: videoRect.height)
-                    .position(x: videoRect.midX, y: videoRect.midY)
+                    .frame(width: surfaceRect.width, height: surfaceRect.height)
+                    .position(x: surfaceRect.midX, y: surfaceRect.midY)
             }
         }
         .onAppear {
@@ -180,6 +209,18 @@ struct CanvasScreen: View {
             }
 
             Divider().frame(height: 26)
+
+            // B1: the surface is chosen here, on the iPad. Offered only to a
+            // Mac that can take a blank sketch (B3), and only between sketches
+            // (B6) — in Draw Mode this whole panel is gone.
+            Picker("Surface", selection: $storedSurface) {
+                Text("Mirror").tag(CanvasSurface.mirror.rawValue)
+                Text("Blank").tag(CanvasSurface.blank.rawValue)
+            }
+            .pickerStyle(.segmented)
+            .fixedSize()
+            .disabled(!canvas.macSupportsBlank || canvas.drawState != .live)
+            .accessibilityLabel("Drawing surface")
 
             // P3: the way in. Disabled while there is no connection, and on a
             // Mac that is not running Design Canvas.
@@ -229,8 +270,8 @@ struct CanvasScreen: View {
     /// The surface the sketch was drawn on, stored with the round so the Mac
     /// knows what it was made at.
     private func currentViewport() -> CanvasViewport {
-        CanvasViewport(width: Int(videoRect.width.rounded()),
-                       height: Int(videoRect.height.rounded()),
+        CanvasViewport(width: Int(surfaceRect.width.rounded()),
+                       height: Int(surfaceRect.height.rounded()),
                        scale: Double(UIScreen.main.scale))
     }
 

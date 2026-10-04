@@ -43,7 +43,13 @@ final class CanvasStatus {
     var pingFields: [String: String] {
         lock.lock()
         defer { lock.unlock() }
-        var fields = [CanvasWire.pingChannelKey: storedChannelState.rawValue]
+        // `blank` is a capability, not a state: this Mac composites a sketch
+        // drawn on the iPad's blank page, and says so on every beat so the
+        // iPad offers that page only to a Mac that can take it.
+        var fields = [
+            CanvasWire.pingChannelKey: storedChannelState.rawValue,
+            CanvasWire.pingBlankKey: "1",
+        ]
         if let storedProjectName {
             fields[CanvasWire.pingProjectKey] = storedProjectName
         }
@@ -305,20 +311,33 @@ final class CanvasSession: SenderCanvasDelegate {
             return
         }
 
-        lock.lock()
-        let held = heldCapture
-        heldCapture = nil
-        lock.unlock()
+        let base: UploadPipeline.Base
+        if message.base == .blank {
+            // Drawn on the iPad's blank page: no `freeze` came first and no
+            // frame is involved. A held or parked capture belongs to a mirror
+            // sketch that may still arrive, so it is left exactly where it is.
+            guard let page = Self.blankPageSize(for: message.viewport) else {
+                Log.info("canvas: dropping blank annotation — viewport \(message.viewport.width)x\(message.viewport.height)@\(message.viewport.scale) has no area")
+                return
+            }
+            base = .blank(width: page.width, height: page.height)
+        } else {
+            lock.lock()
+            let held = heldCapture
+            heldCapture = nil
+            lock.unlock()
 
-        guard let capture = held ?? parking.parkedCapture(installID: installID, now: createdAt) else {
-            Log.info("canvas: dropping annotation — no freeze capture is held")
-            return
+            guard let capture = held ?? parking.parkedCapture(installID: installID, now: createdAt) else {
+                Log.info("canvas: dropping annotation — no freeze capture is held")
+                return
+            }
+            parking.removeParkedCapture(installID: installID)
+            base = .frame(capture)
         }
-        parking.removeParkedCapture(installID: installID)
         parking.recordAccepted(t: message.t, installID: installID)
 
         pipeline.enqueue(annotation: UploadPipeline.AnnotationJob(
-            capture: capture,
+            base: base,
             sketchPNG: message.sketchPNG,
             zoomRect: message.zoomRect,
             viewport: message.viewport,
@@ -327,7 +346,22 @@ final class CanvasSession: SenderCanvasDelegate {
             createdAt: createdAt
         ))
 
-        Log.info("canvas: annotation queued (\(message.sketchPNG.count)-byte sketch)")
+        Log.info("canvas: annotation queued (\(message.sketchPNG.count)-byte sketch\(message.base == .blank ? ", blank page" : ""))")
+    }
+
+    /// The most pixels a blank page may have on one side. Above any iPad's
+    /// panel; it only stops a nonsense viewport from asking for a huge bitmap.
+    static let blankPageMaxSide = 4096
+
+    /// The blank page for a sketch drawn at `viewport`: the sketch surface's
+    /// own pixel size (`w * scale` by `h * scale`, PROTOCOL.md 11.2), so the
+    /// sketch lands on it one-to-one. Nil when the viewport has no area.
+    static func blankPageSize(for viewport: CanvasViewport) -> (width: Int, height: Int)? {
+        guard viewport.width > 0, viewport.height > 0, viewport.scale > 0, viewport.scale.isFinite else { return nil }
+        let width = (Double(viewport.width) * viewport.scale).rounded()
+        let height = (Double(viewport.height) * viewport.scale).rounded()
+        return (max(1, Int(min(width, Double(blankPageMaxSide)))),
+                max(1, Int(min(height, Double(blankPageMaxSide)))))
     }
 
     // MARK: - sending

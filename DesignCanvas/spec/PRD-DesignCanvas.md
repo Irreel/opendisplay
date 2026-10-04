@@ -1,6 +1,6 @@
 # PRD: Design Canvas
 
-**Status:** Draft v0.7, 2026-09-22 (v0.6 was 2026-09-18, after the first hardware sessions; v0.5 was 2026-09-16, after the engineering review). v0.7 adds the Mac-app information architecture from the board after the second dogfooding round. v0.6 recorded the decision on G1: the iPad mirrors the Mac's own screen, and there is no extended display. Product requirements only; the technical specification is in `technical_doc.md`.
+**Status:** Draft v0.8, 2026-10-03 (v0.7 was 2026-09-22; v0.6 was 2026-09-18, after the first hardware sessions; v0.5 was 2026-09-16, after the engineering review). v0.8 scopes the mirror requirements to the mirror surface, now that the iPad also has a blank canvas surface; that surface is specified in its own document, `PRD-BlankCanvas.md`, and nothing about it is repeated here. v0.7 added the Mac-app information architecture from the board after the second dogfooding round. v0.6 recorded the decision on G1: the iPad mirrors the Mac's own screen, and there is no extended display. Product requirements only; the technical specification is in `technical_doc.md`.
 **Owner:** AntheaZ
 **Sources:** [FigJam board "Design Canvas"](https://www.figma.com/board/eMxEcxvPAeNtaoWbsKaa6S/Design-Canvas?node-id=0-1); the ai.cst.2 repo (the earlier build we dogfooded and pivoted from); OpenDisplay.
 
@@ -98,7 +98,7 @@ The three Mac items map onto existing requirements: connection status onto D7 (s
 
 ## 7. Requirements
 
-IDs are referenced from the technical doc.
+IDs are referenced from the technical doc. C1, C2, M1, M7 and D9 describe the mirror surface; the blank canvas surface (2026-10-03) has its own requirements, B1 to B8, in `PRD-BlankCanvas.md`. Every other row applies to both surfaces.
 
 **Mac**
 
@@ -112,16 +112,16 @@ IDs are referenced from the technical doc.
 | D6 | Accept one reply per sketch from Claude Code and show it on the iPad |
 | D7 | Show session state honestly: no session, this app's session, or a session it did not start |
 | D8 | Log every request, push, reply, and state change as the user's audit trail |
-| D9 | On Draw Mode entry, keep the exact frame the iPad froze, in clean pre-encode pixels, as the base for the sketch |
+| D9 | On the mirror surface, on Draw Mode entry, keep the exact frame the iPad froze, in clean pre-encode pixels, as the base for the sketch |
 | D10 | Tag each sketch with the iPad that sent it |
 
 **iPad**
 
 | ID | Requirement |
 |---|---|
-| C1 | Live mirror (OpenDisplay) |
+| C1 | Live mirror (OpenDisplay). The iPad's other surface, the blank canvas, is in `PRD-BlankCanvas.md` |
 | C2 | Finger pinch-zoom and pan, view-only |
-| M1 | Entering Draw Mode freezes the frame and pauses sync at once |
+| M1 | On the mirror surface, entering Draw Mode freezes the frame and pauses sync at once |
 | M2 | Pen, eraser, undo, color |
 | M3 | In Draw Mode nothing is forwarded to the Mac |
 | M4 | Optional text note |
@@ -155,7 +155,7 @@ Decided since v0.5: **G1, what is mirrored** (owner, 2026-09-17, after the first
 - **G9. Preview refresh.** The loop assumes the dev server hot-reloads. With no input forwarding, a preview that needs a manual reload means walking to the Mac.
 - **G11. Note entry.** The keyboard covers the canvas. Consider a compact field or entering the note after the sketch.
 - **G12. Tool set.** Arrows, rectangles, and text labels are common in design review and not in the MVP list.
-- **G13. Redaction.** Screenshots of unreleased work go into the agent session. Decide whether a per-project redaction toggle is needed. Since G1 this matters more: the whole main display is streamed to the iPad, and a round sent without zooming in captures the entire screen, not only a preview placed on a separate display.
+- **G13. Redaction.** Screenshots of unreleased work go into the agent session. Decide whether a per-project redaction toggle is needed. Since G1 this matters more: the whole main display is streamed to the iPad, and a round sent without zooming in captures the entire screen, not only a preview placed on a separate display. A round drawn on the blank canvas surface (2026-10-03) carries no screen content, though the screen is still streamed to the iPad underneath it (`PRD-BlankCanvas.md`, BG1).
 - **G18. Visual design.** The board's "Design tokens" and "sketches" sections are empty.
 - **G19. Permission prompts.** Claude Code asks for approval in the terminal. From the iPad that looks like a hang. The MVP mitigation is to keep the terminal visible on the mirrored screen, which since G1 is the Mac's main display, where the terminal opens anyway; the real fix is in future versions.
 - **G22. Session limits.** Relaunching the menu-bar app orphans a running session; manually started Claude Code sessions are unsupported. Acceptable for alpha, must be documented.

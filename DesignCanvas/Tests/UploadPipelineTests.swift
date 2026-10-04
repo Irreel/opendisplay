@@ -36,7 +36,7 @@ final class UploadPipelineTests: XCTestCase {
     /// reached the daemon and which were dropped.
     private func job(_ name: String, capture: UploadPipeline.FreezeCapture) -> UploadPipeline.AnnotationJob {
         UploadPipeline.AnnotationJob(
-            capture: capture,
+            base: .frame(capture),
             sketchPNG: Data(),
             zoomRect: .full,
             viewport: CanvasViewport(width: 8, height: 6, scale: 2),

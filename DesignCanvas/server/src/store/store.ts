@@ -14,6 +14,7 @@ import {
   SCHEMA_VERSION,
   type Viewport,
   type ZoomRect,
+  type AnnotationBase,
 } from '../shared.js';
 import type { Logger } from '../log.js';
 import { createStorePaths, type StorePaths } from './paths.js';
@@ -34,6 +35,7 @@ export interface CreateAnnotationInput {
   device: AnnotationDevice;
   note?: Partial<AnnotationNote>;
   createdAt?: string;
+  base?: AnnotationBase;
 }
 
 export interface CaptureWithPath {
@@ -182,6 +184,7 @@ export class DesignCanvasStore {
       sourceCaptureId: input.sourceCaptureId,
       device: input.device,
       reply: null,
+      ...(input.base ? { base: input.base } : {}),
     };
     await writeFile(join(dir, 'composite.png'), input.composite);
     await writeFile(join(dir, 'sketch.png'), input.sketch);
@@ -431,6 +434,7 @@ async function readAnnotation(root: string, id: string): Promise<AnnotationWithP
       sourceCaptureId: raw.sourceCaptureId,
       device: raw.device ?? { id: '', name: '' },
       reply: raw.reply ?? null,
+      ...(raw.base === 'blank' ? { base: raw.base } : {}),
     };
     return {
       meta,

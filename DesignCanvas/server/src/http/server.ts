@@ -12,6 +12,7 @@ import {
   SERVER_PORT,
   type Viewport,
   type ZoomRect,
+  type AnnotationBase,
 } from '../shared.js';
 import type { Logger } from '../log.js';
 import type { CreateAnnotationInput, DesignCanvasStore, SetReplyInput } from '../store/store.js';
@@ -354,6 +355,7 @@ async function parseAnnotationUpload(request: IncomingMessage): Promise<CreateAn
       note?: { text?: string | null };
       device: AnnotationDevice;
       createdAt?: string;
+      base?: unknown;
     };
     return {
       composite: Buffer.from(requireString(parsed.compositeBase64, 'compositeBase64'), 'base64'),
@@ -364,6 +366,7 @@ async function parseAnnotationUpload(request: IncomingMessage): Promise<CreateAn
       note: requireNote(parsed.note),
       device: requireDevice(parsed.device),
       ...(parsed.createdAt ? { createdAt: parsed.createdAt } : {}),
+      ...baseField(parsed.base),
     };
   }
   const parts = parseMultipart(body, contentType);
@@ -384,6 +387,7 @@ async function parseAnnotationUpload(request: IncomingMessage): Promise<CreateAn
     note?: { text?: string | null };
     device: AnnotationDevice;
     createdAt?: string;
+    base?: unknown;
   };
   return {
     composite,
@@ -394,6 +398,7 @@ async function parseAnnotationUpload(request: IncomingMessage): Promise<CreateAn
     note: requireNote(meta.note),
     device: requireDevice(meta.device),
     ...(meta.createdAt ? { createdAt: meta.createdAt } : {}),
+    ...baseField(meta.base),
   };
 }
 
@@ -575,6 +580,17 @@ function requireZoomRect(value: unknown): ZoomRect | null {
     throw new HttpError(400, 'invalid_request', 'zoomRect must be null or {x,y,w,h} numbers.');
   }
   return { x: value.x, y: value.y, w: value.w, h: value.h };
+}
+
+/**
+ * `base` is absent for a round on the mirror surface and "blank" for one drawn on the
+ * iPad's blank canvas. Anything else is a client this daemon does not understand, and
+ * guessing would mislabel what the model is told it is looking at.
+ */
+function baseField(value: unknown): { base?: AnnotationBase } {
+  if (value === undefined) return {};
+  if (value === 'blank') return { base: value };
+  throw new HttpError(400, 'invalid_request', 'base must be absent or "blank".');
 }
 
 function requireDevice(value: unknown): AnnotationDevice {

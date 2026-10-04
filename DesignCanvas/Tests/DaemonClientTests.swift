@@ -467,4 +467,32 @@ final class DaemonClientTests: XCTestCase {
 
         XCTAssertEqual(recorder.first, 0.5)
     }
+
+
+    // MARK: - postAnnotation: the blank canvas base
+
+    private func recordedMeta() -> [String: Any]? {
+        guard let recorded = StubURLProtocol.recorded.last, let body = recorded.body,
+              let boundary = boundary(from: recorded.request.value(forHTTPHeaderField: "content-type")),
+              let metaData = parseMultipart(body, boundary: boundary)["meta"]?.data else { return nil }
+        return jsonObject(metaData)
+    }
+
+    func test_postAnnotation_saysBaseBlank_onlyForABlankRound() async throws {
+        StubURLProtocol.scripts = [
+            .init(statusCode: 201, body: Data(#"{"annotationId":"ann_1","dispatched":true}"#.utf8)),
+            .init(statusCode: 201, body: Data(#"{"annotationId":"ann_2","dispatched":true}"#.utf8)),
+        ]
+        let client = makeClient()
+
+        _ = try await client.postAnnotation(makeAnnotationUpload())
+        let mirrorMeta = try XCTUnwrap(recordedMeta())
+        XCTAssertNil(mirrorMeta["base"], "a mirror round's meta is what it always was")
+
+        var blank = makeAnnotationUpload()
+        blank.base = .blank
+        _ = try await client.postAnnotation(blank)
+        let blankMeta = try XCTUnwrap(recordedMeta())
+        XCTAssertEqual(blankMeta["base"] as? String, "blank")
+    }
 }

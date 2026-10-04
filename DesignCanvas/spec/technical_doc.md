@@ -1,6 +1,6 @@
 # Design Canvas: Technical Specification
 
-**Status:** Draft v0.3, 2026-09-18, after the first hardware sessions (v0.2 was 2026-09-16, after the engineering review of the same day). Companion to `PRD-DesignCanvas.md` v0.6. Requirement IDs (D, C, M, P) and gap numbers (G) are shared with the PRD.
+**Status:** Draft v0.4, 2026-10-03 (v0.3 was 2026-09-18, after the first hardware sessions; v0.2 was 2026-09-16, after the engineering review of the same day). Companion to `PRD-DesignCanvas.md` v0.8. The blank canvas surface is specified separately in `technical_doc-BlankCanvas.md`. Requirement IDs (D, C, M, P) and gap numbers (G) are shared with the PRD.
 **Sources:** ai.cst.2 (tech-doc v0.5, desktop-app.md, ADR-0001 to ADR-0004, `packages/server/src/channel/index.ts`); OpenDisplay `PROTOCOL.md` (pv 3) and `Mac/MacSender.swift`; the Claude Code Channels reference and the fakechat reference channel, both read 2026-09-16.
 
 **Document history**
@@ -10,6 +10,7 @@
 | 2026-09-16 v0.1 | Split from the PRD |
 | 2026-09-16 v0.2 | Engineering review applied: GPL-3.0 final and in-app engine; no input forwarding; frame ring instead of a fresh still; Mac composites, sketch-only wire; canvas frame cap with chunked reads; trust-on-first-use accepted; no captureId round-trip; rounds snapshot; store under `~/.claude/channels`; single DaemonClient; Draw Mode state machine; `sourceLabel` removed; size guards on sender-to-iPad JSON; review outputs and report appended |
 | 2026-09-18 v0.3 | G1 decided after the first hardware sessions: mirror the Mac's main display, no extended display. Sections 1, 3, 5.6, 7 and 10 updated; section 11 left as the dated record of the 2026-09-16 review |
+| 2026-10-03 v0.4 | Header brought up to date (the 2026-09-30 `existing` channel state in section 2 had not been recorded here; companion PRD is v0.8). Sections 2 and 3 point to `technical_doc-BlankCanvas.md` for the blank canvas surface, which this document does not describe |
 
 ## 1. Architecture
 
@@ -65,11 +66,15 @@ Additive JSON control messages, no `pv` bump, gated on `welcome.canvas: true`. A
 
 `ping` (sender to receiver) gains two additive string fields: `channel` and `project` (selected folder name, absent when unselected) (P1). `channel` is the Mac menu's D7 verdict, not the daemon's raw subscriber count, so the iPad's dot can never contradict the Mac's row: `attached` (this app's own session), `existing` (a session the app did not start — the menu's "Another session"), `detached` (daemon up, no channel), `none` (no usable daemon). A receiver reads an unknown value as `none`.
 
+The blank canvas surface (2026-10-03) adds `annotation.base` and `ping.blank`; they are specified in `technical_doc-BlankCanvas.md` section 2 and `PROTOCOL.md` section 11.
+
 **Frame length policy (review 2A and D16).** Today `Mac/MacSender.swift:1664` rejects any receiver-to-sender frame of 1 MiB or more with a bare `return`, which never re-arms the read and silently stops all control input while video continues. Replace with a `ControlFramePolicy` struct: cap 1 MiB without `canvas`, 16 MiB with it; payloads are read in 256 KiB chunks and `lastReceived` is bumped per chunk so the 5 s watchdog (line 1424) sees bytes flowing during a slow upload; an oversize frame calls `linkDied` with a log line. Tested in the hostless MacTests target.
 
 **Sender-to-iPad size rule (D23).** `sendJSONFrame` (line 2232) refuses and logs any payload of 32768 bytes or more so the section 4 demux heuristic can never misread a control message as video. The channel process truncates `agentReply.message` at 2 KB before it reaches the daemon; the full text stays in the store.
 
 ## 3. Capture at freeze and Draw Mode
+
+This section describes a round on the mirror surface. A round on the blank canvas surface uses no frame, no `freeze` and no ring; see `technical_doc-BlankCanvas.md` sections 3 and 4.
 
 **Frame ring (D15).** The engine keeps a ring of recently captured frames keyed by capture ms, stored at the encode size so memory stays bounded. As built, the ring is a frame count, the last 16 frames, not ~2 s: deep copies of two seconds of full frames would cost hundreds of MB (implementation plan, ruling 6). Under mirroring (G1) the encode size is the Mac's panel, so the bound is about 16 x 8.9 MB = 143 MB for a 3024x1964 stream in the default 420v pixel format, against about 75 MB for an iPad-sized 2048x1536 stream. On `freeze` it picks the frame whose capture ms matches the iPad's `captureMs` (nearest, within one frame interval), converts to PNG, and posts it to the daemon as the capture. The base frame is therefore the exact frame the user drew on, in clean pre-encode pixels. There is no iPad fallback frame: `frozen.ok:false` means no frame exists yet, which cannot happen in Draw Mode; the iPad then leaves Draw Mode with a message and keeps the strokes.
 

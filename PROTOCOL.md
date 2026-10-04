@@ -690,7 +690,7 @@ once, never fatal.
 |---|---|---|---|
 | `freeze` | receiver to sender | `captureMs`, `zoomRect`, `t` | Enter Draw Mode: hold the frame captured at `captureMs` |
 | `frozen` | sender to receiver | `ok` | Whether that frame was still available |
-| `annotation` | receiver to sender | `sketch`, `zoomRect`, `viewport`, `note`?, `t` | The finished sketch (strokes only, no background) |
+| `annotation` | receiver to sender | `sketch`, `zoomRect`, `viewport`, `note`?, `base`?, `t` | The finished sketch (strokes only, no background) |
 | `agentReply` | sender to receiver | `annotationId`, `status`, `message`?, `prUrl`?, `t` | One round's live status, or the agent's outcome |
 | `rounds` | sender to receiver | `rounds[]` | Snapshot of the last 20 rounds for this device |
 
@@ -715,7 +715,17 @@ Field types, exactly as implemented (`DesignCanvas/Shared/CanvasMessages.swift`)
   that PNG was rendered at, so `w * scale` by `h * scale` is its pixel
   size. On a receiver that letterboxes the video, or one zoomed into part
   of it, that is smaller than the panel. `note` (string, optional — the
-  user's typed note); `t` (number, as above).
+  user's typed note); `base` (string, optional — the only defined value is
+  `blank`); `t` (number, as above). With `base` absent, or any value the
+  sender does not know, the sender composites the sketch over the frame
+  its last `freeze` held, as described above. With `base: "blank"` there
+  is no frame: the sketch was drawn on a blank page the receiver rendered
+  itself, no `freeze` precedes it, `zoomRect` is the full rect, and the
+  sender composites the sketch over an opaque white image of `w * scale`
+  by `h * scale` pixels taken from `viewport`. A receiver MUST NOT send
+  `base: "blank"` unless the sender has advertised `ping.blank` on that
+  connection (section 11.3): a sender that predates the field would look
+  for a held frame, find none, and drop the annotation unacknowledged.
 * **`agentReply`** (sender to receiver): `annotationId` (string); `status`
   (string, one of `queued`, `sent`, `applied`, `failed`, `needs_input`);
   `message` (string, optional, at most 2048 UTF-8 bytes — the sender
@@ -734,7 +744,7 @@ Field types, exactly as implemented (`DesignCanvas/Shared/CanvasMessages.swift`)
 
 ### 11.3 `ping` additions
 
-`ping` (sender to receiver, section 6.2) gains two additive string fields,
+`ping` (sender to receiver, section 6.2) gains three additive string fields,
 sent only on a canvas session:
 
 * `channel` — one of `attached`, `detached`, `existing`, `none`: the
@@ -746,9 +756,12 @@ sent only on a canvas session:
   value reads it as `none`.
 * `project` — the selected project folder's name; absent when none is
   selected.
+* `blank` — `"1"` when the sender accepts `annotation.base: "blank"`
+  (section 11.2); absent when it does not. A receiver treats absence as
+  "not supported" and does not offer its blank surface.
 
-Both are informational, exactly like the sender's other `ping` health
-fields, and follow the same rule as everything else on the wire: an
+`channel` and `project` are informational, exactly like the sender's other
+`ping` health fields, and follow the same rule as everything else on the wire: an
 unknown field on a known type MUST be ignored.
 
 ### 11.4 Frame size policy
@@ -861,3 +874,4 @@ This file is versioned by git; the authoritative change log is
 | 2026-08-19 | Initial specification, written against `pv` 3 |
 | 2026-08-26 | Additive: `hello.cursorPort` and the UDP cursor side channel (section 6.3) |
 | 2026-09-17 | Additive: Design Canvas extension (section 11) — `freeze`/`frozen`/`annotation`/`agentReply`/`rounds`, `ping.channel`/`ping.project`, the 16 MiB canvas frame cap |
+| 2026-10-03 | Additive: Design Canvas blank canvas surface — `annotation.base`, `ping.blank` (section 11.2, 11.3) |

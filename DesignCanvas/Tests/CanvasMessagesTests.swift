@@ -545,4 +545,35 @@ final class CanvasMessagesTests: XCTestCase {
         XCTAssertFalse(truncated.hasSuffix("…"))
         XCTAssertEqual(truncated.utf8.count, 5)
     }
+
+
+    // MARK: - AnnotationMessage.base (the blank canvas surface)
+
+    func test_annotationMessage_baseDefaultsToMirror_andIsNotOnTheWire() {
+        let message = AnnotationMessage(sketchPNG: samplePNG, zoomRect: sampleRect, viewport: sampleViewport, note: nil, t: 1)
+        XCTAssertEqual(message.base, .mirror)
+        XCTAssertNil(message.json["base"])
+    }
+
+    func test_annotationMessage_blankBase_roundTrips() {
+        let message = AnnotationMessage(sketchPNG: samplePNG, zoomRect: .full, viewport: sampleViewport,
+                                        note: "a card layout", t: 2, base: .blank)
+        XCTAssertEqual(message.json["base"] as? String, "blank")
+        XCTAssertEqual(AnnotationMessage(json: message.json), message)
+    }
+
+    func test_annotationMessage_unknownOrMistypedBase_decodesAsMirror() {
+        var json = AnnotationMessage(sketchPNG: samplePNG, zoomRect: sampleRect, viewport: sampleViewport, note: nil, t: 1).json
+        json["base"] = "hologram"
+        XCTAssertEqual(AnnotationMessage(json: json)?.base, .mirror)
+        json["base"] = 1
+        XCTAssertEqual(AnnotationMessage(json: json)?.base, .mirror)
+    }
+
+    func test_canvasSurface_rawValues() {
+        XCTAssertEqual(CanvasSurface.mirror.rawValue, "mirror")
+        XCTAssertEqual(CanvasSurface.blank.rawValue, "blank")
+        XCTAssertEqual(CanvasWire.pingBlankKey, "blank")
+        XCTAssertEqual(CanvasWire.annotationBaseKey, "base")
+    }
 }

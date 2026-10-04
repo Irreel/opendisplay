@@ -30,6 +30,10 @@ struct CanvasReceiverState: Equatable {
     /// The project the Mac has selected, nil when it has none.
     private(set) var project: String?
 
+    /// The Mac's ping said it accepts a sketch drawn on a blank page
+    /// (`annotation.base: "blank"`, PROTOCOL.md 11.3). False until one does.
+    private(set) var macSupportsBlank = false
+
     /// The picture is held: frames are dropped at the door so the last one
     /// stays on screen while the user sketches on it.
     private(set) var frozen = false
@@ -57,6 +61,7 @@ struct CanvasReceiverState: Equatable {
         macSupportsCanvas = false
         channel = nil
         project = nil
+        macSupportsBlank = false
         frozen = false
     }
 
@@ -83,10 +88,13 @@ struct CanvasReceiverState: Equatable {
     /// project into. The two are deliberately asymmetric: the sender always
     /// states its channel, so an absent one means "this ping is not from a
     /// canvas sender" and the last known value stands; but it omits
-    /// `project` when nothing is selected, so an absent one clears it.
+    /// `project` when nothing is selected, so an absent one clears it. `blank`
+    /// is a capability a canvas sender states on every ping, so absent means
+    /// "does not have it".
     mutating func handlePing(_ object: [String: Any]) {
         if let channel = object["channel"] as? String { self.channel = channel }
         project = object["project"] as? String
+        macSupportsBlank = object["blank"] != nil
     }
 
     /// Where an inbound control type this receiver has no case for should go.

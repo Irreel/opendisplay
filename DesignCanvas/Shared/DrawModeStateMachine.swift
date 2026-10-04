@@ -14,6 +14,9 @@ struct DrawModeStateMachine {
 
     enum Event: Equatable {
         case enterDrawMode(now: TimeInterval)
+        /// Draw Mode on the blank canvas surface: there is no frame to hold,
+        /// so nothing is asked of the Mac and DRAWING starts at once.
+        case enterBlankDrawMode
         case frozen(ok: Bool)
         case tick(now: TimeInterval)
         case strokeCountChanged(Int)
@@ -74,6 +77,13 @@ struct DrawModeStateMachine {
         case (.live, .enterDrawMode(let now)):
             state = .freezing(deadline: now + Self.freezeTimeout)
             return [.pauseSync, .sendFreeze]
+
+        // No `pauseSync`: the picture is not what is being drawn on. The exits
+        // from DRAWING still say `resumeSync`, which is a no-op on a receiver
+        // that was never frozen.
+        case (.live, .enterBlankDrawMode):
+            state = .drawing
+            return []
 
         case (.freezing, .frozen(true)):
             state = .drawing

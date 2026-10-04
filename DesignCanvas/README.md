@@ -33,7 +33,9 @@ DesignCanvas/
   README.md                 This file.
   spec/                      PRD, technical spec, TODOs, the implementation
                               plan, the device checklist, the reply-compliance
-                              eval — see below.
+                              eval — see below. The blank canvas surface has
+                              its own pair, PRD-BlankCanvas.md and
+                              technical_doc-BlankCanvas.md (2026-10-03).
   Shared/                    Foundation-only wire types and pure logic,
                               compiled into the Mac app, the iPad app, and
                               the hostless test bundle.
@@ -182,6 +184,14 @@ real device or simulator, and run.
    soon as it's ready; you'll see the round go from queued to sent, and
    Claude Code's reply (applied / failed / needs input, plus an optional PR
    link) shows up on the iPad once it calls `design_canvas_reply`.
+9. **To sketch an idea with nothing on screen to point at**, switch the
+   iPad's panel from **Mirror** to **Blank** (added 2026-10-03). The mirror
+   is replaced by a white page with Draw Mode already open; sketch, add a note saying what the
+   sketch is for, and tap Done. The round goes to Claude Code the same way,
+   described to it as a freehand sketch and not a screenshot, and the page
+   is cleared. There is nothing to set on the Mac. The switch is greyed out
+   when the Mac app is older than this feature. See
+   [`spec/PRD-BlankCanvas.md`](spec/PRD-BlankCanvas.md).
 
 ## Security note
 
@@ -229,6 +239,11 @@ files. Treat the daemon as trusting everything already running on your Mac.
 - **Mirror only.** Design Canvas has no extended display: the sender it is
   built on can create one, but here the capture mode is fixed, and a
   stored `mode` default or a `-mode` launch argument is ignored.
+- **The blank canvas does not stop the mirror.** While the iPad shows its
+  blank page the Mac keeps capturing and streaming the screen underneath,
+  so Screen Recording is still needed and the screen still crosses the
+  link; only the round itself is free of screen content. One page, white,
+  cleared on send — no saved pages (`spec/PRD-BlankCanvas.md`, BG1).
 - **No reply timeout.** A round that Claude Code never replies to (the
   channel wasn't loaded, the model never called the tool, or it's stuck
   behind a permission prompt) stays `sent` forever — there is no timeout or

@@ -61,9 +61,19 @@ final class UploadPipeline {
         }
     }
 
+    /// What a sketch is flattened over.
+    enum Base {
+        /// The frame the iPad froze on.
+        case frame(FreezeCapture)
+        /// The blank canvas surface: a white page of this many pixels. Only
+        /// the size is carried — the page itself is allocated on the work
+        /// queue, never on the sender's.
+        case blank(width: Int, height: Int)
+    }
+
     /// Everything an `annotation` needs once the sender's queue is released.
     struct AnnotationJob {
-        let capture: FreezeCapture
+        let base: Base
         let sketchPNG: Data
         let zoomRect: NormalizedRect
         let viewport: CanvasViewport
@@ -239,8 +249,26 @@ final class UploadPipeline {
     /// down for a while is not hammered afresh by every queued round; it is
     /// reset the moment an upload lands.
     private func runAnnotation(_ job: AnnotationJob, backoff: inout BackoffPolicy) async {
+        // A blank round has no frame time, so its page is stamped with the
+        // moment the sketch arrived. It carries no capture id, so the loop
+        // below posts it as the round's capture.
+        let capture: FreezeCapture
+        let surface: CanvasSurface
+        switch job.base {
+        case .frame(let frozen):
+            capture = frozen
+            surface = .mirror
+        case .blank(let width, let height):
+            guard let page = await onWorkQueue({ Compositor.blankImage(width: width, height: height) }) else {
+                Log.info("canvas: dropping annotation — a \(width)x\(height) blank page could not be made")
+                return
+            }
+            capture = FreezeCapture(image: page, capturedAt: job.createdAt)
+            surface = .blank
+        }
+
         let composited = await onWorkQueue(catching: {
-            try Compositor.composite(base: job.capture.image, sketchPNG: job.sketchPNG, zoomRect: job.zoomRect)
+            try Compositor.composite(base: capture.image, sketchPNG: job.sketchPNG, zoomRect: job.zoomRect)
         })
         guard case .success(let composite) = composited else {
             Log.info("canvas: dropping annotation — the sketch could not be composited")
@@ -254,17 +282,17 @@ final class UploadPipeline {
             // the daemon has since lost it — one posted here from the
             // composite's own copy of the untouched frame.
             let captureID: String
-            if let posted = job.capture.captureID {
+            if let posted = capture.captureID {
                 captureID = posted
             } else {
                 do {
                     captureID = try await daemon.postCapture(
                         png: composite.screenshotPNG,
-                        width: job.capture.width,
-                        height: job.capture.height,
-                        capturedAt: job.capture.capturedAt
+                        width: capture.width,
+                        height: capture.height,
+                        capturedAt: capture.capturedAt
                     )
-                    job.capture.captureID = captureID
+                    capture.captureID = captureID
                 } catch where Self.isNonRetryable(error) {
                     Log.info("canvas: dropping annotation — the daemon refused the capture (\(error))")
                     return
@@ -287,7 +315,8 @@ final class UploadPipeline {
                 note: job.note,
                 deviceID: job.deviceID,
                 deviceName: deviceName,
-                createdAt: job.createdAt
+                createdAt: job.createdAt,
+                base: surface
             )
             do {
                 let annotationID = try await daemon.postAnnotation(upload)
@@ -299,7 +328,7 @@ final class UploadPipeline {
                 // again and try once more straight away, before falling back
                 // to the ordinary backoff path.
                 repostedAfterMissingCapture = true
-                job.capture.captureID = nil
+                capture.captureID = nil
                 Log.info("canvas: the daemon has no such capture; re-posting it")
             } catch where Self.isNonRetryable(error) {
                 Log.info("canvas: dropping annotation — the daemon refused it (\(error))")

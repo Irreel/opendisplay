@@ -634,4 +634,155 @@ final class CanvasModelTests: XCTestCase {
         XCTAssertEqual(model.rounds.map(\.annotationId), ["a", "b"])
         XCTAssertEqual(model.rounds.last?.message, "done")
     }
+
+
+    // MARK: - The blank canvas surface
+
+    /// A model whose Mac has said it takes blank sketches, with Blank chosen.
+    private func blankModel() -> CanvasModel {
+        let model = makeModel()
+        model.pingReceived(channel: "attached", project: "site", blank: true)
+        model.preferredSurface = .blank
+        return model
+    }
+
+    func test_surface_isMirrorUntilTheMacSaysItTakesBlankSketches() {
+        let model = makeModel()
+        model.preferredSurface = .blank
+        XCTAssertFalse(model.macSupportsBlank)
+        XCTAssertEqual(model.surface, .mirror)
+
+        model.pingReceived(channel: "attached", project: nil, blank: true)
+        XCTAssertEqual(model.surface, .blank)
+
+        model.pingReceived(channel: "attached", project: nil, blank: false)
+        XCTAssertEqual(model.surface, .mirror, "an older Mac cannot composite a blank sketch")
+        XCTAssertEqual(model.preferredSurface, .blank, "the choice is kept for the next capable Mac")
+    }
+
+    func test_surface_fallsBackToMirrorWhenTheLinkDrops() {
+        let model = blankModel()
+        XCTAssertEqual(model.surface, .blank)
+
+        receiver.isConnected = false
+        model.connectionChanged(connected: false)
+        XCTAssertFalse(model.macSupportsBlank)
+        XCTAssertEqual(model.surface, .mirror)
+    }
+
+    func test_blank_enterDrawMode_needsNoFrameAndAsksTheMacForNothing() {
+        receiver.captureMs = nil
+        let model = blankModel()
+        model.enterDrawMode(zoomRect: zoom, viewport: viewport)
+
+        XCTAssertEqual(model.drawState, .drawing)
+        XCTAssertNil(model.notice)
+        XCTAssertTrue(receiver.sent.isEmpty, "no freeze: there is no frame to hold")
+        XCTAssertTrue(receiver.frozenCalls.isEmpty, "the picture is not what is drawn on")
+    }
+
+    func test_blank_done_sendsABlankBaseAnnotationOverTheWholePage() throws {
+        let model = blankModel()
+        model.enterDrawMode(zoomRect: zoom, viewport: viewport)
+        model.strokesChanged(count: 3)
+        model.note = "three cards in a row"
+        model.done(sketchPNG: sketch)
+
+        let sent = receiver.messages(ofType: CanvasWire.annotation)
+        XCTAssertEqual(sent.count, 1)
+        XCTAssertEqual(sent[0]["base"] as? String, "blank")
+        let annotation = try XCTUnwrap(AnnotationMessage(json: sent[0]))
+        XCTAssertEqual(annotation, AnnotationMessage(sketchPNG: sketch, zoomRect: .full, viewport: viewport,
+                                                     note: "three cards in a row", t: wallMs, base: .blank))
+
+        receiver.completeSend(true)
+        XCTAssertEqual(model.drawState, .live)
+        XCTAssertTrue(model.shouldClearStrokes, "the page is cleared once the sketch is sent")
+    }
+
+    func test_blank_resendAfterLinkLoss_isTheSameAnnotation() throws {
+        let model = blankModel()
+        model.enterDrawMode(zoomRect: zoom, viewport: viewport)
+        model.strokesChanged(count: 1)
+        model.done(sketchPNG: sketch)
+        receiver.completeSend(false)
+        XCTAssertEqual(model.drawState, .retry)
+
+        // The surface the user is on now must not rewrite what was drawn.
+        model.preferredSurface = .mirror
+        wallMs += 5_000
+        model.welcomeReceived(canvas: true)
+
+        let sent = receiver.messages(ofType: CanvasWire.annotation)
+        XCTAssertEqual(sent.count, 2)
+        XCTAssertEqual(AnnotationMessage(json: sent[1]), AnnotationMessage(json: sent[0]))
+        XCTAssertEqual(sent[1]["base"] as? String, "blank")
+    }
+
+    func test_mirror_annotation_carriesNoBase() {
+        let model = drawingModel()
+        model.done(sketchPNG: sketch)
+        XCTAssertNil(receiver.messages(ofType: CanvasWire.annotation)[0]["base"])
+    }
+
+    func test_mirrorEntry_afterABlankRound_freezesAgain() {
+        let model = blankModel()
+        model.enterDrawMode(zoomRect: zoom, viewport: viewport)
+        model.cancel()
+
+        model.preferredSurface = .mirror
+        model.enterDrawMode(zoomRect: zoom, viewport: viewport)
+        XCTAssertEqual(receiver.messages(ofType: CanvasWire.freeze).count, 1)
+        model.canvasMessage(type: CanvasWire.frozen, object: FrozenMessage(ok: true).json)
+        model.strokesChanged(count: 1)
+        model.done(sketchPNG: sketch)
+        let annotation = AnnotationMessage(json: receiver.messages(ofType: CanvasWire.annotation)[0])
+        XCTAssertEqual(annotation?.base, .mirror)
+        XCTAssertEqual(annotation?.zoomRect, zoom)
+    }
+
+    // MARK: - Choosing the blank surface goes straight to drawing
+
+    func test_choosingBlank_entersDrawModeAtOnce() {
+        let model = makeModel()
+        model.pingReceived(channel: "attached", project: nil, blank: true)
+
+        model.chooseSurface(.blank, pageViewport: viewport)
+
+        XCTAssertEqual(model.preferredSurface, .blank)
+        XCTAssertEqual(model.drawState, .drawing, "a blank page has nothing to look at first")
+        XCTAssertTrue(receiver.sent.isEmpty)
+
+        model.strokesChanged(count: 1)
+        model.done(sketchPNG: sketch)
+        let annotation = AnnotationMessage(json: receiver.messages(ofType: CanvasWire.annotation)[0])
+        XCTAssertEqual(annotation?.base, .blank)
+        XCTAssertEqual(annotation?.viewport, viewport)
+    }
+
+    func test_choosingMirror_doesNotEnterDrawMode() {
+        let model = blankModel()
+        model.chooseSurface(.mirror, pageViewport: viewport)
+        XCTAssertEqual(model.preferredSurface, .mirror)
+        XCTAssertEqual(model.drawState, .live)
+        XCTAssertTrue(receiver.sent.isEmpty)
+    }
+
+    func test_choosingBlank_onAMacThatCannotTakeIt_keepsTheChoiceAndStaysLive() {
+        let model = makeModel()
+        model.chooseSurface(.blank, pageViewport: viewport)
+        XCTAssertEqual(model.preferredSurface, .blank)
+        XCTAssertEqual(model.surface, .mirror)
+        XCTAssertEqual(model.drawState, .live)
+    }
+
+    /// Only the designer's own switch opens Draw Mode. A remembered choice
+    /// coming back with the connection must not hide the status panel unasked.
+    func test_blankBecomingAvailableAgain_doesNotEnterDrawModeByItself() {
+        let model = makeModel()
+        model.preferredSurface = .blank
+        model.pingReceived(channel: "attached", project: nil, blank: true)
+        XCTAssertEqual(model.surface, .blank)
+        XCTAssertEqual(model.drawState, .live)
+    }
 }

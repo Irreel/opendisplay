@@ -108,7 +108,16 @@ export interface AnnotationMeta {
   sourceCaptureId: string;
   device: AnnotationDevice;
   reply: AnnotationReply | null;
+  /**
+   * What the sketch was drawn on. Absent for a round on the mirror surface (a frozen
+   * frame of the Mac's screen), which is every record written before the field existed.
+   * `blank` for a freehand sketch on the iPad's blank canvas: its source capture is a
+   * white page, and no screen content is part of the round.
+   */
+  base?: AnnotationBase;
 }
+
+export type AnnotationBase = 'blank';
 
 export interface HealthResponse {
   status: 'ok';

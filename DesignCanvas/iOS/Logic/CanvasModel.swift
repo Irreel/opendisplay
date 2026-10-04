@@ -46,6 +46,10 @@ final class CanvasModel: ObservableObject {
     /// `.none` until a ping says otherwise (P1).
     @Published private(set) var channel: ChannelState = .none
     @Published private(set) var project: String?
+    /// The surface the designer chose (B1). Persisted by the screen.
+    @Published var preferredSurface: CanvasSurface = .mirror
+    /// The connected Mac's ping said it accepts a blank-page sketch (B3).
+    @Published private(set) var macSupportsBlank = false
     /// The optional one-line note (M4). Bound to the text field.
     @Published var note = ""
     /// Edge flag: the sketch has been sent or thrown away, so the canvas view
@@ -58,6 +62,9 @@ final class CanvasModel: ObservableObject {
     private var entryZoomRect: NormalizedRect = .full
     private var entryViewport = CanvasViewport(width: 0, height: 0, scale: 1)
     private var entryCaptureMs: Int64 = 0
+    /// What the sketch in progress was drawn on. Fixed at entry, like the zoom:
+    /// the surface the screen shows later says nothing about this sketch.
+    private var entryBase: CanvasSurface = .mirror
     /// Built by `done`, kept until the send lands so a retry after a link loss
     /// puts the identical bytes back on the wire (plan ruling 5).
     private var pendingAnnotation: AnnotationMessage?
@@ -80,6 +87,14 @@ final class CanvasModel: ObservableObject {
     }
 
     // MARK: - What the screen asks
+
+    /// What the iPad shows: the blank page only when the designer chose it and
+    /// a Mac that can composite a blank sketch is on the other end (B3). An
+    /// older Mac would drop the annotation with nothing to tell this device —
+    /// there is no ack — so the page is not offered to it at all.
+    var surface: CanvasSurface {
+        preferredSurface == .blank && macSupportsBlank && receiver.isConnected ? .blank : .mirror
+    }
 
     /// Draw Mode is reachable only on a live, connected, Design Canvas session
     /// (P3, and requirement 6 of the brief: a plain OpenDisplay Mac leaves the
@@ -112,9 +127,32 @@ final class CanvasModel: ObservableObject {
 
     // MARK: - Draw Mode
 
+    /// The designer switched surface (B1). Choosing the blank page opens Draw
+    /// Mode in the same tap: there is nothing on it to look at first, so the
+    /// only thing to do there is draw. `pageViewport` is the blank page's own
+    /// rect — the whole view — which the screen cannot read off its layout
+    /// until the surface has actually changed.
+    func chooseSurface(_ chosen: CanvasSurface, pageViewport: CanvasViewport) {
+        preferredSurface = chosen
+        guard chosen == .blank, surface == .blank, canEnterDrawMode else { return }
+        enterDrawMode(zoomRect: .full, viewport: pageViewport)
+    }
+
     /// Freeze the picture and ask the Mac to keep the same frame (M1, D9).
     /// `zoomRect` and `viewport` are what the sketch will be sent with.
+    ///
+    /// On the blank surface there is no frame: nothing is frozen, nothing is
+    /// asked of the Mac, and the sketch covers the whole page (B4).
     func enterDrawMode(zoomRect: NormalizedRect, viewport: CanvasViewport) {
+        if surface == .blank {
+            entryBase = .blank
+            entryZoomRect = .full
+            entryViewport = viewport
+            notice = nil
+            apply(.enterBlankDrawMode)
+            return
+        }
+        entryBase = .mirror
         guard let captureMs = receiver.currentCaptureMs() else {
             // Nothing has been displayed yet, so there is no frame to name and
             // no point freezing on it (M7's message, without the round trip).
@@ -157,7 +195,8 @@ final class CanvasModel: ObservableObject {
                                               zoomRect: entryZoomRect,
                                               viewport: entryViewport,
                                               note: trimmed.isEmpty ? nil : trimmed,
-                                              t: nowMs())
+                                              t: nowMs(),
+                                              base: entryBase)
         apply(.done)
     }
 
@@ -194,6 +233,7 @@ final class CanvasModel: ObservableObject {
         // which can be much later.
         channel = .none
         project = nil
+        macSupportsBlank = false
         apply(.linkLost)
     }
 
@@ -205,10 +245,12 @@ final class CanvasModel: ObservableObject {
         apply(.helloReceived)
     }
 
-    /// The Mac's ping carries its channel state and selected project (P1).
-    func pingReceived(channel: String?, project: String?) {
+    /// The Mac's ping carries its channel state and selected project (P1), and
+    /// whether it accepts a blank-page sketch (B3).
+    func pingReceived(channel: String?, project: String?, blank: Bool = false) {
         self.channel = channel.flatMap(ChannelState.init(rawValue:)) ?? .none
         self.project = project
+        if macSupportsBlank != blank { macSupportsBlank = blank }
     }
 
     /// A canvas control message from the Mac. Anything that does not parse is

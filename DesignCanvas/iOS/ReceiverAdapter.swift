@@ -72,7 +72,8 @@ final class ReceiverAdapter: CanvasReceiving {
         receiver.$canvas
             .receive(on: DispatchQueue.main)
             .sink { [weak model] canvas in
-                model?.pingReceived(channel: canvas.channel, project: canvas.project)
+                model?.pingReceived(channel: canvas.channel, project: canvas.project,
+                                    blank: canvas.macSupportsBlank)
             }
             .store(in: &cancellables)
     }

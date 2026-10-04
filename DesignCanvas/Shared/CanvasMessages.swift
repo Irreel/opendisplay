@@ -14,6 +14,9 @@ enum CanvasWire {
 
     static let pingChannelKey = "channel"
     static let pingProjectKey = "project"
+    /// `"1"` when the Mac accepts `annotation.base: "blank"` (PROTOCOL.md 11.3).
+    static let pingBlankKey = "blank"
+    static let annotationBaseKey = "base"
 
     static let senderJSONLimit = 32768                     // payload must be < this
     static let replyMessageMaxBytes = 2048
@@ -122,6 +125,17 @@ extension CanvasViewport {
     }
 }
 
+// MARK: - CanvasSurface
+
+/// What the iPad is showing, and so what a sketch was drawn on: the live
+/// mirror of the Mac, or a blank page the iPad renders itself
+/// (`spec/PRD-BlankCanvas.md`). Chosen on the iPad; the Mac only ever learns
+/// it from an `annotation`'s `base`.
+enum CanvasSurface: String {
+    case mirror
+    case blank
+}
+
 // MARK: - Round / channel status enums
 
 enum RoundStatus: String {
@@ -206,10 +220,14 @@ struct AnnotationMessage: Equatable {
     var viewport: CanvasViewport
     var note: String?
     var t: Double
+    /// `.blank` when the sketch was drawn on the blank page: no `freeze` came
+    /// first and the Mac composites it on white. On the wire only when blank,
+    /// so a mirror annotation is byte-for-byte what it always was.
+    var base: CanvasSurface = .mirror
 }
 
 extension AnnotationMessage {
-    /// "sketch" is base64.
+    /// "sketch" is base64. An absent or unknown "base" is a mirror sketch.
     init?(json: [String: Any]) {
         guard let sketchBase64 = json["sketch"] as? String,
               let sketchPNG = Data(base64Encoded: sketchBase64),
@@ -221,6 +239,7 @@ extension AnnotationMessage {
         self.viewport = viewport
         self.note = json["note"] as? String
         self.t = t
+        self.base = (json[CanvasWire.annotationBaseKey] as? String).flatMap(CanvasSurface.init(rawValue:)) ?? .mirror
     }
 
     var json: [String: Any] {
@@ -232,6 +251,9 @@ extension AnnotationMessage {
         ]
         if let note {
             dict["note"] = note
+        }
+        if base == .blank {
+            dict[CanvasWire.annotationBaseKey] = base.rawValue
         }
         return dict
     }

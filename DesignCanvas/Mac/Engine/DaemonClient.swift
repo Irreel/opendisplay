@@ -28,7 +28,8 @@ enum HealthProbeResult: Equatable {
 }
 
 /// Everything needed to build one `POST /v1/annotations` upload. Field names
-/// mirror the daemon's meta JSON keys (see `task-6-report.md`), not the wire
+/// mirror the daemon's meta JSON keys (`parseAnnotationUpload` in
+/// `DesignCanvas/server/src/http/server.ts`), not the wire
 /// `AnnotationMessage` from the iPad, since a zoom rect / viewport / note
 /// value must survive whatever the engine did with the incoming annotation
 /// before it reaches the daemon.
@@ -42,6 +43,9 @@ struct AnnotationUpload: Equatable {
     var deviceID: String
     var deviceName: String
     var createdAt: Date
+    /// `.blank` for a sketch drawn on the blank canvas surface. The daemon's
+    /// meta carries `"base": "blank"` for it and no `base` key otherwise.
+    var base: CanvasSurface = .mirror
 }
 
 /// One `round.updated` SSE event, tagged with the device it belongs to (the
@@ -87,8 +91,8 @@ protocol DaemonAPI: AnyObject {
 /// The Mac engine's one client for the local Node daemon at
 /// `http://127.0.0.1:47100`: health, capture/annotation uploads, the rounds
 /// list, and the rounds SSE stream. Every request/response shape here must
-/// match the daemon exactly — see `task-6-report.md`'s route table and
-/// `DesignCanvas/server/src/http/server.ts`/`shared.ts`.
+/// match the daemon exactly — see the route table in
+/// `DesignCanvas/server/src/http/server.ts` and the types in `shared.ts`.
 final class DaemonClient: DaemonAPI {
     private let baseURL: URL
     private let session: URLSession
@@ -188,6 +192,9 @@ final class DaemonClient: DaemonAPI {
         ]
         if let note = upload.note?.trimmingCharacters(in: .whitespacesAndNewlines), !note.isEmpty {
             meta["note"] = ["text": note]
+        }
+        if upload.base == .blank {
+            meta["base"] = upload.base.rawValue
         }
         // Meta/device/zoomRect are all JSON-serializable literals built above, so this cannot fail.
         let metaData = (try? JSONSerialization.data(withJSONObject: meta)) ?? Data()

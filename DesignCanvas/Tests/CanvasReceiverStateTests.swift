@@ -161,4 +161,28 @@ final class CanvasReceiverStateTests: XCTestCase {
         state.suppressesInput = false
         XCTAssertTrue(state.allowsInputSend)
     }
+
+
+    // MARK: - ping: the blank canvas capability
+
+    func test_pingWithBlank_setsTheCapability() throws {
+        var state = CanvasReceiverState()
+        XCTAssertFalse(state.macSupportsBlank)
+        state.handlePing(try wire(#"{"type":"ping","channel":"attached","blank":"1"}"#))
+        XCTAssertTrue(state.macSupportsBlank)
+    }
+
+    func test_pingWithoutBlank_clearsTheCapability() throws {
+        var state = CanvasReceiverState()
+        state.handlePing(try wire(#"{"type":"ping","channel":"attached","blank":"1"}"#))
+        state.handlePing(try wire(#"{"type":"ping","channel":"attached"}"#))
+        XCTAssertFalse(state.macSupportsBlank)
+    }
+
+    func test_connectionResetClearsTheBlankCapability() throws {
+        var state = CanvasReceiverState()
+        state.handlePing(try wire(#"{"type":"ping","channel":"attached","blank":"1"}"#))
+        state.connectionReset()
+        XCTAssertFalse(state.macSupportsBlank)
+    }
 }
