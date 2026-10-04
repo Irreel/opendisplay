@@ -44,3 +44,4 @@ DesignCanvas/server/dist/
 DesignCanvas/Mac/Info.plist
 DesignCanvas/iOS/Info.plist
 .superpowers/
+.gstack/

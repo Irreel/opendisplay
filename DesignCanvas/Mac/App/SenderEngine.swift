@@ -44,6 +44,10 @@ protocol SenderEngine: AnyObject {
     /// health poll; the menu says so when it is not zero, because a daemon that is down otherwise
     /// leaves the user with no sign that their rounds are still queued (I3).
     var pendingUploads: Int { get }
+    /// Frames reached the engine within the last two seconds. Outranks the Screen Recording
+    /// preflight in the menu: a running capture is proof of the permission, whatever
+    /// `CGPreflightScreenCaptureAccess` says (it said no on macOS 26 while mirroring ran).
+    var isCapturing: Bool { get }
 
     func start()
     func stop()

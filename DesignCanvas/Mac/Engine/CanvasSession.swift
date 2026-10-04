@@ -5,12 +5,15 @@ import Foundation
 
 /// The two additive `ping` fields (spec section 2, P1), shared by every
 /// session and written by the app as the daemon health poll and the project
-/// picker change. Thread-safe because sessions read it from the sender's
-/// queue while the app writes it from the main one.
+/// picker change, plus the one fact that flows the other way: when the last
+/// captured frame arrived, which is how the app knows capture is running
+/// (`isCapturing`). Thread-safe because sessions read and stamp it from the
+/// sender's queue while the app writes and reads it from the main one.
 final class CanvasStatus {
     private let lock = NSLock()
     private var storedChannelState: ChannelState = .none
     private var storedProjectName: String?
+    private var storedLastFrameAt: Date?
 
     var channelState: ChannelState {
         get {
@@ -54,6 +57,23 @@ final class CanvasStatus {
             fields[CanvasWire.pingProjectKey] = storedProjectName
         }
         return fields
+    }
+
+    /// A frame was captured at `at`. Called at capture rate from the sender's queue.
+    func noteFrame(at: Date) {
+        lock.lock()
+        storedLastFrameAt = at
+        lock.unlock()
+    }
+
+    /// Frames are flowing: one arrived within the last `window` seconds. This is the ground
+    /// truth behind the menu's Screen Recording row — a permission preflight that says no
+    /// while this says yes is the preflight being wrong (seen on macOS 26, 2026-09-30).
+    func isCapturing(now: Date, window: TimeInterval = 2) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let last = storedLastFrameAt else { return false }
+        return now.timeIntervalSince(last) < window
     }
 }
 
@@ -198,6 +218,7 @@ final class CanvasSession: SenderCanvasDelegate {
         lock.lock()
         ring.append(pixelBuffer, captureMs: captureMs)
         lock.unlock()
+        status.noteFrame(at: Date())
     }
 
     func canvasDidReceive(type: String, object: [String: Any], outbound: CanvasOutbound) {

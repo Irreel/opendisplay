@@ -20,6 +20,7 @@ final class FakeSenderEngine: SenderEngine {
     var discovered: [DiscoveredDevice] = []
     var onDevicesChanged: (() -> Void)?
     var pendingUploads = 0
+    var isCapturing = false
 
     private(set) var startCount = 0
     private(set) var stopCount = 0
@@ -562,16 +563,26 @@ final class AppModelTests: XCTestCase {
     // selected project is deliberately not a search root: a user's repo is not where this app's
     // own server build lives.
 
+    func testDefaultServerEntryPrefersTheServerBundledWithTheApp() {
+        let bundled = URL(fileURLWithPath: "/Apps/Design Canvas.app/Contents/Resources")
+        let roots = [URL(fileURLWithPath: "/a")]
+        let found = AppModel.defaultServerEntry(
+            resources: bundled, roots: roots,
+            fileExists: { $0 == "/Apps/Design Canvas.app/Contents/Resources/server/dist/index.js" || $0 == "/a/DesignCanvas/server/dist/index.js" }
+        )
+        XCTAssertEqual(found, "/Apps/Design Canvas.app/Contents/Resources/server/dist/index.js")
+    }
+
     func testDefaultServerEntryPicksTheFirstRootThatHasTheServerBuild() {
         let roots = [URL(fileURLWithPath: "/a"), URL(fileURLWithPath: "/b")]
-        let found = AppModel.defaultServerEntry(roots: roots, fileExists: { $0 == "/b/DesignCanvas/server/dist/index.js" })
+        let found = AppModel.defaultServerEntry(resources: nil, roots: roots, fileExists: { $0 == "/b/DesignCanvas/server/dist/index.js" })
         XCTAssertEqual(found, "/b/DesignCanvas/server/dist/index.js")
     }
 
     func testDefaultServerEntryIsNilWhenNoRootHasIt() {
         let roots = [URL(fileURLWithPath: "/a"), URL(fileURLWithPath: "/b")]
         XCTAssertNil(
-            AppModel.defaultServerEntry(roots: roots, fileExists: { _ in false }),
+            AppModel.defaultServerEntry(resources: URL(fileURLWithPath: "/r"), roots: roots, fileExists: { _ in false }),
             "nothing found leaves serverEntry unset, and the menu says \u{201C}Set server build\u{2026}\u{201D}"
         )
     }

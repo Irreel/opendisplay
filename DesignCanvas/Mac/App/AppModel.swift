@@ -29,7 +29,9 @@ final class AppModel: ObservableObject {
     @Published var configWarning: String?
     @Published var needsMcpUpdate = false
     @Published var serverEntry: String?
-    @Published var screenRecordingGranted = ScreenRecordingPermission.isGranted
+    /// Screen Recording as the menu shows it: the preflight, or a running capture, whichever
+    /// says yes (see `pollOnce`). Set from the probe in `init`.
+    @Published var screenRecordingGranted = false
     @Published var daemonGaveUp = false
     @Published var lastResetOutcome: ResetOutcome?
     /// True for the whole span of `resetProcesses()` and, when it's the caller, the whole span of
@@ -73,6 +75,12 @@ final class AppModel: ObservableObject {
     /// production waits ~2s for the daemon to come back up; tests inject a no-op so the bounded
     /// retry loop runs instantly.
     private let retryDelay: () async -> Void
+    /// The Screen Recording preflight — `CGPreflightScreenCaptureAccess()` in production, a
+    /// flag in tests. Never the only word: `pollOnce` lets a capturing engine overrule it.
+    private let screenRecordingProbe: () -> Bool
+    /// The preflight disagreeing with a running capture is logged once per run, with a reading
+    /// from off the main thread, so the log says which of the two the OS quirk depends on.
+    private var preflightDisagreementLogged = false
 
     private var pinnedInstanceId: String?
     private var pinnedForPid: Int32?
@@ -112,7 +120,8 @@ final class AppModel: ObservableObject {
         resetService: ProcessResetService? = nil,
         launchInTerminal: ((URL) -> String?)? = nil,
         retryDelay: (() async -> Void)? = nil,
-        engine: SenderEngine? = nil
+        engine: SenderEngine? = nil,
+        screenRecordingProbe: (() -> Bool)? = nil
     ) {
         nodePath = Self.resolveNodePath()
         self.now = now
@@ -121,6 +130,9 @@ final class AppModel: ObservableObject {
         self.launchInTerminal = launchInTerminal ?? ClaudeLauncher.launchInTerminal
         self.retryDelay = retryDelay ?? { try? await Task.sleep(nanoseconds: 2_000_000_000) }
         self.engine = engine
+        let probeScreenRecording = screenRecordingProbe ?? { ScreenRecordingPermission.isGranted }
+        self.screenRecordingProbe = probeScreenRecording
+        screenRecordingGranted = probeScreenRecording()
         serverEntry = UserDefaults.standard.string(forKey: Self.serverEntryKey) ?? Self.defaultServerEntry()
         let daemon = DaemonClient(baseURL: URL(string: "http://127.0.0.1:\(Self.port)")!)
         self.probe = probe ?? { await daemon.probe() }
@@ -194,25 +206,31 @@ final class AppModel: ObservableObject {
 
     // MARK: - Server build
 
+    /// Where the server lives inside the app (`tools/bundle-server.sh`, run at build time),
+    /// relative to `Contents/Resources`.
+    private static let bundledServerEntryRelativePath = "server/dist/index.js"
     /// Where a locally built server lives, relative to a checkout.
     private static let serverEntryRelativePath = "DesignCanvas/server/dist/index.js"
 
     /// First guess at the server build, used only when the user has never chosen one. Pure so it
-    /// can be tested without touching the filesystem. The selected project is deliberately never
-    /// one of the roots: a user's repo is not where this app's own server build lives.
-    static func defaultServerEntry(roots: [URL], fileExists: (String) -> Bool) -> String? {
-        for root in roots {
-            let candidate = root.appendingPathComponent(serverEntryRelativePath).path
-            if fileExists(candidate) { return candidate }
+    /// can be tested without touching the filesystem. The copy bundled with the app wins; the
+    /// checkout roots are the fallback for a Debug build made without pnpm. The selected project
+    /// is deliberately never one of the roots: a user's repo is not where this app's own server
+    /// build lives.
+    static func defaultServerEntry(resources: URL?, roots: [URL], fileExists: (String) -> Bool) -> String? {
+        var candidates = roots.map { $0.appendingPathComponent(serverEntryRelativePath).path }
+        if let resources {
+            candidates.insert(resources.appendingPathComponent(bundledServerEntryRelativePath).path, at: 0)
         }
-        return nil
+        return candidates.first(where: fileExists)
     }
 
-    /// The two roots a locally built app actually runs from: the working directory (launched
-    /// from a terminal inside the checkout) and the folder holding the `.app`. Nothing found
-    /// leaves `serverEntry` nil and the menu shows "Set server build…".
+    /// The bundle's Resources, then the two roots a locally built app actually runs from: the
+    /// working directory (launched from a terminal inside the checkout) and the folder holding
+    /// the `.app`. Nothing found leaves `serverEntry` nil and Settings offers the picker.
     private static func defaultServerEntry() -> String? {
         defaultServerEntry(
+            resources: Bundle.main.resourceURL,
             roots: [
                 URL(fileURLWithPath: FileManager.default.currentDirectoryPath),
                 Bundle.main.bundleURL.deletingLastPathComponent(),
@@ -333,8 +351,23 @@ final class AppModel: ObservableObject {
         if stillPending != pendingUploads { pendingUploads = stillPending }
 
         // Cheap, non-prompting TCC query — so the permission row goes green on the next tick
-        // after the user grants it, instead of staying stale until relaunch.
-        screenRecordingGranted = ScreenRecordingPermission.isGranted
+        // after the user grants it, instead of staying stale until relaunch. A running capture
+        // outranks it: on macOS 26 (2026-09-30) the preflight answered no on this poll while the
+        // same process was mirroring to the iPad, and the row must never contradict the screen.
+        let preflight = screenRecordingProbe()
+        let capturing = engine?.isCapturing ?? false
+        let granted = preflight || capturing
+        if granted != screenRecordingGranted {
+            Log.info("Screen Recording: \(granted ? "granted" : "not granted") (preflight \(preflight), capturing \(capturing))")
+        }
+        if capturing, !preflight, !preflightDisagreementLogged {
+            preflightDisagreementLogged = true
+            Task.detached {
+                let offMain = ScreenRecordingPermission.isGranted
+                Log.info("Screen Recording: preflight says no while frames are flowing (main actor false, background thread \(offMain))")
+            }
+        }
+        screenRecordingGranted = granted
     }
 
     // MARK: - Project selection
@@ -522,7 +555,9 @@ final class AppModel: ObservableObject {
     /// registers it) and, if that didn't grant it, opens the Privacy pane so the user can enable
     /// it. A freshly-granted permission needs an app relaunch to take effect.
     func openScreenRecordingSettings() {
-        screenRecordingGranted = ScreenRecordingPermission.request()
+        let requested = ScreenRecordingPermission.request()
+        Log.info("Screen Recording: request returned \(requested)")
+        screenRecordingGranted = requested || (engine?.isCapturing ?? false)
         if !screenRecordingGranted {
             ScreenRecordingPermission.openSystemSettings()
         }

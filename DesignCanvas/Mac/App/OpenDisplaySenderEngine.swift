@@ -16,6 +16,7 @@ final class OpenDisplaySenderEngine: SenderEngine {
     var onDevicesChanged: (() -> Void)?
 
     var pendingUploads: Int { hub.pendingUploads }
+    var isCapturing: Bool { status.isCapturing(now: Date()) }
 
     /// The two `ping` fields every session relays to its iPad. The app writes them; the sessions
     /// read them from the sender's queue.

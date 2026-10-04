@@ -18,10 +18,14 @@ struct SettingsView: View {
                     Button("Open System Settings") { model.openScreenRecordingSettings() }
                 }
             }
+            // The server ships inside the app, so only a Debug build offers to point elsewhere
+            // (a local server under development, or a build made without pnpm).
+            #if DEBUG
             Section("Server build") {
                 LabeledContent("Entry", value: model.serverEntry ?? "Not set")
                 Button(model.serverEntry == nil ? "Choose\u{2026}" : "Change\u{2026}") { model.setServerBuild() }
             }
+            #endif
             Section("Project configuration") {
                 if model.selectedProject == nil {
                     Text("No project selected").foregroundColor(.secondary)

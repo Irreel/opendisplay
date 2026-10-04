@@ -251,6 +251,14 @@ targets:
         NSBonjourServices: ["_designcanvas._tcp"]
         NSAppleEventsUsageDescription: Design Canvas launches Claude Code by sending a command to Terminal.
         LSApplicationCategoryType: public.app-category.developer-tools
+    # The designtool server (DesignCanvas/server) ships inside the app at
+    # Contents/Resources/server, so the app never has to be pointed at a checkout.
+    # Needs pnpm: a Debug build without it warns and leaves the server out.
+    postBuildScripts:
+      - name: Bundle designtool server
+        script: |
+          "$SRCROOT/DesignCanvas/tools/bundle-server.sh" "$BUILT_PRODUCTS_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH/server"
+        basedOnDependencyAnalysis: false
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.designcanvas.mac

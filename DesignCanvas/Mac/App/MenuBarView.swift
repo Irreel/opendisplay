@@ -161,11 +161,13 @@ struct MenuBarView: View {
                         .font(.body)
                         .lineLimit(1)
                         .truncationMode(.middle)
-                    Text(project.deletingLastPathComponent().path)
+                    // The full folder path. When it doesn't fit, drop the head: the tail
+                    // (the project folder itself) is what disambiguates.
+                    Text(project.path)
                         .font(.caption2)
                         .foregroundColor(.secondary)
                         .lineLimit(1)
-                        .truncationMode(.middle)
+                        .truncationMode(.head)
                 } else {
                     Text("No project selected")
                         .foregroundColor(.secondary)
