@@ -84,9 +84,8 @@ description of everything that crosses the wire.
 - Xcode (current stable) and [XcodeGen](https://github.com/yonaskolb/XcodeGen) (`brew install xcodegen`)
 - Node >= 20.10 and [pnpm](https://pnpm.io)
 - An iPad on iOS/iPadOS 16.4+, on the same network or a USB cable
-- Claude Code, signed in with a claude.ai account (Console API keys cannot
-  use Channels — see "Known limits" below), with the
-  `--dangerously-load-development-channels` flag available
+- Claude Code, signed in with a claude.ai account or a Claude Console API
+  key, with the `--dangerously-load-development-channels` flag available
 
 ## Build and run
 
