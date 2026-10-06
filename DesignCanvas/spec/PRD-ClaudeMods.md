@@ -1,6 +1,6 @@
 # PRD: Design Canvas Claude Mods
 
-**Status:** Draft v0.2, 2026-10-05 (v0.1 was 2026-10-04), for owner review. Nothing here is built. Product requirements only; a technical doc follows once the spike in section 6 is done.
+**Status:** Draft v0.3, 2026-10-05, after the spike (v0.2 was earlier the same day; v0.1 was 2026-10-04), for owner review. Nothing here is built. Product requirements only; the design and the spike's results are in [technical_doc-ClaudeMods.md](./technical_doc-ClaudeMods.md).
 **Owner:** AntheaZ
 **Extends:** [PRD-DesignCanvas.md](./PRD-DesignCanvas.md) v0.8 and [PRD-BlankCanvas.md](./PRD-BlankCanvas.md) v0.2. Those documents own the sketch loop on both surfaces. This one owns only how the loop gets into and out of Claude Code. Requirements there are cited by ID and not restated.
 
@@ -104,7 +104,7 @@ IDs use their own prefix (X) so they cannot collide with D, C, M, P and B. Owner
 | X3 | A sketch starts a new turn in the session, carrying what a round carries today: the sketch, the note, the zoom region, the sending iPad (D10), and whether it is a mirror or a blank round (B8). D4 and D5 are unchanged |
 | X4 | One sketch per turn, in the order sent. A sketch sent while another is being worked on waits, and shows as queued on the iPad (M8) until its turn starts. A round marked failed (X6) frees the queue for the next. Resolves G10 |
 | X5 | Claude Code reports one outcome per sketch (D6) with the statuses of M8. The iPad shows the status and the head of Claude's message, not the full reply, which can be long. This is a change on the iPad: today it shows the whole message, with no length limit |
-| X6 | A round whose turn ends without an outcome is reminded once. If there is still none, or the session ends first, the round is marked failed (M8), with a line saying Claude did not reply. No new status. Reverses D21 (decided 2026-10-05) |
+| X6 | A round whose turn ends without an outcome is reminded once. If there is still none, or the session ends first, the round is marked failed (M8), with a line saying Claude did not reply. A round whose turn the user stops by hand is marked failed at once, with no reminder, and says it was stopped at the Mac (decided 2026-10-05). No new status. Reverses D21 (decided 2026-10-05) |
 | X7 | Claude Code reads a sketch from Design Canvas's store without a permission prompt. Nothing else is approved on the user's behalf. Resolves D22 for the read |
 | X8 | While Claude Code is waiting on a permission prompt, the iPad shows "Waiting at the Mac" and nothing else: no tool name and no command (decided 2026-10-05). Display only; the prompt is answered at the Mac. Resolves G19 for visibility |
 | X9 | A running session is recognised after the Mac app relaunches, and a session the user started by hand with the mod loaded is usable. D7's three states become two: no session, and a connected session. A Claude Code session without the mod is invisible to Design Canvas. Resolves G22 |
@@ -117,7 +117,7 @@ IDs use their own prefix (X) so they cannot collide with D, C, M, P and B. Owner
 | X22 | With several sessions connected, the default target is the session started with Start session, if there is one, and otherwise the most recently started. Once set, the target is sticky: a newer session never takes over by itself |
 | X23 | A sketch is bound to the target at the moment Done is tapped. Switching the target affects the next sketch, never one already sent or queued |
 | X24 | The target can be switched in both apps. The Mac menu lists the connected sessions with a tick on the target. On the iPad, tapping the project name in the connection status (P1, P2) lists them. The iPad switcher works over USB and over WiFi (decided 2026-10-05) |
-| X25 | Each session in the list shows its project folder name, its Claude Code session title when it has one, its git branch, and the time of its last reply, so two sessions in the same folder can be told apart. A session with no title shows its start time instead (decided 2026-10-05) |
+| X25 | Each session in the list shows its project folder name, its Claude Code session title when it has one, its git branch, and the time of its last reply, so two sessions in the same folder can be told apart. A session with no title shows its start time instead (decided 2026-10-05). The spike found that only a session the user named has a title, so the start time is what most rows will show |
 | X26 | When the target session ends, its queued sketches are marked failed (X6). If one session remains it becomes the target. If several remain, both apps ask the user to pick, and the iPad does not send a sketch until one is picked |
 
 ## 5. Requirements, Phase 2: answer from the iPad
@@ -143,7 +143,7 @@ X13 and X14 carry less risk than X15: a spoofed answer misdirects the agent, whi
 
 **Rollout**
 
-1. **Spike.** Answer the open spike questions in section 7 (SQ2, SQ3 and the Screen Recording half of SQ4) with a throwaway mod, before any product code. If SQ2 fails, Phase 1 is rethought.
+1. **Spike.** Done 2026-10-05 with a throwaway mod, before any product code. SQ2 passed, so Phase 1 stands as written. Results are in section 7 and in the technical doc, section 10. One check is left over: the literal Screen Recording half of SQ4.
 2. **Phase 1, mod by default.** The mod is the only path in the product (decided 2026-10-05). During development the channel is run once more on the reply-compliance eval, as the baseline to beat.
 3. **Channel removed.** Once X6's no-reply failure rate and the eval hold up in dogfooding, the channel process, its launch flag and the `.mcp.json` writing are deleted. There is no fallback.
 4. **Phase 2.** Deprioritized 2026-10-05; not scheduled.
@@ -160,7 +160,7 @@ X13 and X14 carry less risk than X15: a spoofed answer misdirects the agent, whi
 | A way for the Mac app to register its bundled mod with Claude Code | X18 to X20 | The copy inside the app for now, a marketplace listing once published (XG7). Start session does not need it |
 | Daemon endpoints for session state and a session registry | X6, X8, X9, X18 | To build. A throwaway mod reached the running daemon over HTTP on 2026-10-05 |
 | Two more additive messages: the session list to the iPad, and the iPad's choice back | X24, X25 | To build. Additive, so no protocol version bump |
-| Session title from Claude Code | X25 | Present in the v2.1.289 type declarations as an optional field on session start and prompt submit. Not yet seen in a running session |
+| Session title from Claude Code | X25 | Seen in a running session 2026-10-05, on session start and on each prompt, for a session the user named. An unnamed session has none |
 
 **Risks**
 
@@ -168,7 +168,7 @@ X13 and X14 carry less risk than X15: a spoofed answer misdirects the agent, whi
 |---|---|---|
 | The mods API changes | The mod stops loading after a Claude Code update | Pin a minimum version, and check it at Start session (X10) |
 | A mod runs with the user's full permissions and is not sandboxed | A bug in the mod has the reach of the user's account | Keep the mod small, make no model calls, limit X7 to one resolved directory, publish what `claude plugin validate` lists for it |
-| A prompt submitted by a mod reads differently to Claude than a channel event | Reply compliance drops | Measured in the spike and at rollout step 2 |
+| A prompt submitted by a mod reads differently to Claude than a channel event | Reply compliance drops | Spike, 2026-10-05: 10 of 10 rounds replied. Measured again with a real iPad at rollout step 2 |
 | Organisations block user-installed mods | Design Canvas cannot start a session there | None. Start session says so in plain words (X10); accepted 2026-10-05 |
 | The daemon's loopback API has no authentication | Any local process can post a sketch, as today | Unchanged by this PRD; noted so Phase 2 does not widen it |
 | After the opt-in, the mod loads in every session, including projects unrelated to Design Canvas | The mod sees every prompt and tool call there, and each session start opens the Mac app | Explicit consent with the consequences stated (X20), off by default, one switch in Settings to undo it |
@@ -191,15 +191,15 @@ X13 and X14 carry less risk than X15: a spoofed answer misdirects the agent, whi
 **Spike questions**
 
 - [x] **SQ1.** Closed 2026-10-05, not a blocker. The current Claude Code docs say channels already work with a Console API key, and the mods docs put no sign-in limit on mods, so the mod path neither fixes nor breaks this. Not tested with a key.
-- [ ] **SQ2.** A mod's prompt arrives after a sentence naming the mod as sender. Does reply compliance hold against the channel's?
-- [ ] **SQ3.** Can a mod's prompt carry the sketch as an image, or only as a file path as today?
-- [ ] **SQ4.** Can a mod open the Mac app when a session starts, and does macOS then treat it as the normal signed app for Screen Recording? Half tested 2026-10-05: a throwaway mod opened another Mac app, which ran as its own app and not under Claude Code. Still untested: Design Canvas keeping its Screen Recording grant when opened this way.
-- [ ] **SQ5.** Does a running session actually deliver the session title X25 relies on, and for which sessions? It is in the type declarations but has not been observed.
+- [x] **SQ2.** A mod's prompt arrives after a sentence naming the mod as sender. Does reply compliance hold against the channel's? Closed 2026-10-05: yes. 10 of 10 synthetic rounds were answered on the first turn, against the eval's bar of 9 of 10. The channel baseline and a run with a real iPad remain for rollout step 2.
+- [x] **SQ3.** Can a mod's prompt carry the sketch as an image, or only as a file path as today? Closed 2026-10-05: a file path only, by Claude Code's type declarations. Claude read the path in every spike round, and X7 keeps that read free of a prompt.
+- [ ] **SQ4.** Can a mod open the Mac app when a session starts, and does macOS then treat it as the normal signed app for Screen Recording? Half tested 2026-10-05: a throwaway mod opened another Mac app, which ran as its own app and not under Claude Code. Second test 2026-10-05: macOS holds an app the mod opens responsible for itself, exactly as one opened from Finder, so its own grant should apply. Still not run: Design Canvas itself capturing after a mod opened it, because the signed build was in use.
+- [x] **SQ5.** Does a running session actually deliver the session title X25 relies on, and for which sessions? Closed 2026-10-05: yes for a session the user named, no for an unnamed one, which falls back to its start time (X25).
 
 ## Sources
 
 - Claude Code docs: [Mods overview](https://code.claude.com/docs/en/plugins/mods/overview), [mods API](https://code.claude.com/docs/en/plugins/mods/api), [events](https://code.claude.com/docs/en/plugins/mods/events), [reference](https://code.claude.com/docs/en/plugins/mods/reference), [channels](https://code.claude.com/docs/en/channels)
-- In the repo: [PRD-DesignCanvas.md](./PRD-DesignCanvas.md), [PRD-BlankCanvas.md](./PRD-BlankCanvas.md), [TODOS.md](./TODOS.md), the [README](../README.md) (Known limits), and [technical_doc.md](./technical_doc.md) for D20 to D22
+- In the repo: [PRD-DesignCanvas.md](./PRD-DesignCanvas.md), [PRD-BlankCanvas.md](./PRD-BlankCanvas.md), [TODOS.md](./TODOS.md), the [README](../README.md) (Known limits), [technical_doc.md](./technical_doc.md) for D20 to D22, and [technical_doc-ClaudeMods.md](./technical_doc-ClaudeMods.md) for the design and the spike
 - The working copy of this PRD and the per-feature tech details live as Claude docs: [PRD](https://claude.ai/code/artifact/3ccbf545-d893-4ec5-b3bd-ed68ffb60a23), [feature list](https://claude.ai/code/artifact/6723ef24-f05b-4f1f-901c-c01dd0009581)
 
 ## Appendix: cited requirements
@@ -218,7 +218,7 @@ One line per ID this PRD cites from other documents. Each line is a paraphrase, 
 | D10 | Each round records which iPad sent it | X3, X17 |
 | D20 | Owner decision: keep the terminal on the mirrored screen, as the mitigation for unseen permission prompts (G19) | Section 1 |
 | D21 | A round has no reply timeout | X6 reverses it; XG1 |
-| D22 | Two unverified assumptions kept as they are: reading the store path never prompts, and the committed `.mcp.json` entry raises no trust prompt | X7 resolves the first; X2 retires the second |
+| D22 | Two unverified assumptions kept as they are: reading the store path never prompts, and the committed `.mcp.json` entry raises no trust prompt | X7 resolves the first, which the spike found to be false: the read does prompt. X2 retires the second |
 | G10 | Whether two sketches delivered in one turn produce correct edits is unmeasured | X4 resolves it |
 | G19 | A round looks hung while Claude Code waits on a permission prompt | X8 resolves it for visibility |
 | G22 | Relaunching the Mac app loses the session; a session started by hand is not recognised | X9 resolves it |

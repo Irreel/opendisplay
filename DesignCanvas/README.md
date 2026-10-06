@@ -267,6 +267,13 @@ files. Treat the daemon as trusting everything already running on your Mac.
   fix is an app-managed allow rule or a user-scoped MCP config — not yet
   built.
 
+  Update 2026-10-05: the first assumption is false. In a test for the
+  planned Claude Code mod, reading a sketch from a store outside the
+  project opened a permission prompt in Claude Code's default mode (in auto
+  mode it was answered without one). Until that is fixed, approve the read
+  at the Mac when it asks. See `spec/technical_doc-ClaudeMods.md`,
+  section 4.4.
+
 ## Deferred (not built)
 
 Recorded here rather than left silently unbuilt, per the implementation

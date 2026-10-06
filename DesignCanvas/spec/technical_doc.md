@@ -1,6 +1,6 @@
 # Design Canvas: Technical Specification
 
-**Status:** Draft v0.4, 2026-10-03 (v0.3 was 2026-09-18, after the first hardware sessions; v0.2 was 2026-09-16, after the engineering review of the same day). Companion to `PRD-DesignCanvas.md` v0.8. The blank canvas surface is specified separately in `technical_doc-BlankCanvas.md`. Requirement IDs (D, C, M, P) and gap numbers (G) are shared with the PRD.
+**Status:** Draft v0.5, 2026-10-05 (v0.4 was 2026-10-03; v0.3 was 2026-09-18, after the first hardware sessions; v0.2 was 2026-09-16, after the engineering review of the same day). Companion to `PRD-DesignCanvas.md` v0.8. The blank canvas surface is specified separately in `technical_doc-BlankCanvas.md`. Requirement IDs (D, C, M, P) and gap numbers (G) are shared with the PRD.
 **Sources:** ai.cst.2 (tech-doc v0.5, desktop-app.md, ADR-0001 to ADR-0004, `packages/server/src/channel/index.ts`); OpenDisplay `PROTOCOL.md` (pv 3) and `Mac/MacSender.swift`; the Claude Code Channels reference and the fakechat reference channel, both read 2026-09-16.
 
 **Document history**
@@ -11,6 +11,7 @@
 | 2026-09-16 v0.2 | Engineering review applied: GPL-3.0 final and in-app engine; no input forwarding; frame ring instead of a fresh still; Mac composites, sketch-only wire; canvas frame cap with chunked reads; trust-on-first-use accepted; no captureId round-trip; rounds snapshot; store under `~/.claude/channels`; single DaemonClient; Draw Mode state machine; `sourceLabel` removed; size guards on sender-to-iPad JSON; review outputs and report appended |
 | 2026-09-18 v0.3 | G1 decided after the first hardware sessions: mirror the Mac's main display, no extended display. Sections 1, 3, 5.6, 7 and 10 updated; section 11 left as the dated record of the 2026-09-16 review |
 | 2026-10-03 v0.4 | Header brought up to date (the 2026-09-30 `existing` channel state in section 2 had not been recorded here; companion PRD is v0.8). Sections 2 and 3 point to `technical_doc-BlankCanvas.md` for the blank canvas surface, which this document does not describe |
+| 2026-10-05 v0.5 | Section 5.6 corrected on two points: Channels accept a Console API key, and reading the store path does prompt (found in the Claude Mods spike). Section 5 now points to `technical_doc-ClaudeMods.md`, the planned replacement for the channel. Nothing else changed; this document still describes what is built |
 
 ## 1. Architecture
 
@@ -115,6 +116,8 @@ States: `pending` → `serving` (30 s lease) → `served`; `reply` is set indepe
 
 ## 5. Claude Code integration
 
+This section describes the channel, which is what is built. Its planned replacement, a Claude Code mod, is specified in [technical_doc-ClaudeMods.md](./technical_doc-ClaudeMods.md); nothing of that is built yet.
+
 ### 5.1 Mechanism
 
 Claude Code Channels (research preview). The channel process declares `claude/channel` and pushes notifications; Claude Code acts without a typed prompt. No polling. One tool, the reply. Launch and config, managed by the menu-bar app:
@@ -169,11 +172,11 @@ The notification carries the composite's file path; Claude Code's Read tool rend
 
 ### 5.6 Constraints
 
-- Claude Code only. claude.ai login only (Console API keys cannot use Channels).
+- Claude Code only. Channels work with a claude.ai login or a Claude Console API key (corrected 2026-10-05 from the current Channels docs; earlier versions of this line said claude.ai only. Not tested with a key).
 - Development flag required until marketplace listing.
 - Protocol may change; the channel adapter is isolated.
 - Terminal permission prompts still fire and no reply arrives while one waits (G19). **Owner decision (D20):** the MVP mitigation is to keep the terminal window on the mirrored display so the prompt is visible from the iPad. Since G1 that is the Mac's main display, where the terminal opens anyway; with more than one monitor it must stay on the main one. Consequence, recorded from the outside voice and accepted: the clean capture and composite may include the terminal, which then travels back into Claude Code's context; zooming into the preview region before drawing keeps it out of the crop.
-- **Unverified assumptions kept by owner decision (D22):** that Read on the store path never prompts, and that the `.mcp.json` entry does not trigger the project-MCP trust prompt for the user or for collaborators who inherit the committed file. If either prompts, the fix is an app-managed allow rule or a user-scoped MCP config.
+- **Unverified assumptions kept by owner decision (D22):** that Read on the store path never prompts, and that the `.mcp.json` entry does not trigger the project-MCP trust prompt for the user or for collaborators who inherit the committed file. If either prompts, the fix is an app-managed allow rule or a user-scoped MCP config. **The first is now known to be false (2026-10-05):** in the Claude Mods spike, a Read of a composite under a store outside the project resolved to "ask" and opened a permission dialog in default mode; in auto mode the mode's classifier answered it. The channel has no fix for this yet. The mod design answers it with its requirement X7 (`technical_doc-ClaudeMods.md` section 4.4). The second assumption is still untested.
 - Manually launched Claude Code sessions are unsupported; the app recognizes only a channel it started (ADR-0004).
 
 ### 5.7 Permission relay (future, G19)
