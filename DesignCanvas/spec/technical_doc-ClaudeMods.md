@@ -1,6 +1,6 @@
 # Design Canvas Claude Mods: Technical Specification
 
-**Status:** Draft v0.2, 2026-10-05, after the spike (v0.1, the same day, was written before it). Companion to [PRD-ClaudeMods.md](./PRD-ClaudeMods.md) v0.3. No product code is built. Requirement IDs (X), owner decisions (XG) and spike questions (SQ) are shared with that PRD; technical questions raised here are TQ.
+**Status:** v0.3, 2026-10-05: Phase 1 is implemented on the `claude-mods` branch; section 13 says what was built, where it differs from the sections above it, and what has and has not been run (v0.2 followed the spike; v0.1 preceded it). Companion to [PRD-ClaudeMods.md](./PRD-ClaudeMods.md) v0.3. Requirement IDs (X), owner decisions (XG) and spike questions (SQ) are shared with that PRD; technical questions raised here are TQ.
 **Extends:** [technical_doc.md](./technical_doc.md) v0.5 and [technical_doc-BlankCanvas.md](./technical_doc-BlankCanvas.md) v0.2. Those documents own the engine, the store, the wire and the round up to the moment it is stored. This one specifies only the hop between the daemon and Claude Code, and what that hop adds to the two apps. It covers Phase 1; Phase 2 gets one section of notes.
 **How each API fact is known.** *Run*: observed in the spike of 2026-10-05 (section 10) or the earlier throwaway mod, on Claude Code v2.1.289. *Declared*: in the type declarations that version writes beside a mod. *Docs*: the mods pages read 2026-10-04. What is still not *run* is listed in section 12.
 
@@ -163,7 +163,7 @@ There is no authentication on any of this, as on the rest of the loopback API. A
 The daemon owns the target, because both the Mac app and every mod need the same answer and the daemon is the one process they all talk to.
 
 - One session: it is the target.
-- No target and several sessions (after the settle window, or at first need): the session whose `launch` matches the app's current nonce, else the one with the latest `startedAt`. A re-registration with `wasTarget` wins over both.
+- No target and several sessions, which in practice is the settle window after a daemon restart: a session that carries a `launch` nonce (one the Mac app started), else the one with the latest `startedAt`. While the window is open this default is revised as sessions come back, since the order they re-register in means nothing; once it closes the target is sticky. A re-registration with `wasTarget` wins over both and is not revised.
 - A target, and another session registers: nothing changes (sticky).
 - The target ends: one session left becomes the target; several left means no target, and the list says so (`target` absent), which is the state where both apps ask the user to pick.
 
@@ -201,7 +201,7 @@ The mod holds at most one round in flight. On a tick with `want`, the daemon han
 
 *Run*: `$.prompt.submit` called while the session was idle resolved in 0.2 s with the turn started. Called while a turn was running, it waited for that turn to end and resolved 20 s later as its own turn began. So a prompt the user types between the claim and the submit only delays the round; nothing is lost and nothing is merged. The call is made from the tick's own async chain, never awaited inside a hook that runs during a turn (*docs*).
 
-One round per turn follows from one round in flight: the next `want` is not sent until the current round has an outcome. That settles G10 by construction, where the channel delivered whatever had queued up in one turn. *Run*: three sketches posted within four seconds were delivered in three consecutive turns, in order. Delivery stays at-least-once: a round claimed by a session that dies before the turn starts returns to pending.
+One round per turn follows from one round in flight: the next `want` is not sent until the current round has an outcome. That settles G10 by construction, where the channel delivered whatever had queued up in one turn. *Run*: three sketches posted within four seconds were delivered in three consecutive turns, in order. A round a session claimed is that session's: if the session dies before the turn starts, the round is failed with its other rounds (X26), not handed to someone else. A round that no session has claimed yet stays pending for the next target, as D5 requires.
 
 The prompt text is the channel's notification text with the tool renamed, so the reply-compliance eval compares like with like:
 
@@ -249,7 +249,7 @@ The mod has to know which turn is the round's. It is the `turn.start` whose `tex
 
 The interrupted row is X6's second sentence (owner decision, 2026-10-05). A reminder would start a turn the user just stopped by hand, so the round is closed at once.
 
-`session.end` posts `failed` with `reason: session_ended` for the round in flight. For `e.reason` of `clear` or `resume` the process lives on, so the mod fails the round but stays registered; for any other reason it also `DELETE`s the registration. Both fit the shared 1.5 s. If the mod never gets to run (`kill -9`), the daemon's 15 s staleness does the same for the round in flight and for every round still queued for that session (X26).
+At `session.end` with `e.reason` of `clear` or `resume` the process lives on, so the mod posts `failed` with `reason: session_ended` for the round in flight and stays registered. For any other reason it sends one request, the `DELETE` of its registration, and the daemon fails that session's unanswered rounds, in flight and queued alike. One request, because every `session.end` hook on the machine shares 1.5 s. If the mod never gets to run (`kill -9`), the daemon's 15 s staleness does the same for the round in flight and for every round still queued for that session (X26).
 
 A late genuine reply to a round already marked failed gets the existing 409 and "A reply was already recorded". A failed round frees the mod's one slot, so the next round is claimed on the next tick (X4).
 
@@ -294,7 +294,7 @@ Additive JSON control messages, no `pv` bump, under the existing `welcome.canvas
 The PRD's dependency table counts one message for X8 and two for the session list. `sessions` carries both, because "waiting" is a property of a session and the iPad needs the list anyway; the count is three additions either way.
 
 - **Size.** `sessions` obeys the 32768-byte rule (D23): at most 20 entries, `title` and `branch` cut to 80 characters, `folder` to 60.
-- **Binding (X23).** The engine stamps `meta.session` from `annotation.session` when that session is still connected. An annotation with no `session` (an older iPad) is stamped with the target at the moment it arrives at the Mac. An annotation naming a session that has since ended is stored and failed at once with `session_ended`, so the iPad shows an outcome instead of a round that never moves. A resend after a link loss carries the same `session`, since the pending annotation's bytes are kept.
+- **Binding (X23).** The engine passes `annotation.session` through in the upload's meta, and the daemon stamps `meta.session` from it when that session is still connected. An upload with no `session` (an older iPad) is stamped by the daemon with the target at the moment it arrives. An annotation naming a session that has since ended is stored and failed at once with `session_ended`, so the iPad shows an outcome instead of a round that never moves. A resend after a link loss carries the same `session`, since the pending annotation's bytes are kept.
 - **No target (X26).** `sessions` with several entries and no `target` disables Done on the iPad until one is picked. An older iPad still sends; the round is stored unbound and goes to whichever session becomes the target.
 - **`ping`.** `channel` keeps its values for older iPads: `attached` when a target exists, `detached` when the daemon is up with no session, `none` as today. `existing` is no longer sent, because X9 removes the state it named. `project` is the target's folder name.
 
@@ -450,6 +450,77 @@ Limits of the run. Nineteen sketches is a smoke test, not a rate: it shows the m
 - **`$.store` and `$.ui.toast`** for the X19 notice.
 - **`/resume` and `/branch`**, assumed to behave as `/clear` did.
 - **A Console API key** (SQ1, closed on the docs).
+
+## 13. As built (2026-10-05)
+
+Phase 1 is implemented as specified above, with the differences below. Nothing is committed to `main`.
+
+**Where things are.**
+
+| Part | Files |
+|---|---|
+| Daemon | `server/src/sessions/` (registry, round hand-out, sessions stream), routes in `server/src/http/server.ts`, the sweep in `server/src/index.ts`, `claimForSession` and `markReminded` in the store |
+| Mod | `mod/` (`hooks/register.js`, about 580 lines, a third of it comments), bundled by `tools/bundle-mod.sh` |
+| Mac app | `ClaudeLauncher` (command, version check), `ClaudeSettingsManager` (the opt-in), `SessionStateClassifier`, `AppModel`, the menu's session list, Settings. `McpConfigManager` is deleted |
+| Mac engine | `DaemonClient` (sessions, stream, target), `CanvasHub` and `CanvasSession` (relay to the iPad, `selectSession`, `annotation.session`) |
+| Wire | `Shared/CanvasMessages.swift`; routing in `Shared/Protocol.swift`, `Shared/CanvasReceiverState.swift`, `Mac/MacSender.swift`; `PROTOCOL.md` 11.2 and 11.3 |
+| iPad | `CanvasModel` (sessions, Done, waiting), `ConnectionStatusView` (switcher), `AgentRepliesView` (two-line message), `DrawModeOverlay` |
+
+**Differences from the sections above.**
+
+- **`$.clock.every` returns a timer object with `cancel()`**, not a stop function. The first build called it as a function inside `session.end`; the throw was swallowed by the hook's own guard and the session never deregistered. Found in a live run, not by the unit tests, whose fake had the same wrong shape. Both are fixed.
+- **Default target.** "Launched by the app" is any session carrying a launch nonce, not specifically the app's current one (3.3). The app still uses its own nonce to know when its launch has arrived.
+- **Binding is done by the daemon**, not the Mac engine (section 5). The engine only passes the iPad's choice through.
+- **Session end is one request** (4.3).
+- **The reply tool's failure text for a 400** is its own sentence; the channel had none because it validated first.
+- **`ChannelAxis`** in the classifier is `none`, `launchPending`, `connected`. A foreign daemon that has sessions shows as "Connected elsewhere" and is not usable from this app.
+- **The Connected row's button is "New Session"**, replacing Disconnect, which had nothing left to do: a session ends in its Terminal.
+- **Launch help.** When a launch has not connected after 60 s the menu names the trust question and the organisation block (6.1).
+- **In Draw Mode with a pick needed**, the overlay carries its own session menu, because the status panel is hidden there (section 7 put the pick only in the panel).
+
+**What has been run.**
+
+- 153 server and mod tests, 456 Design Canvas Swift tests, OpenDisplay's own 60, and builds of the Mac app, the iPad app and the OpenDisplay receiver. `claude plugin validate --strict` passes on the mod, in the checkout and as bundled in the built app.
+- The real mod against the real daemon (scratch port and store) in live Claude Code sessions with synthetic sketches: registration with title, branch and launch nonce; queued to sent to applied, one per turn; `waiting` entered and left around a permission dialog in default mode; the exact-path read approved; the daemon restarted under a live session, which re-registered and kept the target; a session killed mid-round, which deregistered and had both its in-flight and its queued round failed.
+
+**What had not been run on 2026-10-05:** the Mac app itself, the iPad app on a device, the every-session option against the real settings file, and the mod opening the Mac app.
+
+These were the entries for the hardware pass below.
+
+**Hardware pass, Mac side (2026-10-06).** A signed Debug build of the Mac app (same bundle id and team as the Xcode build), the new iPad build installed on the iPad over USB, Claude Code v2.1.289. The Mac app was driven through macOS UI scripting, reading the menu's own text and clicking its buttons; sketches were synthetic and posted to the app's daemon under the iPad's device id, since nobody was drawing.
+
+| Check | Result |
+|---|---|
+| First-launch question (X20) | Appeared once with the two consequences stated. "Not Now" left `~/.claude/settings.json` byte-for-byte unchanged; it did not appear again on relaunch |
+| A session started by hand with the bundled mod (X9) | Connected. Menu: "Connected", "Sketches go to project" |
+| A round through the app's daemon, default permission mode (X3 to X5, X7, X8) | queued, sent, waiting while the edit's dialog was open, applied. The sketch read raised no dialog |
+| Two sessions (X21, X22, X24) | The first stayed the target. Menu: "2 sessions · sketches go to project" with a row per session. A click on the other row moved the target (logged `by: mac`) |
+| App quit and relaunched with both sessions running (X9) | Both re-registered within the poll interval; the target was restored (logged `by: restored`) |
+| App quit, then a new session started (X19, SQ4) | The mod opened the app, which ran under launchd, not under Claude Code. Capture started 2 s later and the system's own record shows Screen Recording allowed with no new question |
+| Every-session switch (X18, X20) | On added one `env` entry to the real settings file. `claude` run with no flag then connected. Off removed the entry |
+| Start with a picked project (X1, X2, X10) | Terminal opened `claude --plugin-dir` with the app's mod. The version check passed against the real login shell. The session registered with its launch nonce and a round was applied. Nothing was written into the project |
+
+**Found in the pass.**
+
+- **The settings switch rewrites the whole file.** Content after on-then-off is identical to the original, key for key, but the bytes are not: `JSONSerialization` re-sorts the top-level keys and reformats. For a file the user edits by hand this is more than "one entry". Not fixed; it needs a text-level edit that leaves the rest of the file as written.
+- **A fresh launch can raise macOS's screen-capture consent** ("bypass the system private window picker"). It appeared when the new build was first launched and not on later launches, including the one the mod made. It is the access the app already had, re-confirmed by the system; X19's promise holds only after it has been answered once.
+- **Run from inside `~/Documents`, the app asks for the Documents folder**, because it reads and starts its own bundled server from there. Seen with the build in the repo's `build/` directory; not seen with the same build copied elsewhere. An installed copy is unaffected.
+- **The menu's buttons have no accessibility names**, the new session rows included (only their help text is exposed).
+- **The iPad shows in the menu as "iPhone / iPad"**, where the previous build showed its name. Not traced; nothing in this change touches device naming.
+
+**Found after the pass, the same day: an old `.mcp.json` entry stops the mod.** In a project that still has the `design-canvas` entry earlier versions wrote for the channel, a session loaded the mod and never connected. Claude Code serves a mod's tools as an MCP server named after the plugin, the plugin was named `design-canvas`, and the project's own server of that name took its place: the reply tool never appeared, `$.tool.register` did not complete, and because the tool was registered before the tick was started, inside one guard, the session sat loaded and silent. This is the case X2 and XG5 decided to leave alone ("the old entry is not touched"); leaving it alone is still right, but it was not harmless.
+
+Two changes, both verified in that project:
+
+- **The plugin is now named `designcanvas`**, so the tool is `mcp__designcanvas__reply` and Claude reads "The designcanvas plugin sent a message". Every earlier mention of `mcp__design-canvas__reply` in this document, and the spike's results, were under the old name.
+- **Startup no longer hangs on one step.** The tick starts whatever happens in `session.start`; the reply tool is registered on the tick, with backoff, until it succeeds; and a session registers with the daemon only once it has the tool, since a session that cannot report an outcome must not be offered sketches.
+
+A Mac app built before this change still carries the old name, and so does a settings entry that points at it; both are replaced by rebuilding the app.
+
+**Still not run.**
+
+- Everything a person has to see or do on the iPad: the session switcher, "Waiting at the Mac", the two-line reply, Done held for a pick, and a real drawn sketch reaching the target session.
+- WiFi, `/resume`, an organisation's block, a Console API key, and the version check refusing an old Claude Code.
 
 ## Sources
 

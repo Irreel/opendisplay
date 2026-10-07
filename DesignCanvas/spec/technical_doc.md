@@ -116,7 +116,7 @@ States: `pending` → `serving` (30 s lease) → `served`; `reply` is set indepe
 
 ## 5. Claude Code integration
 
-This section describes the channel, which is what is built. Its planned replacement, a Claude Code mod, is specified in [technical_doc-ClaudeMods.md](./technical_doc-ClaudeMods.md); nothing of that is built yet.
+This section describes the channel, which is what is built. Its replacement, a Claude Code mod, is specified in [technical_doc-ClaudeMods.md](./technical_doc-ClaudeMods.md) and was implemented on 2026-10-05: the Mac app now starts sessions with the mod and no longer writes `.mcp.json` or uses the channel. The channel process itself still ships in `server/` until the reply-compliance baseline has been run against it, so sections 5.1 to 5.7 and section 6 below describe code that exists but that the app no longer drives.
 
 ### 5.1 Mechanism
 

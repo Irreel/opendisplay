@@ -1,0 +1,7 @@
+{
+  "name": "designcanvas",
+  "version": "0.1.0",
+  "description": "Delivers sketches from the Design Canvas iPad app into this Claude Code session and reports each outcome back.",
+  "author": { "name": "Design Canvas" },
+  "license": "GPL-3.0-only"
+}

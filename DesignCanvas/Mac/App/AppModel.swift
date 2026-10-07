@@ -1,15 +1,19 @@
 // Ported from ai.cst.2 `apps/desktop/DesignCanvasDesktop/AppModel.swift`.
 //
 // Same shell: daemon supervision with the crash-loop guard, a 2 s health poll that re-verifies
-// the daemon's identity (ADR-0004), the project picker and recents, `.mcp.json` ensure/update,
-// Start / Disconnect / Reset, the 60 s launch timeout, and the session-state classifier.
+// the daemon's identity (ADR-0004), the project picker and recents, Start / Reset, the 60 s
+// launch timeout, and the session-state classifier.
 //
 // Changed for Design Canvas:
 //   - health comes from `DaemonAPI.probe()` (Task 8's `DaemonClient`) instead of `HealthClient`;
 //   - every capture path is gone (hotkey, HUD, frontmost tracker, window capturer, uploader) —
 //     Design Canvas takes its frames from the engine's ring, not from a menu command;
 //   - the app owns a `SenderEngine`, starts it at launch, mirrors its device list, and pushes
-//     the project name and channel state into it so the iPad's status row is honest.
+//     the project name and channel state into it so the iPad's status row is honest;
+//   - Claude Code is reached through the Design Canvas mod, not a channel
+//     (`spec/technical_doc-ClaudeMods.md`): Start launches it with the mod bundled in this
+//     app and writes nothing into the project, any session with the mod loaded is usable
+//     whoever started it, and the app lists the connected sessions and which one gets sketches.
 
 import AppKit
 import Foundation
@@ -25,9 +29,21 @@ final class AppModel: ObservableObject {
     @Published var selectedProject: URL? {
         didSet { engine?.setProjectName(selectedProject?.lastPathComponent) }
     }
+    /// A launch from Start is on its way: set on the click, cleared when the session it started
+    /// registers (or the launch is given up on). Not "a session is connected": sessions are
+    /// usable whoever started them, and the daemon's list says which are there.
     @Published var sessionStarted = false
     @Published var configWarning: String?
-    @Published var needsMcpUpdate = false
+    /// The connected Claude Code sessions and the target, as of the last poll (X21 to X26).
+    @Published private(set) var sessions: DaemonSessions = .empty
+    /// "Use Design Canvas in every Claude Code session" (X20). Mirrors what is in the user's
+    /// Claude Code settings, which is the only place the choice has any effect.
+    @Published private(set) var everySessionEnabled = false
+    /// Why the last change to that option did not take, in the user's words.
+    @Published var everySessionError: String?
+    /// The mod this app starts sessions with; nil when the build has none (a Debug build made
+    /// outside a checkout), in which case Start says so.
+    let modDirectory: String?
     @Published var serverEntry: String?
     /// Screen Recording as the menu shows it: the preflight, or a running capture, whichever
     /// says yes (see `pollOnce`). Set from the probe in `init`.
@@ -70,7 +86,17 @@ final class AppModel: ObservableObject {
     /// Test-only override for the Terminal-launch effect inside `startSession()` — production
     /// defaults to the real `ClaudeLauncher.launchInTerminal`, which opens Terminal.app via
     /// AppleScript and is unsafe to invoke from a headless test run.
-    private let launchInTerminal: (URL) -> String?
+    private let launchInTerminal: (ClaudeLaunch) -> String?
+    /// The daemon's session list; nil when it could not be read.
+    private let sessionsFetch: () async -> DaemonSessions?
+    private let targetSetter: (String) async -> Void
+    /// What `claude --version` prints, or nil when `claude` cannot be run.
+    private let claudeVersionOutput: () -> String?
+    /// Checked once in the background at launch so Start does not wait on a shell; re-checked
+    /// on Start only while the last answer was a refusal, since the user may have just fixed it.
+    private var claudeAvailability: ClaudeAvailability?
+    private let claudeSettings: ClaudeSettingsManager
+    private let defaults: UserDefaults
     /// Test-only override for the delay `startNewAfterReset()` waits between poll attempts —
     /// production waits ~2s for the daemon to come back up; tests inject a no-op so the bounded
     /// retry loop runs instantly.
@@ -86,17 +112,12 @@ final class AppModel: ObservableObject {
     private var pinnedForPid: Int32?
     private var launchStartedAt: Date?
     private var launchTimedOutFlag = false
+    /// The nonce of the launch in flight (and, persisted, of the last one), which is how the
+    /// session it started is recognised in the daemon's list.
+    private var launchNonce: String?
     /// The most recent raw probe outcome, kept for `resetProcesses()` to decide
     /// `refusedUnknownOccupant` without re-probing, and shown raw in the Details window.
     private(set) var lastProbeResult: HealthProbeResult = .refused
-    /// Display of the previous poll; used only to detect the ownedAttached -> count 0 transition.
-    private var previousDisplay: DisplayState = .noDaemon
-    /// How many polls in a row have seen a healthy daemon report zero channel subscribers.
-    /// Two are required to end an owned session — see `pollOnce()`.
-    private var consecutiveHealthyZeroPolls = 0
-    /// This app's own session has been seen attached at least once, so a run of zeros after it
-    /// means the channel went away rather than never having arrived.
-    private var ownedChannelWasAttached = false
     /// Depth counter backing `isResetting`: `startNewAfterReset()` calls `resetProcesses()`, and
     /// both use `beginResetting()`/`endResetting()`, so a plain Bool would get set back to false
     /// by the inner `resetProcesses()` call's own cleanup while the outer `startNewAfterReset()`
@@ -105,6 +126,11 @@ final class AppModel: ObservableObject {
     private var resettingDepth = 0
 
     private static let serverEntryKey = "serverEntryPath"
+    private static let launchNonceKey = "launchNonce"
+    static let everySessionAskedKey = "everySessionAsked"
+    /// The mod directory this app last wrote into the user's Claude Code settings, kept so a
+    /// moved app can take its old path out again.
+    static let registeredModDirectoryKey = "registeredModDirectory"
     private static let port = 47100
     private static let maxRestartPollAttempts = 10
 
@@ -118,10 +144,16 @@ final class AppModel: ObservableObject {
         now: @escaping () -> Date = Date.init,
         childPidProvider: (() -> Int32?)? = nil,
         resetService: ProcessResetService? = nil,
-        launchInTerminal: ((URL) -> String?)? = nil,
+        launchInTerminal: ((ClaudeLaunch) -> String?)? = nil,
         retryDelay: (() async -> Void)? = nil,
         engine: SenderEngine? = nil,
-        screenRecordingProbe: (() -> Bool)? = nil
+        screenRecordingProbe: (() -> Bool)? = nil,
+        sessionsFetch: (() async -> DaemonSessions?)? = nil,
+        targetSetter: ((String) async -> Void)? = nil,
+        claudeVersionOutput: (() -> String?)? = nil,
+        modDirectory: String? = nil,
+        claudeSettings: ClaudeSettingsManager? = nil,
+        defaults: UserDefaults = .standard
     ) {
         nodePath = Self.resolveNodePath()
         self.now = now
@@ -136,6 +168,19 @@ final class AppModel: ObservableObject {
         serverEntry = UserDefaults.standard.string(forKey: Self.serverEntryKey) ?? Self.defaultServerEntry()
         let daemon = DaemonClient(baseURL: URL(string: "http://127.0.0.1:\(Self.port)")!)
         self.probe = probe ?? { await daemon.probe() }
+        let isTest = probe != nil
+        // A test construction has no daemon to ask and no shell to run `claude` in: it sees no
+        // sessions and a Claude Code that is new enough, unless it injects otherwise.
+        self.sessionsFetch = sessionsFetch ?? (isTest ? { nil } : { try? await daemon.sessions() })
+        self.targetSetter = targetSetter ?? (isTest ? { _ in } : { instance in
+            try? await daemon.setTarget(instance: instance, fromIPad: false)
+        })
+        self.claudeVersionOutput = claudeVersionOutput
+            ?? (isTest ? { "\(ClaudeVersion.minimumForMods) (Claude Code)" } : ClaudeLauncher.versionOutputFromLoginShell)
+        self.modDirectory = modDirectory ?? (isTest ? "/test/Design Canvas.app/Contents/Resources/mod" : Self.defaultModDirectory())
+        self.claudeSettings = claudeSettings ?? ClaudeSettingsManager()
+        self.defaults = defaults
+        launchNonce = defaults.string(forKey: Self.launchNonceKey)
 
         devices = engine?.devices ?? []
         discoveredDevices = engine?.discovered ?? []
@@ -147,6 +192,10 @@ final class AppModel: ObservableObject {
         engine?.start()
 
         guard probe == nil else { return }
+        refreshEverySession()
+        checkClaudeInBackground()
+        // After the scene is up: a menu-bar app has no window to hang the question on.
+        DispatchQueue.main.async { [weak self] in self?.askAboutEverySessionIfNeeded() }
         // Restore the most recent project so a relaunch doesn't start from a blank menu.
         if let last = recents.all.first, FileManager.default.fileExists(atPath: last.path) {
             selectRecent(last)
@@ -239,6 +288,137 @@ final class AppModel: ObservableObject {
         )
     }
 
+    // MARK: - The mod
+
+    /// Where the mod lives inside the app (copied there at build time by `tools/bundle-mod.sh`),
+    /// relative to `Contents/Resources`, and in a checkout.
+    private static let bundledModRelativePath = "mod"
+    private static let checkoutModRelativePath = "DesignCanvas/mod"
+    private static let modEntryRelativePath = "hooks/register.js"
+
+    /// The mod directory to start sessions with. Pure, like `defaultServerEntry`: the copy inside
+    /// the app wins, a checkout is the fallback for a Debug build run from one.
+    static func defaultModDirectory(resources: URL?, roots: [URL], fileExists: (String) -> Bool) -> String? {
+        var candidates = roots.map { $0.appendingPathComponent(checkoutModRelativePath) }
+        if let resources {
+            candidates.insert(resources.appendingPathComponent(bundledModRelativePath), at: 0)
+        }
+        return candidates.first { fileExists($0.appendingPathComponent(modEntryRelativePath).path) }?.path
+    }
+
+    private static func defaultModDirectory() -> String? {
+        defaultModDirectory(
+            resources: Bundle.main.resourceURL,
+            roots: [
+                URL(fileURLWithPath: FileManager.default.currentDirectoryPath),
+                Bundle.main.bundleURL.deletingLastPathComponent(),
+            ],
+            fileExists: { FileManager.default.fileExists(atPath: $0) }
+        )
+    }
+
+    // MARK: - Every session (X20)
+
+    /// True until the first-launch question has been answered once, either way.
+    var shouldAskAboutEverySession: Bool {
+        modDirectory != nil && !defaults.bool(forKey: Self.everySessionAskedKey)
+    }
+
+    /// The first-launch question (X20): asked once, with what yes means spelled out, and "Not
+    /// Now" as the default so a reflexive Return turns nothing on. (Manual-verified.)
+    private func askAboutEverySessionIfNeeded() {
+        guard shouldAskAboutEverySession else { return }
+        let alert = NSAlert()
+        alert.messageText = "Use Design Canvas in every Claude Code session?"
+        alert.informativeText = """
+        If you turn this on, the Design Canvas plugin loads in every Claude Code session you start, in every project, and starting a session opens this app if it isn't running. You can then just run claude in a project and sketch.
+
+        If you leave it off, use Start in the Design Canvas menu to open a session. You can change this any time in Settings.
+        """
+        alert.addButton(withTitle: "Not Now")
+        alert.addButton(withTitle: "Turn On")
+        NSApp.activate(ignoringOtherApps: true)
+        answerEverySessionQuestion(alert.runModal() == .alertSecondButtonReturn)
+    }
+
+    /// Records the answer to the first-launch question and applies it.
+    func answerEverySessionQuestion(_ yes: Bool) {
+        defaults.set(true, forKey: Self.everySessionAskedKey)
+        if yes { setEverySession(true) }
+    }
+
+    /// Turns the option on or off by listing or unlisting this app's mod in the user's Claude
+    /// Code settings. Off removes exactly what on added. A settings file that does not parse
+    /// is left alone and the option stays as it was, with the reason shown.
+    func setEverySession(_ enabled: Bool) {
+        everySessionError = nil
+        do {
+            if enabled {
+                guard let modDirectory else {
+                    everySessionError = "This build has no Design Canvas mod to turn on."
+                    return
+                }
+                try claudeSettings.add(modDirectory, replacing: defaults.string(forKey: Self.registeredModDirectoryKey))
+                defaults.set(modDirectory, forKey: Self.registeredModDirectoryKey)
+            } else {
+                for directory in Set([modDirectory, defaults.string(forKey: Self.registeredModDirectoryKey)].compactMap { $0 }) {
+                    try claudeSettings.remove(directory)
+                }
+                defaults.removeObject(forKey: Self.registeredModDirectoryKey)
+            }
+        } catch {
+            everySessionError = "Couldn't change \(claudeSettings.settingsURL.path): it is not valid JSON. Fix or remove the file, then try again."
+        }
+        everySessionEnabled = currentEverySession()
+    }
+
+    private func currentEverySession() -> Bool {
+        let registered = defaults.string(forKey: Self.registeredModDirectoryKey)
+        return [modDirectory, registered].compactMap { $0 }.contains { claudeSettings.contains($0) }
+    }
+
+    /// At launch: read the option back from the settings file, and if it is on but points at
+    /// where this app used to be, point it at where the app is now (XG7's self-repair).
+    func refreshEverySession() {
+        let registered = defaults.string(forKey: Self.registeredModDirectoryKey)
+        if let modDirectory, let registered, registered != modDirectory, claudeSettings.contains(registered) {
+            setEverySession(true)
+            return
+        }
+        everySessionEnabled = currentEverySession()
+    }
+
+    // MARK: - Claude Code version (X10)
+
+    private func checkClaudeInBackground() {
+        let read = claudeVersionOutput
+        Task { [weak self] in
+            // A shell start, so off the main actor; the answer comes back onto it.
+            let availability = await Task.detached { ClaudeAvailability(versionOutput: read()) }.value
+            self?.claudeAvailability = availability
+        }
+    }
+
+    /// The reason Start cannot go ahead, or nil. A cached "ok" is trusted; anything else is
+    /// read again, because the usual way out of a refusal is the user installing or updating
+    /// Claude Code and clicking Start once more.
+    private func claudeBlockingMessage() -> String? {
+        if case .ok = claudeAvailability { return nil }
+        let availability = ClaudeAvailability(versionOutput: claudeVersionOutput())
+        claudeAvailability = availability
+        return availability.blockingMessage
+    }
+
+    // MARK: - Sessions (X21 to X26)
+
+    /// Makes one connected session the target for the next sketch (a menu click).
+    func selectTarget(_ instance: String) {
+        Task {
+            await targetSetter(instance)
+            if let latest = await sessionsFetch() { sessions = latest }
+        }
+    }
+
     // MARK: - Daemon supervision
 
     private func restartSupervisor() {
@@ -288,29 +468,21 @@ final class AppModel: ObservableObject {
             }
         }
         let effectivePinnedInstanceId = (pinnedForPid == childPid) ? pinnedInstanceId : nil
-        let count = SessionStateClassifier.channelCount(result)
+        let count = SessionStateClassifier.sessionCount(result)
 
-        // Our owned+attached session's channel dropped back to 0 -> the user quit Claude Code.
-        // End the session without a button, under two gates:
-        //
-        //  - the zero must be AUTHORITATIVE (`result` healthy) — `channelCount()` also returns 0
-        //    for a non-healthy probe (.timedOut/.refused/etc.), and a single transient stall (the
-        //    probe times out at 1.5s) must never be read as "the channel dropped to 0"; that
-        //    would orphan a live session over one missed poll;
-        //  - and there must be TWO of them in a row. The channel process's SSE stream reconnects
-        //    (undici closes an idle body after 300s), and for the ~0.5s of that gap the daemon
-        //    honestly reports zero subscribers. One such poll used to end the session, after
-        //    which the next poll showed "existing session detected" — recoverable only by Reset.
-        if case .healthy = result, count == 0 {
-            consecutiveHealthyZeroPolls += 1
-        } else {
-            consecutiveHealthyZeroPolls = 0
-        }
-        if previousDisplay == .ownedAttached { ownedChannelWasAttached = true }
-        if !sessionStarted { ownedChannelWasAttached = false }
-        if ownedChannelWasAttached, consecutiveHealthyZeroPolls >= 2 {
-            sessionStarted = false
-            ownedChannelWasAttached = false
+        // The list behind the count: who is connected, and which one gets sketches. A daemon
+        // that is not ours or not there has no list worth showing.
+        let fetched: DaemonSessions? = { if case .healthy = result { return true } else { return false } }()
+            ? await sessionsFetch() : nil
+        let latest = fetched ?? .empty
+        if latest != sessions { sessions = latest }
+
+        // A launch from Start has arrived when the session carrying its nonce is in the list.
+        // With no list to read, any connected session ends the wait: it is there to be used.
+        if sessionStarted {
+            let arrived = fetched.map { list in list.sessions.contains { $0.launch != nil && $0.launch == launchNonce } }
+                ?? (count > 0)
+            if arrived { sessionStarted = false }
         }
 
         // Launch clock: stamps on the sessionStarted false -> true edge. `startSession()` also
@@ -322,9 +494,7 @@ final class AppModel: ObservableObject {
             launchStartedAt = nil
         }
 
-        if count > 0 {
-            launchTimedOutFlag = false
-        } else if sessionStarted, let launchStartedAt {
+        if sessionStarted, let launchStartedAt {
             launchTimedOutFlag = now().timeIntervalSince(launchStartedAt) > 60
         } else {
             launchTimedOutFlag = false
@@ -339,10 +509,8 @@ final class AppModel: ObservableObject {
         )
         let newState = SessionStateClassifier.classify(input)
         sessionState = newState
-        previousDisplay = newState.display
 
-        // The iPad's channel dot hears the same verdict the menu shows (D7), so the two can't
-        // disagree: a channel this app run didn't launch is `existing`, never `attached`.
+        // The iPad's dot hears the same verdict the menu shows (D7), so the two can't disagree.
         engine?.setChannelState(ChannelState(session: newState))
 
         // The engine has no change notification for this — it moves on its own upload queue's
@@ -377,9 +545,14 @@ final class AppModel: ObservableObject {
         panel.canChooseDirectories = true
         panel.canChooseFiles = false
         panel.allowsMultipleSelection = false
+        panel.prompt = "Choose"
+        panel.message = "Choose the project folder Claude Code should work in."
+        // A menu-bar app is never the active app on its own. Without this the panel opens
+        // unfocused and behind whatever is in front, where it can look like it won't take a
+        // selection (seen 2026-10-06).
+        NSApp.activate(ignoringOtherApps: true)
         if panel.runModal() == .OK, let url = panel.url {
             configWarning = nil
-            needsMcpUpdate = false
             selectedProject = url
             recents.add(url)
         }
@@ -387,7 +560,6 @@ final class AppModel: ObservableObject {
 
     func selectRecent(_ url: URL) {
         configWarning = nil
-        needsMcpUpdate = false
         selectedProject = url
     }
 
@@ -398,6 +570,7 @@ final class AppModel: ObservableObject {
         panel.canChooseDirectories = false
         panel.canChooseFiles = true
         panel.allowsMultipleSelection = false
+        NSApp.activate(ignoringOtherApps: true)
         if panel.runModal() == .OK, let url = panel.url {
             let path = url.path
             UserDefaults.standard.set(path, forKey: Self.serverEntryKey)
@@ -413,61 +586,42 @@ final class AppModel: ObservableObject {
     /// synchronously inside `startSession()`, so OR-ing it in re-disables the button immediately.
     var startDisabled: Bool { sessionStarted || !sessionState.canStart }
 
+    /// Launches Claude Code in the selected project with the mod bundled in this app (X1).
+    /// Nothing is written into the project (X2): no `.mcp.json` entry is created, and one left
+    /// by an earlier version is neither read nor changed.
     func startSession() {
         guard !sessionStarted else { return } // defense in depth: startDisabled already gates the button
-        guard let project = selectedProject, let serverEntry else { return }
-        let result: EnsureResult
-        do {
-            result = try McpConfigManager().ensureEntry(
-                repoRoot: project,
-                command: nodePath,
-                args: [serverEntry, "--channel"]
-            )
-        } catch {
-            configWarning = "Couldn't read .mcp.json: \(error)"
+        guard let project = selectedProject else { return }
+        guard let modDirectory else {
+            configWarning = "This build of Design Canvas has no Claude Code mod inside it. Rebuild the app, or run it from a checkout."
             return
         }
-        if case .needsUpdate = result {
-            // The project has a non-channel 'design-canvas' entry (e.g. a stale --mcp from
-            // before the rename). Don't launch; offer an explicit fix via updateMcpEntry().
-            configWarning = nil
-            needsMcpUpdate = true
+        if let blocked = claudeBlockingMessage() {
+            // X10: say what is wrong and what to do, and do not open a Terminal that would
+            // only show an error.
+            configWarning = blocked
             return
         }
-        // .created or .alreadyCompatible — an existing --channel entry is used as-is.
-        needsMcpUpdate = false
-        if let launchError = launchInTerminal(project) {
-            // Terminal didn't open (e.g. Automation permission denied) — don't claim a session.
+        let nonce = UUID().uuidString
+        if let launchError = launchInTerminal(ClaudeLaunch(repoRoot: project, modDirectory: modDirectory, nonce: nonce)) {
+            // Terminal didn't open (e.g. Automation permission denied) — don't claim a launch.
             configWarning = launchError
             sessionStarted = false
             return
         }
+        launchNonce = nonce
+        defaults.set(nonce, forKey: Self.launchNonceKey)
         configWarning = nil
         sessionStarted = true
         launchStartedAt = now()
         launchTimedOutFlag = false
     }
 
-    /// User opted to fix a stale 'design-canvas' entry: overwrite it with a valid --channel
-    /// entry (preserving other servers), then launch.
-    func updateMcpEntry() {
-        guard let project = selectedProject, let serverEntry else { return }
-        do {
-            try McpConfigManager().updateEntry(repoRoot: project, command: nodePath, args: [serverEntry, "--channel"])
-        } catch {
-            configWarning = "Couldn't update .mcp.json: \(error)"
-            return
-        }
-        needsMcpUpdate = false
-        startSession()
-    }
-
-    /// App-side only: stop tracking the launched session and re-enable Start. Does NOT quit
-    /// Claude Code (spec section 6) — the user ends it by quitting it in its Terminal. The
-    /// session also auto-resets when the channel detaches (see the health poll above).
+    /// App-side only: give up waiting for a launch and re-enable Start. Does NOT quit Claude
+    /// Code (spec section 6) — the user ends a session by quitting it in its Terminal — and has
+    /// no effect on connected sessions, which stay listed for as long as they run.
     func disconnect() {
         configWarning = nil
-        needsMcpUpdate = false
         sessionStarted = false
         launchStartedAt = nil
         launchTimedOutFlag = false

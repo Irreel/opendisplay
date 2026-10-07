@@ -1,23 +1,25 @@
-// Ported from ai.cst.2 `apps/desktop/DesignCanvasDesktop/SessionStateClassifier.swift`.
-// Only change: `Health` is now `DaemonHealth` (Task 8's `DaemonClient`), which has the same
-// identity fields minus `pairedDevices`/`ipadUrls` — neither of which this classifier read.
+// From ai.cst.2 `apps/desktop/DesignCanvasDesktop/SessionStateClassifier.swift`, reshaped for
+// the Claude Code mod (`spec/technical_doc-ClaudeMods.md` section 6.2).
 //
-// The rules themselves are ADR-0004's, unchanged: daemon identity is re-verified on every poll
-// and a channel is "owned" only if this app run launched it while the count was 0.
+// The daemon axis is ADR-0004's, unchanged: daemon identity is re-verified on every poll. The
+// other axis used to ask whether a *channel* was attached and whether this app run had launched
+// it, because a channel the app did not launch could not be used. A session connected through
+// the mod can be used whoever started it (X9), so that axis now only asks whether any session
+// is connected, and "started here" survives as one thing: a launch that has not arrived yet.
 
 import Foundation
 
-// Daemon axis (rows) x channel axis (cols) -> display. "-" = channel axis doesn't
-// apply (forced to .none) for that daemon row.
-//                   .none            .launchPending      .owned          .existing
-// .none             noDaemon         -                   -               -
-// .unknownOccupant  portOccupiedUnknown (channel forced .none)
-// .foreign          foreignDaemon    -                   -               existingSessionDetected
-// .owned            daemonOnly       launchPending/           ownedAttached   existingSessionDetected
+// Daemon axis (rows) x session axis (cols) -> display. "-" = the session axis doesn't apply
+// (forced to .none) for that daemon row.
+//                   .none            .launchPending      .connected
+// .none             noDaemon         -                   -
+// .unknownOccupant  portOccupiedUnknown (session axis forced .none)
+// .foreign          foreignDaemon    foreignDaemon       existingSessionDetected
+// .owned            daemonOnly       launchPending/      ownedAttached
 //                                    launchTimedOut
 
 enum DaemonAxis: Equatable { case none, owned, foreign, unknownOccupant }
-enum ChannelAxis: Equatable { case none, launchPending, owned, existing }
+enum ChannelAxis: Equatable { case none, launchPending, connected }
 enum DisplayState: Equatable {
     case noDaemon, daemonOnly, launchPending, launchTimedOut,
          ownedAttached, existingSessionDetected, foreignDaemon, portOccupiedUnknown
@@ -28,7 +30,6 @@ struct SessionState: Equatable {
     let channel: ChannelAxis
     let display: DisplayState
     let canStart: Bool          // Start button gate
-    let secondSubscriber: Bool  // channelCount > 1 warning
 }
 
 enum SessionStateClassifier {
@@ -36,18 +37,19 @@ enum SessionStateClassifier {
         let probe: HealthProbeResult
         let supervisedChildPid: Int32?   // pid of the daemon child the app spawned; nil if none
         let pinnedInstanceId: String?    // instanceId captured when the daemon was first seen owned
-        let sessionStarted: Bool         // user clicked Start during THIS app run
+        let sessionStarted: Bool         // a launch from this app is on its way and has not arrived
         let launchTimedOut: Bool         // AppModel's ~60s launch timer expired
     }
 
     static func classify(_ input: Input) -> SessionState {
         let daemon = daemonAxis(input)
-        let count = channelCount(input.probe)
+        let count = sessionCount(input.probe)
         let channel = channelAxis(daemon: daemon, count: count, sessionStarted: input.sessionStarted)
         let display = displayState(daemon: daemon, channel: channel, launchTimedOut: input.launchTimedOut)
-        let canStart = daemon == .owned && count == 0 && !input.sessionStarted
-        let secondSubscriber = isHealthy(input.probe) && count > 1
-        return SessionState(daemon: daemon, channel: channel, display: display, canStart: canStart, secondSubscriber: secondSubscriber)
+        // Another session can always be started beside the connected ones (X18 allows several);
+        // only a launch already in flight holds the button.
+        let canStart = daemon == .owned && !input.sessionStarted
+        return SessionState(daemon: daemon, channel: channel, display: display, canStart: canStart)
     }
 
     private static func daemonAxis(_ input: Input) -> DaemonAxis {
@@ -64,9 +66,11 @@ enum SessionStateClassifier {
         }
     }
 
-    static func channelCount(_ probe: HealthProbeResult) -> Int {
+    /// Claude Code sessions connected through the mod. A daemon that predates the mod reports
+    /// none, whatever its channel count says: a channel is not a session.
+    static func sessionCount(_ probe: HealthProbeResult) -> Int {
         guard case .healthy(let h) = probe else { return 0 }
-        return h.channelCount ?? (h.channelAttached ? 1 : 0)
+        return h.sessionCount ?? 0
     }
 
     private static func channelAxis(daemon: DaemonAxis, count: Int, sessionStarted: Bool) -> ChannelAxis {
@@ -74,9 +78,8 @@ enum SessionStateClassifier {
         case .none, .unknownOccupant:
             return .none
         case .owned, .foreign:
-            if count == 0 { return sessionStarted ? .launchPending : .none }
-            if sessionStarted && daemon == .owned { return .owned }
-            return .existing
+            if count > 0 { return .connected }
+            return sessionStarted ? .launchPending : .none
         }
     }
 
@@ -87,39 +90,33 @@ enum SessionStateClassifier {
         case .unknownOccupant:
             return .portOccupiedUnknown
         case .foreign:
-            return channel == .existing ? .existingSessionDetected : .foreignDaemon
+            // Sessions are connected, but to a daemon this app does not run: its sketches
+            // cannot reach them.
+            return channel == .connected ? .existingSessionDetected : .foreignDaemon
         case .owned:
             switch channel {
             case .none: return .daemonOnly
             case .launchPending: return launchTimedOut ? .launchTimedOut : .launchPending
-            case .owned: return .ownedAttached
-            case .existing: return .existingSessionDetected
+            case .connected: return .ownedAttached
             }
         }
-    }
-
-    private static func isHealthy(_ probe: HealthProbeResult) -> Bool {
-        if case .healthy = probe { return true }
-        return false
     }
 }
 
 extension ChannelState {
-    /// The iPad's channel dot (`ping.channel`) is the menu's own verdict, so the two can never
-    /// disagree: a channel this app run launched is `attached`; one it didn't is `existing`
-    /// ("Another session" on the Mac), whichever daemon holds it; a daemon with no channel,
-    /// including one whose Claude Code is still launching, is `detached`; no usable daemon is
-    /// `none`.
+    /// The iPad's dot (`ping.channel`) is the menu's own verdict, so the two can never disagree:
+    /// `attached` when a session is connected to this app's daemon; `detached` for a daemon
+    /// with no session this app can reach, including one whose Claude Code is still launching;
+    /// `none` for no usable daemon. `existing` named a session the app did not start and could
+    /// not use; with the mod there is no such thing, so it is no longer sent.
     init(session: SessionState) {
         switch session.daemon {
         case .none, .unknownOccupant:
             self = .none
-        case .owned, .foreign:
-            switch session.channel {
-            case .owned: self = .attached
-            case .existing: self = .existing
-            case .none, .launchPending: self = .detached
-            }
+        case .foreign:
+            self = .detached
+        case .owned:
+            self = session.channel == .connected ? .attached : .detached
         }
     }
 }

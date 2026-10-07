@@ -42,7 +42,7 @@ struct MenuBarView: View {
         MenuPresentation.claudeCodeRow(
             display: model.sessionState.display,
             daemonGaveUp: model.daemonGaveUp,
-            secondSubscriber: model.sessionState.secondSubscriber,
+            sessions: model.sessions.message,
             pendingUploads: model.pendingUploads,
             startBlocker: startBlocker
         )
@@ -72,6 +72,14 @@ struct MenuBarView: View {
             }
             let claude = claudeRow
             connectionRow(title: "Claude Code", detail: nil, row: claude) { perform(claude.action, deviceId: nil) }
+            sessionList
+            if let help = MenuPresentation.launchHelp(model.sessionState.display) {
+                Text(help)
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+                    .padding(.leading, 13)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             if let warning = model.configWarning {
                 Text(warning)
                     .font(.caption2)
@@ -79,6 +87,60 @@ struct MenuBarView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
+    }
+
+    /// The connected sessions, shown only when there is a choice to make (X21: one session is
+    /// simply the target and nothing is listed). A tick marks where the next sketch goes; a
+    /// click moves it (X24).
+    @ViewBuilder
+    private var sessionList: some View {
+        let message = model.sessions.message
+        if model.sessionState.display == .ownedAttached, message.sessions.count > 1 {
+            VStack(alignment: .leading, spacing: 3) {
+                ForEach(message.sessions) { entry in
+                    Button {
+                        model.selectTarget(entry.id)
+                    } label: {
+                        HStack(alignment: .firstTextBaseline, spacing: 5) {
+                            Image(systemName: "checkmark")
+                                .font(.caption2.weight(.bold))
+                                .opacity(entry.id == message.target ? 1 : 0)
+                            VStack(alignment: .leading, spacing: 0) {
+                                Text(entry.folder)
+                                    .font(.callout)
+                                    .lineLimit(1)
+                                    .truncationMode(.middle)
+                                Text(MenuPresentation.sessionDetail(entry, clock: Self.shortTime))
+                                    .font(.caption2)
+                                    .foregroundColor(.secondary)
+                                    .lineLimit(1)
+                                    .truncationMode(.tail)
+                            }
+                            Spacer(minLength: 0)
+                        }
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .help(entry.id == message.target ? "Sketches go to this session" : "Send sketches to this session")
+                }
+            }
+            .padding(.leading, 13)
+        }
+    }
+
+    private static let isoParsers: [ISO8601DateFormatter] = {
+        let fractional = ISO8601DateFormatter()
+        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return [fractional, ISO8601DateFormatter()]
+    }()
+
+    private static func shortTime(_ iso: String) -> String? {
+        for parser in isoParsers {
+            if let date = parser.date(from: iso) {
+                return DateFormatter.localizedString(from: date, dateStyle: .none, timeStyle: .short)
+            }
+        }
+        return nil
     }
 
     /// One row: name, optional transport, state word in its tint, then the row's action (if
@@ -111,7 +173,7 @@ struct MenuBarView: View {
                 if let rowAction = row.action {
                     Button(label(rowAction), action: action)
                         .controlSize(.small)
-                        .disabled(!row.actionEnabled || (rowAction == .start && model.startDisabled))
+                        .disabled(!row.actionEnabled || ((rowAction == .start || rowAction == .newSession) && model.startDisabled))
                 }
             }
             if let subline = row.subline {
@@ -126,7 +188,7 @@ struct MenuBarView: View {
 
     private func perform(_ action: RowAction?, deviceId: String?) {
         switch action {
-        case .start:
+        case .start, .newSession:
             model.startSession()
         case .retry:
             // Two dead ends share the button: a launch that timed out (start over) and a
@@ -219,6 +281,7 @@ struct MenuBarView: View {
     private func label(_ action: RowAction) -> String {
         switch action {
         case .start: return "Start"
+        case .newSession: return "New Session"
         case .retry: return "Retry"
         case .disconnect: return "Disconnect"
         case .connect: return "Connect"

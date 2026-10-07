@@ -8,7 +8,7 @@ shows back up on the iPad.
 
 It is a separate pair of apps — a Mac menu-bar app and an iPad app — built
 on top of OpenDisplay's mirroring code, plus a small local Node daemon and
-an MCP channel process that Claude Code spawns. No input is ever forwarded
+a Claude Code mod, a plugin that runs inside the Claude Code session. No input is ever forwarded
 from the iPad: it is a display and a sketchpad, never a remote control.
 
 **Status:** the Node half (daemon, channel, this whole round lifecycle) is
@@ -25,6 +25,17 @@ mirror-only build itself, WiFi, zoom, Draw Mode and its freeze, a full
 round, and replies on the iPad have **not** been run on hardware yet.
 [`spec/device-checklist.md`](spec/device-checklist.md) is the manual pass
 that still has to happen before this is considered proven end to end.
+
+**Claude Code mod (2026-10-05).** Sketches now reach Claude Code through a
+mod instead of an MCP channel: no development flag, nothing written into
+your project, a clear outcome for every sketch, and any session with the
+mod loaded is usable (see [`spec/PRD-ClaudeMods.md`](spec/PRD-ClaudeMods.md)
+and [`spec/technical_doc-ClaudeMods.md`](spec/technical_doc-ClaudeMods.md)).
+The daemon and the mod have been run against real Claude Code sessions with
+synthetic sketches. The Mac menu's session list, the every-session option
+and the iPad's session switcher are built and unit-tested but **have not
+been run on hardware**. The channel process still ships in `server/` for
+the reply-compliance baseline; the app no longer uses it.
 
 ## What's in here
 
@@ -51,7 +62,7 @@ DesignCanvas/
                                 no live socket in any of it.
     App/                       The menu-bar app shell: AppModel, MenuBarView,
                                 DaemonSupervisor, ClaudeLauncher,
-                                McpConfigManager, SessionStateClassifier,
+                                ClaudeSettingsManager, SessionStateClassifier,
                                 ProcessResetService, ProjectRecents,
                                 ScreenRecordingPermission, SenderEngine /
                                 OpenDisplaySenderEngine.
@@ -64,9 +75,14 @@ DesignCanvas/
                                 testable logic behind the views above.
     DesignCanvasiOS.entitlements
   Tests/                       The hostless XCTest bundle, `DesignCanvasTests`.
-  server/                      The Node package: daemon (--http) + channel
-                                (--channel). See server/README.md for its
-                                own module map and hard rules.
+  mod/                         The Claude Code mod: one plain-JavaScript hooks
+                                module, bundled into the Mac app at build time
+                                (tools/bundle-mod.sh). Its tests run with the
+                                server's.
+  server/                      The Node package: daemon (--http), which also
+                                keeps the list of connected sessions, and the
+                                older channel (--channel). See server/README.md
+                                for its own module map and hard rules.
 ```
 
 Design Canvas also adds a handful of small, inert-by-default hooks to
@@ -84,8 +100,9 @@ description of everything that crosses the wire.
 - Xcode (current stable) and [XcodeGen](https://github.com/yonaskolb/XcodeGen) (`brew install xcodegen`)
 - Node >= 20.10 and [pnpm](https://pnpm.io)
 - An iPad on iOS/iPadOS 16.4+, on the same network or a USB cable
-- Claude Code, signed in with a claude.ai account or a Claude Console API
-  key, with the `--dangerously-load-development-channels` flag available
+- Claude Code 2.1.287 or later (the first version with mods), signed in
+  with a claude.ai account or a Claude Console API key. No development
+  flag is needed
 
 ## Build and run
 
@@ -161,19 +178,32 @@ real device or simulator, and run.
    are relative to the picture, not the bars.
 4. In the Mac app, click **Open Project…** and choose the repo you want
    Claude Code to work in (or pick it from **Recent projects**).
-5. Click **Set server build…** and point it at
-   `DesignCanvas/server/dist/index.js` (built above). The app remembers
-   this path.
-6. Click **Start session**. This launches a Terminal window running
-   `claude --dangerously-load-development-channels server:design-canvas`
-   in your project directory, and writes (or updates) that project's
-   `.mcp.json` with the `design-canvas` channel entry.
+5. The server and the Claude Code mod ship inside the app, so there is
+   nothing to point it at. (A Debug build made without pnpm has no bundled
+   server; its Settings window then offers a picker for
+   `DesignCanvas/server/dist/index.js`.)
+6. Click **Start**. This launches a Terminal window running `claude` in
+   your project directory with the Design Canvas mod loaded
+   (`--plugin-dir`, pointing inside the app). Nothing is written into your
+   project; a `design-canvas` entry left in `.mcp.json` by an earlier
+   version is ignored and can be deleted. The first time Claude Code sees a
+   folder it asks whether you trust it, and the mod loads only after you
+   answer yes. If Claude Code is missing or older than 2.1.287 the app says
+   so instead of opening the Terminal.
+
+   You can also skip the button: the first launch asks whether to use
+   Design Canvas in every Claude Code session. If you say yes (or turn it
+   on later in Settings), running `claude` yourself in any project connects
+   that session, and opens the Mac app if it is not running. With several
+   sessions connected, the Mac menu and the iPad list them and show which
+   one gets the next sketch; click or tap another to switch.
 7. **Keep that Terminal window on the mirrored screen** (owner decision
    D20) — the one from step 3, which is where it opens unless you move it
    to another monitor. Claude Code's own permission prompts (tool-use
-   confirmations, etc.) still appear there, and nothing is relayed to the
-   iPad while one is waiting — the mitigation for now is that you can see
-   it because it's on the screen you're mirroring. One consequence: since
+   confirmations, etc.) still appear there and are answered there. While
+   one is open the iPad shows "Waiting at the Mac", and nothing more than
+   that; keeping the Terminal on the mirrored screen lets you see what it
+   is asking. One consequence: since
    the terminal is on the mirrored screen, it can end up inside a sketch's
    captured frame or composite. Zoom into just the region you're drawing on
    before you draw to keep it out of the crop.
@@ -182,7 +212,9 @@ real device or simulator, and run.
    (your sketch flattened over the clean frame) is pushed to Claude Code as
    soon as it's ready; you'll see the round go from queued to sent, and
    Claude Code's reply (applied / failed / needs input, plus an optional PR
-   link) shows up on the iPad once it calls `design_canvas_reply`.
+   link) shows up on the iPad once it reports the outcome. Sketches are
+   worked on one per turn, in order; one sent while Claude Code is busy
+   shows as queued until its turn.
 9. **To sketch an idea with nothing on screen to point at**, switch the
    iPad's panel from **Mirror** to **Blank** (added 2026-10-03). The mirror
    is replaced by a white page with Draw Mode already open; sketch, add a note saying what the
@@ -243,36 +275,30 @@ files. Treat the daemon as trusting everything already running on your Mac.
   so Screen Recording is still needed and the screen still crosses the
   link; only the round itself is free of screen content. One page, white,
   cleared on send — no saved pages (`spec/PRD-BlankCanvas.md`, BG1).
-- **No reply timeout.** A round that Claude Code never replies to (the
-  channel wasn't loaded, the model never called the tool, or it's stuck
-  behind a permission prompt) stays `sent` forever — there is no timeout or
-  synthetic failure status. This was an explicit owner decision (D21); the
-  reply-compliance eval below is the only measurement of how often it
-  happens in practice.
-- **Relaunching the Mac app orphans a running session.** Session ownership
-  is tracked in-process (see technical_doc.md section 6); if the Mac app
-  quits and relaunches while Claude Code is still running, it can no
-  longer tell that it owns that session. Use **Reset** rather than
-  force-quitting if you need to recover.
-- **Manually started Claude Code sessions are unsupported.** The app only
-  recognizes a channel it launched itself; running
-  `claude --dangerously-load-development-channels server:design-canvas`
-  by hand outside the app's own Terminal launch is not a supported path.
-- **Two assumptions about Claude Code's own prompting behavior are
-  unverified**, kept as-is by owner decision D22: that reading a file under
-  the store path (`~/.claude/channels/design-canvas/`) never triggers a
-  permission prompt, and that the committed `.mcp.json` entry doesn't
-  trigger the project-level MCP trust prompt for you or for a collaborator
-  who inherits the file. If either turns out to prompt in practice, the
-  fix is an app-managed allow rule or a user-scoped MCP config — not yet
-  built.
-
-  Update 2026-10-05: the first assumption is false. In a test for the
-  planned Claude Code mod, reading a sketch from a store outside the
-  project opened a permission prompt in Claude Code's default mode (in auto
-  mode it was answered without one). Until that is fixed, approve the read
-  at the Mac when it asks. See `spec/technical_doc-ClaudeMods.md`,
-  section 4.4.
+- **A sketch Claude Code does not answer ends as failed, not as a
+  timeout.** If its turn ends with no outcome the mod reminds Claude once;
+  if there is still none, or you stop the turn, or the session ends, the
+  round is marked failed with a line saying which. There is no wall-clock
+  timeout: a turn that is still running, including one waiting on a
+  permission prompt, keeps its round at `sent`.
+- **A machine with many Stop hooks is slower between sketches.** Claude
+  Code tells the mod a turn is over only after its Stop hooks have run, so
+  a queued sketch starts that much later (8 to 10 s was measured on a Mac
+  with five).
+- **Organisations can block the mod.** Managed Claude Code settings can
+  refuse plugins a user loads. Design Canvas then cannot connect on that
+  Mac; the launch stays "Not connected" and the menu says what to look for
+  in the Terminal. There is no fallback.
+- **Old Claude Code, old iPad app.** Claude Code before 2.1.287 has no
+  mods and Start refuses it. An iPad app from before the session list
+  keeps working and simply shows no session switcher and no "Waiting at
+  the Mac".
+- **The mod approves one thing on your behalf:** Claude Code reading the
+  sketch for the round it is working on, from the store under
+  `~/.claude/channels/design-canvas/`. Without that, the read opens a
+  permission prompt in Claude Code's default mode (owner decision D22 had
+  assumed it would not). Nothing else is approved for you, and a deny rule
+  of yours is never overridden.
 
 ## Deferred (not built)
 
@@ -319,8 +345,9 @@ xcodebuild build -project OpenSidecar.xcodeproj -scheme DesignCanvasiOS -destina
 # Node
 pnpm --dir DesignCanvas/server install
 pnpm --dir DesignCanvas/server typecheck
-pnpm --dir DesignCanvas/server test
-pnpm --dir DesignCanvas/server test:channel   # two-process channel topology, real MCP stdio
+pnpm --dir DesignCanvas/server test           # daemon, and the Claude Code mod's tests (DesignCanvas/mod/test)
+claude plugin validate --strict DesignCanvas/mod   # what Claude Code reads from the mod
+pnpm --dir DesignCanvas/server test:channel   # the older channel: two-process topology, real MCP stdio
 pnpm --dir DesignCanvas/server test:e2e       # full round lifecycle, no devices
 ```
 

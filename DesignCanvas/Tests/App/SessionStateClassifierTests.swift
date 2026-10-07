@@ -1,174 +1,112 @@
 import XCTest
 
-/// Ported from ai.cst.2 `DesignCanvasDesktopTests/SessionStateClassifierTests.swift`.
-/// The hostless bundle compiles the sources directly, so there is no
-/// `@testable import`; `Health` is now `DaemonHealth` (Task 8), which no longer
-/// carries `pairedDevices`/`ipadUrls`.
+/// From ai.cst.2 `DesignCanvasDesktopTests/SessionStateClassifierTests.swift`, rewritten for
+/// sessions that connect through the Claude Code mod: the daemon axis (ADR-0004) is tested as
+/// before; the other axis no longer asks who started a session, only whether one is connected
+/// or a launch is still on its way (X9).
 final class SessionStateClassifierTests: XCTestCase {
     private func health(
         pid: Int? = nil,
         instanceId: String? = nil,
-        channelAttached: Bool = false,
-        channelCount: Int? = nil
+        channelCount: Int? = nil,
+        sessionCount: Int? = nil
     ) -> DaemonHealth {
         DaemonHealth(
-            status: "ok",
-            version: "0.0.0",
-            channelAttached: channelAttached,
-            pid: pid,
-            instanceId: instanceId,
-            startedAt: nil,
-            serverEntry: nil,
-            port: 47100,
-            channelCount: channelCount,
-            channelAttachedAt: nil
+            status: "ok", version: "0.0.0", channelAttached: (channelCount ?? 0) > 0, pid: pid,
+            instanceId: instanceId, startedAt: nil, serverEntry: nil, port: 47100,
+            channelCount: channelCount, channelAttachedAt: nil, sessionCount: sessionCount
         )
     }
 
-    private struct Case {
-        let name: String
-        let input: SessionStateClassifier.Input
-        let daemon: DaemonAxis
-        let channel: ChannelAxis
-        let display: DisplayState
-        let canStart: Bool
-        let secondSubscriber: Bool
-        let file: StaticString
-        let line: UInt
+    private func classify(
+        _ probe: HealthProbeResult, childPid: Int32? = 100, pinned: String? = nil,
+        started: Bool = false, timedOut: Bool = false
+    ) -> SessionState {
+        SessionStateClassifier.classify(.init(
+            probe: probe, supervisedChildPid: childPid, pinnedInstanceId: pinned,
+            sessionStarted: started, launchTimedOut: timedOut
+        ))
     }
 
-    private func makeCases() -> [Case] {
-        [
-            Case(
-                name: "1. refused -> noDaemon, canStart false",
-                input: .init(probe: .refused, supervisedChildPid: nil, pinnedInstanceId: nil, sessionStarted: false, launchTimedOut: false),
-                daemon: .none, channel: .none, display: .noDaemon, canStart: false, secondSubscriber: false,
-                file: #filePath, line: #line
-            ),
-            Case(
-                name: "2. healthy owned, count 0, not started -> daemonOnly, canStart TRUE",
-                input: .init(probe: .healthy(health(pid: 100, channelCount: 0)), supervisedChildPid: 100, pinnedInstanceId: nil, sessionStarted: false, launchTimedOut: false),
-                daemon: .owned, channel: .none, display: .daemonOnly, canStart: true, secondSubscriber: false,
-                file: #filePath, line: #line
-            ),
-            Case(
-                name: "3. healthy owned, count 0, started -> launchPending",
-                input: .init(probe: .healthy(health(pid: 100, channelCount: 0)), supervisedChildPid: 100, pinnedInstanceId: nil, sessionStarted: true, launchTimedOut: false),
-                daemon: .owned, channel: .launchPending, display: .launchPending, canStart: false, secondSubscriber: false,
-                file: #filePath, line: #line
-            ),
-            Case(
-                name: "4. healthy owned, count 0, started, launchTimedOut -> launchTimedOut",
-                input: .init(probe: .healthy(health(pid: 100, channelCount: 0)), supervisedChildPid: 100, pinnedInstanceId: nil, sessionStarted: true, launchTimedOut: true),
-                daemon: .owned, channel: .launchPending, display: .launchTimedOut, canStart: false, secondSubscriber: false,
-                file: #filePath, line: #line
-            ),
-            Case(
-                name: "5. healthy owned, count 1, started -> ownedAttached",
-                input: .init(probe: .healthy(health(pid: 100, channelCount: 1)), supervisedChildPid: 100, pinnedInstanceId: nil, sessionStarted: true, launchTimedOut: false),
-                daemon: .owned, channel: .owned, display: .ownedAttached, canStart: false, secondSubscriber: false,
-                file: #filePath, line: #line
-            ),
-            Case(
-                name: "6. healthy owned, count 1, NOT started -> existingSessionDetected (original bug case)",
-                input: .init(probe: .healthy(health(pid: 100, channelCount: 1)), supervisedChildPid: 100, pinnedInstanceId: nil, sessionStarted: false, launchTimedOut: false),
-                daemon: .owned, channel: .existing, display: .existingSessionDetected, canStart: false, secondSubscriber: false,
-                file: #filePath, line: #line
-            ),
-            Case(
-                name: "7. healthy, pid mismatch, count 1 -> daemon foreign, existingSessionDetected",
-                input: .init(probe: .healthy(health(pid: 200, channelCount: 1)), supervisedChildPid: 100, pinnedInstanceId: nil, sessionStarted: true, launchTimedOut: false),
-                daemon: .foreign, channel: .existing, display: .existingSessionDetected, canStart: false, secondSubscriber: false,
-                file: #filePath, line: #line
-            ),
-            Case(
-                name: "8. healthy, pid matches but pinnedInstanceId differs -> foreign",
-                input: .init(probe: .healthy(health(pid: 100, instanceId: "xyz", channelCount: 0)), supervisedChildPid: 100, pinnedInstanceId: "abc", sessionStarted: false, launchTimedOut: false),
-                daemon: .foreign, channel: .none, display: .foreignDaemon, canStart: false, secondSubscriber: false,
-                file: #filePath, line: #line
-            ),
-            Case(
-                name: "9. legacy shape (pid nil, channelAttached true, channelCount nil) -> foreign + existingSessionDetected via fallback count",
-                input: .init(probe: .healthy(health(pid: nil, channelAttached: true, channelCount: nil)), supervisedChildPid: 100, pinnedInstanceId: nil, sessionStarted: false, launchTimedOut: false),
-                daemon: .foreign, channel: .existing, display: .existingSessionDetected, canStart: false, secondSubscriber: false,
-                file: #filePath, line: #line
-            ),
-            Case(
-                name: "10. legacy shape, channelAttached false -> foreignDaemon",
-                input: .init(probe: .healthy(health(pid: nil, channelAttached: false, channelCount: nil)), supervisedChildPid: 100, pinnedInstanceId: nil, sessionStarted: false, launchTimedOut: false),
-                daemon: .foreign, channel: .none, display: .foreignDaemon, canStart: false, secondSubscriber: false,
-                file: #filePath, line: #line
-            ),
-            Case(
-                name: "11. foreignResponse -> portOccupiedUnknown",
-                input: .init(probe: .foreignResponse, supervisedChildPid: nil, pinnedInstanceId: nil, sessionStarted: false, launchTimedOut: false),
-                daemon: .unknownOccupant, channel: .none, display: .portOccupiedUnknown, canStart: false, secondSubscriber: false,
-                file: #filePath, line: #line
-            ),
-            Case(
-                name: "12. timedOut -> portOccupiedUnknown",
-                input: .init(probe: .timedOut, supervisedChildPid: nil, pinnedInstanceId: nil, sessionStarted: false, launchTimedOut: false),
-                daemon: .unknownOccupant, channel: .none, display: .portOccupiedUnknown, canStart: false, secondSubscriber: false,
-                file: #filePath, line: #line
-            ),
-            Case(
-                name: "13. badStatus(500) -> portOccupiedUnknown",
-                input: .init(probe: .badStatus(500), supervisedChildPid: nil, pinnedInstanceId: nil, sessionStarted: false, launchTimedOut: false),
-                daemon: .unknownOccupant, channel: .none, display: .portOccupiedUnknown, canStart: false, secondSubscriber: false,
-                file: #filePath, line: #line
-            ),
-            Case(
-                name: "14. healthy owned, count 2, started -> ownedAttached with secondSubscriber true",
-                input: .init(probe: .healthy(health(pid: 100, channelCount: 2)), supervisedChildPid: 100, pinnedInstanceId: nil, sessionStarted: true, launchTimedOut: false),
-                daemon: .owned, channel: .owned, display: .ownedAttached, canStart: false, secondSubscriber: true,
-                file: #filePath, line: #line
-            ),
-            Case(
-                name: "15. healthy foreign (supervisedChildPid nil), count 1 -> existingSessionDetected",
-                input: .init(probe: .healthy(health(pid: 100, channelCount: 1)), supervisedChildPid: nil, pinnedInstanceId: nil, sessionStarted: false, launchTimedOut: false),
-                daemon: .foreign, channel: .existing, display: .existingSessionDetected, canStart: false, secondSubscriber: false,
-                file: #filePath, line: #line
-            ),
-            Case(
-                name: "16. healthy owned, count 1, started, canStart false (already attached)",
-                input: .init(probe: .healthy(health(pid: 100, instanceId: "abc", channelCount: 1)), supervisedChildPid: 100, pinnedInstanceId: "abc", sessionStarted: true, launchTimedOut: false),
-                daemon: .owned, channel: .owned, display: .ownedAttached, canStart: false, secondSubscriber: false,
-                file: #filePath, line: #line
-            ),
-        ]
+    private func assertState(
+        _ state: SessionState, _ daemon: DaemonAxis, _ channel: ChannelAxis, _ display: DisplayState,
+        canStart: Bool, _ message: String, file: StaticString = #filePath, line: UInt = #line
+    ) {
+        XCTAssertEqual(state.daemon, daemon, message, file: file, line: line)
+        XCTAssertEqual(state.channel, channel, message, file: file, line: line)
+        XCTAssertEqual(state.display, display, message, file: file, line: line)
+        XCTAssertEqual(state.canStart, canStart, message, file: file, line: line)
     }
 
-    /// What the iPad's second dot is told (`ping.channel`), derived from the same verdict the
-    /// menu shows (D7): the Mac's own session is `attached`, somebody else's is `existing`, a
-    /// daemon with no channel is `detached`, and no usable daemon is `none`.
-    func testChannelStateRelaysTheMenusVerdictNotTheRawCount() {
-        func relay(_ input: SessionStateClassifier.Input) -> ChannelState {
-            ChannelState(session: SessionStateClassifier.classify(input))
+    // MARK: - Daemon axis (unchanged rules)
+
+    func testNoDaemonAndUnknownOccupants() {
+        assertState(classify(.refused), .none, .none, .noDaemon, canStart: false, "nothing listening")
+        for probe in [HealthProbeResult.timedOut, .badStatus(500), .foreignResponse] {
+            assertState(classify(probe, started: true), .unknownOccupant, .none, .portOccupiedUnknown,
+                        canStart: false, "\(probe): something else holds the port")
         }
-        XCTAssertEqual(relay(.init(probe: .healthy(health(pid: 100, channelCount: 1)), supervisedChildPid: 100, pinnedInstanceId: nil, sessionStarted: true, launchTimedOut: false)),
-                       .attached, "owned")
-        XCTAssertEqual(relay(.init(probe: .healthy(health(pid: 100, channelCount: 1)), supervisedChildPid: 100, pinnedInstanceId: nil, sessionStarted: false, launchTimedOut: false)),
-                       .existing, "attached, but not by this app run")
-        XCTAssertEqual(relay(.init(probe: .healthy(health(pid: 200, channelCount: 1)), supervisedChildPid: 100, pinnedInstanceId: nil, sessionStarted: true, launchTimedOut: false)),
-                       .existing, "a foreign daemon's channel is never ours")
-        XCTAssertEqual(relay(.init(probe: .healthy(health(pid: 100, channelCount: 0)), supervisedChildPid: 100, pinnedInstanceId: nil, sessionStarted: false, launchTimedOut: false)),
-                       .detached, "daemon up, no channel")
-        XCTAssertEqual(relay(.init(probe: .healthy(health(pid: 100, channelCount: 0)), supervisedChildPid: 100, pinnedInstanceId: nil, sessionStarted: true, launchTimedOut: false)),
-                       .detached, "launch pending is still no channel")
-        XCTAssertEqual(relay(.init(probe: .refused, supervisedChildPid: nil, pinnedInstanceId: nil, sessionStarted: false, launchTimedOut: false)),
-                       .none, "no daemon")
-        XCTAssertEqual(relay(.init(probe: .foreignResponse, supervisedChildPid: nil, pinnedInstanceId: nil, sessionStarted: false, launchTimedOut: false)),
-                       .none, "port occupied by something else")
     }
 
-    func testDecisionTable() {
-        for c in makeCases() {
-            let result = SessionStateClassifier.classify(c.input)
-            XCTAssertEqual(result.daemon, c.daemon, "\(c.name): daemon", file: c.file, line: c.line)
-            XCTAssertEqual(result.channel, c.channel, "\(c.name): channel", file: c.file, line: c.line)
-            XCTAssertEqual(result.display, c.display, "\(c.name): display", file: c.file, line: c.line)
-            XCTAssertEqual(result.canStart, c.canStart, "\(c.name): canStart", file: c.file, line: c.line)
-            XCTAssertEqual(result.secondSubscriber, c.secondSubscriber, "\(c.name): secondSubscriber", file: c.file, line: c.line)
-        }
+    func testADaemonThisAppDidNotSpawnIsForeign() {
+        assertState(classify(.healthy(health(pid: nil))), .foreign, .none, .foreignDaemon, canStart: false, "legacy daemon, no pid")
+        assertState(classify(.healthy(health(pid: 999))), .foreign, .none, .foreignDaemon, canStart: false, "another pid")
+        assertState(classify(.healthy(health(pid: 100)), childPid: nil), .foreign, .none, .foreignDaemon, canStart: false, "no supervised child")
+        assertState(classify(.healthy(health(pid: 100, instanceId: "B")), pinned: "A"), .foreign, .none, .foreignDaemon,
+                    canStart: false, "same pid, different instance: a pid reused by someone else")
+        assertState(classify(.healthy(health(pid: 100, instanceId: "A")), pinned: "A"), .owned, .none, .daemonOnly,
+                    canStart: true, "pinned instance matches")
+    }
+
+    // MARK: - Session axis
+
+    func testOwnedDaemonWithNoSession() {
+        assertState(classify(.healthy(health(pid: 100, sessionCount: 0))), .owned, .none, .daemonOnly, canStart: true, "idle")
+        assertState(classify(.healthy(health(pid: 100))), .owned, .none, .daemonOnly, canStart: true,
+                    "a daemon that reports no sessionCount has none")
+    }
+
+    func testALaunchOnItsWayHoldsStartUntilItArrivesOrTimesOut() {
+        assertState(classify(.healthy(health(pid: 100, sessionCount: 0)), started: true), .owned, .launchPending, .launchPending,
+                    canStart: false, "launched, not registered yet")
+        assertState(classify(.healthy(health(pid: 100, sessionCount: 0)), started: true, timedOut: true), .owned, .launchPending,
+                    .launchTimedOut, canStart: false, "60 s on")
+    }
+
+    func testAnySessionIsConnectedWhoeverStartedIt() {
+        // X9: started by hand, or before this app was relaunched, a session with the mod is usable.
+        assertState(classify(.healthy(health(pid: 100, sessionCount: 1))), .owned, .connected, .ownedAttached,
+                    canStart: true, "connected, and another can be started beside it")
+        assertState(classify(.healthy(health(pid: 100, sessionCount: 3))), .owned, .connected, .ownedAttached,
+                    canStart: true, "several sessions are one state, not a warning")
+        assertState(classify(.healthy(health(pid: 100, sessionCount: 1)), started: true), .owned, .connected, .ownedAttached,
+                    canStart: false, "connected while a second launch is still on its way")
+    }
+
+    func testAChannelIsNotASession() {
+        // The old channel process may still be attached during the changeover. It carries no
+        // sketches for this app any more and must not read as a connection.
+        assertState(classify(.healthy(health(pid: 100, channelCount: 1, sessionCount: 0))), .owned, .none, .daemonOnly,
+                    canStart: true, "channel attached, no session")
+        assertState(classify(.healthy(health(pid: 100, channelCount: 2))), .owned, .none, .daemonOnly, canStart: true, "legacy payload")
+    }
+
+    func testSessionsOnAForeignDaemonAreNotOurs() {
+        assertState(classify(.healthy(health(pid: 999, sessionCount: 2))), .foreign, .connected, .existingSessionDetected,
+                    canStart: false, "another instance has the sessions")
+        assertState(classify(.healthy(health(pid: 999, sessionCount: 0)), started: true), .foreign, .launchPending, .foreignDaemon,
+                    canStart: false, "a launch cannot arrive at a daemon that is not ours")
+    }
+
+    // MARK: - What the iPad is told
+
+    func testChannelStateForTheIPad() {
+        XCTAssertEqual(ChannelState(session: classify(.refused)), ChannelState.none)
+        XCTAssertEqual(ChannelState(session: classify(.timedOut)), ChannelState.none)
+        XCTAssertEqual(ChannelState(session: classify(.healthy(health(pid: 100, sessionCount: 0)))), .detached)
+        XCTAssertEqual(ChannelState(session: classify(.healthy(health(pid: 100, sessionCount: 0)), started: true)), .detached)
+        XCTAssertEqual(ChannelState(session: classify(.healthy(health(pid: 100, sessionCount: 1)))), .attached)
+        XCTAssertEqual(ChannelState(session: classify(.healthy(health(pid: 999, sessionCount: 1)))), .detached,
+                       "sessions this Mac app cannot reach are not attached, and `existing` is no longer sent")
     }
 }

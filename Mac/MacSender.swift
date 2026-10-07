@@ -1938,7 +1938,7 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate, CanvasOutboun
             // without the silence grace and without waiting for a wake.
             Log.info("receiver app closed — ending session")
             Task { @MainActor in self.onPeerClosed?() }
-        case WireMessage.freeze, WireMessage.annotation:
+        case WireMessage.freeze, WireMessage.annotation, WireMessage.selectSession:
             // Canvas messages, gated on the capability this sender announced:
             // without an engine to hand them to they are as unknown as any
             // other type this build has no use for.

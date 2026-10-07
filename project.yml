@@ -259,6 +259,13 @@ targets:
         script: |
           "$SRCROOT/DesignCanvas/tools/bundle-server.sh" "$BUILT_PRODUCTS_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH/server"
         basedOnDependencyAnalysis: false
+      # The Claude Code mod (DesignCanvas/mod) ships at Contents/Resources/mod: Start
+      # session loads it from there, and so does a session the user starts by hand
+      # once they turn Design Canvas on for every session.
+      - name: Bundle Design Canvas mod
+        script: |
+          "$SRCROOT/DesignCanvas/tools/bundle-mod.sh" "$BUILT_PRODUCTS_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH/mod"
+        basedOnDependencyAnalysis: false
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.designcanvas.mac

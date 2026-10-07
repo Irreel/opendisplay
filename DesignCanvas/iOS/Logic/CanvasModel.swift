@@ -50,6 +50,11 @@ final class CanvasModel: ObservableObject {
     @Published var preferredSurface: CanvasSurface = .mirror
     /// The connected Mac's ping said it accepts a blank-page sketch (B3).
     @Published private(set) var macSupportsBlank = false
+    /// The Claude Code sessions the Mac is connected to and which one the next
+    /// sketch goes to (X21 to X26). Empty until the Mac sends a `sessions`
+    /// message, which a Mac that predates the session list never does: this
+    /// device then behaves exactly as it did before there was one.
+    @Published private(set) var sessions: SessionsMessage = .empty
     /// The optional one-line note (M4). Bound to the text field.
     @Published var note = ""
     /// Edge flag: the sketch has been sent or thrown away, so the canvas view
@@ -103,8 +108,32 @@ final class CanvasModel: ObservableObject {
         machine.state == .live && receiver.isConnected && receiver.supportsCanvas
     }
 
-    /// Done is live only in DRAWING with at least one stroke (ruling 7).
-    var canSend: Bool { machine.canSend }
+    /// Done is live only in DRAWING with at least one stroke (ruling 7), and,
+    /// with several sessions connected and none chosen, only once the designer
+    /// has picked where the sketch goes (X26).
+    var canSend: Bool { machine.canSend && !sessions.needsPick }
+
+    /// The session the next sketch goes to, when there is one to name.
+    var targetSession: CanvasSessionEntry? { sessions.targetEntry }
+
+    /// Claude Code has a permission dialog open at the Mac (X8). Nothing about
+    /// the dialog itself crosses the wire; this is all the iPad is told.
+    var waitingAtMac: Bool { sessions.targetEntry?.state == .waiting }
+
+    /// The round "Waiting at the Mac" is about: the newest one of this device's
+    /// that has no outcome yet. Nil when Claude Code is not waiting, or when
+    /// it waits over something that is not one of this device's sketches.
+    var waitingRoundID: String? {
+        guard waitingAtMac else { return nil }
+        return rounds.first { $0.status == .queued || $0.status == .sent }?.annotationId
+    }
+
+    /// Make `id` the target for the next sketch (X24). The Mac answers with a
+    /// fresh `sessions`, which is what moves the tick: nothing is assumed here.
+    func selectSession(_ id: String) {
+        guard sessions.sessions.contains(where: { $0.id == id }), id != sessions.target else { return }
+        send(CanvasWire.selectSession, SelectSessionMessage(id: id, t: nowMs()).json) { _ in }
+    }
 
     /// What is happening to a sketch that has left Draw Mode but not landed.
     /// SENDING and RETRY look identical to a user otherwise — the picture is
@@ -196,7 +225,12 @@ final class CanvasModel: ObservableObject {
                                               viewport: entryViewport,
                                               note: trimmed.isEmpty ? nil : trimmed,
                                               t: nowMs(),
-                                              base: entryBase)
+                                              base: entryBase,
+                                              // X23: bound to the target as it is shown now.
+                                              // Kept in the pending message, so a resend after
+                                              // a link loss goes to the same session even if
+                                              // the target has moved since.
+                                              session: sessions.targetEntry?.id)
         apply(.done)
     }
 
@@ -234,6 +268,7 @@ final class CanvasModel: ObservableObject {
         channel = .none
         project = nil
         macSupportsBlank = false
+        sessions = .empty
         apply(.linkLost)
     }
 
@@ -266,6 +301,9 @@ final class CanvasModel: ObservableObject {
         case CanvasWire.agentReply:
             guard let reply = AgentReplyMessage(json: object) else { return }
             merge(reply)
+        case CanvasWire.sessions:
+            guard let message = SessionsMessage(json: object) else { return }
+            if message != sessions { sessions = message }
         default:
             return
         }

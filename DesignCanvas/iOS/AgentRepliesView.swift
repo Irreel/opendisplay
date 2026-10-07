@@ -28,7 +28,7 @@ struct AgentRepliesView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
                     List(model.rounds, id: \.annotationId) { round in
-                        RoundRow(round: round)
+                        RoundRow(round: round, waitingAtMac: round.annotationId == model.waitingRoundID)
                     }
                     .listStyle(.insetGrouped)
                 }
@@ -46,10 +46,20 @@ struct AgentRepliesView: View {
 
 private struct RoundRow: View {
     let round: CanvasRound
+    /// Claude Code is stopped on a permission dialog and this is the round it
+    /// was working on (X8). Three words; what it asks is answered at the Mac.
+    var waitingAtMac = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            StatusBadge(status: round.status)
+            HStack(spacing: 8) {
+                StatusBadge(status: round.status)
+                if waitingAtMac {
+                    Label("Waiting at the Mac", systemImage: "hand.raised.fill")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.orange)
+                }
+            }
 
             if let note = round.note, !note.isEmpty {
                 Text(note)
@@ -58,10 +68,14 @@ private struct RoundRow: View {
             }
 
             if let message = round.message, !message.isEmpty {
+                // X5: the head of Claude's message, not all of it. A reply can
+                // run to 2 KB, and this list is for telling at a glance how each
+                // sketch ended; the full text is in the Claude Code session.
                 Text(message)
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+                    .lineLimit(2)
+                    .truncationMode(.tail)
             }
 
             // http(s) only: the link's text comes from the model (M4).

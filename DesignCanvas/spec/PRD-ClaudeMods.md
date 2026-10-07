@@ -1,6 +1,6 @@
 # PRD: Design Canvas Claude Mods
 
-**Status:** Draft v0.3, 2026-10-05, after the spike (v0.2 was earlier the same day; v0.1 was 2026-10-04), for owner review. Nothing here is built. Product requirements only; the design and the spike's results are in [technical_doc-ClaudeMods.md](./technical_doc-ClaudeMods.md).
+**Status:** Draft v0.3, 2026-10-05, after the spike (v0.2 was earlier the same day; v0.1 was 2026-10-04), for owner review. Phase 1 was implemented on 2026-10-05 on the `claude-mods` branch (X1 to X11, X18 to X26); the daemon and the mod have been run against real Claude Code sessions, the two apps' new screens have not been run on hardware. Phase 2 is not built. Product requirements only; the design and the spike's results are in [technical_doc-ClaudeMods.md](./technical_doc-ClaudeMods.md).
 **Owner:** AntheaZ
 **Extends:** [PRD-DesignCanvas.md](./PRD-DesignCanvas.md) v0.8 and [PRD-BlankCanvas.md](./PRD-BlankCanvas.md) v0.2. Those documents own the sketch loop on both surfaces. This one owns only how the loop gets into and out of Claude Code. Requirements there are cited by ID and not restated.
 
@@ -182,7 +182,7 @@ X13 and X14 carry less risk than X15: a spoofed answer misdirects the agent, whi
 - [x] **XG2. The channel is not kept.** Decided 2026-10-05: no fallback. The mod is the one path, and old Claude Code or an organisation that blocks mods gets a clear message (X10).
 - [x] **XG3. Which session gets the sketch?** Decided 2026-10-05: one target session, defaulted and sticky, switchable in the Mac menu and on the iPad over USB or WiFi (X21 to X26).
 - [ ] **XG4. Questions before pairing?** May X13 and X14 ship over today's WiFi trust, ahead of TODO #16? Over USB, all of Phase 2 is allowed (X12). Deferred with Phase 2.
-- [x] **XG5. The old `.mcp.json` entry.** Decided 2026-10-05: leave it be (X2).
+- [x] **XG5. The old `.mcp.json` entry.** Decided 2026-10-05: leave it be (X2). Found 2026-10-06: left in place, the entry stopped the mod from connecting in that project, because both used the name `design-canvas`. The mod was renamed so the two no longer meet; the entry is still not touched.
 - [x] **XG6. What "Waiting at the Mac" shows.** Decided 2026-10-05: only "Waiting at the Mac", with no tool name and no command (X8).
 - [x] **XG7. Registration mechanism for the opt-in.** Decided 2026-10-04: the user opts in at first launch (X20), and the Mac app does the registering. Mechanism decided 2026-10-05: a marketplace listing is the target. Until it is published, the opt-in points Claude Code at the copy inside the app. Proposed so that a moved app repairs itself: the app re-registers its current location at each launch.
 - [x] **XG8. Does the project picker stay?** With X18 the session names its own project. Decided 2026-10-05: the picker and Recent projects stay, for the Start session button only.

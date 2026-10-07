@@ -80,6 +80,8 @@ final class UploadPipeline {
         let note: String?
         let deviceID: String
         let createdAt: Date
+        /// The session the iPad chose at Done, when it chose one (X23).
+        var session: String? = nil
     }
 
     private enum Job {
@@ -316,7 +318,8 @@ final class UploadPipeline {
                 deviceID: job.deviceID,
                 deviceName: deviceName,
                 createdAt: job.createdAt,
-                base: surface
+                base: surface,
+                session: job.session
             )
             do {
                 let annotationID = try await daemon.postAnnotation(upload)

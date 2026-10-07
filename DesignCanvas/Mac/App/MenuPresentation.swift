@@ -10,7 +10,7 @@ import Foundation
 enum MenuTint: Equatable { case secondary, green, orange, red }
 
 /// The trailing button on a row. The view maps each to an `AppModel` call.
-enum RowAction: Equatable { case start, retry, disconnect, connect, grant, details }
+enum RowAction: Equatable { case start, newSession, retry, disconnect, connect, grant, details }
 
 /// Why Start is disabled even though the classifier would allow it.
 enum StartBlocker: Equatable { case noProject, noServerBuild }
@@ -32,7 +32,7 @@ enum MenuPresentation {
     static func claudeCodeRow(
         display: DisplayState,
         daemonGaveUp: Bool,
-        secondSubscriber: Bool,
+        sessions: SessionsMessage = .empty,
         pendingUploads: Int,
         startBlocker: StartBlocker?
     ) -> RowPresentation {
@@ -40,21 +40,57 @@ enum MenuPresentation {
         if daemonGaveUp {
             return RowPresentation(word: "Stopped", tint: .red, subline: "Stopped retrying", action: .retry)
         }
-        var row = base(display)
-        if let blocker = startBlocker, row.action == .start {
-            row = RowPresentation(word: row.word, tint: row.tint, subline: blockerText(blocker), action: .start, actionEnabled: false)
-        }
-        // Warnings ride along as the sub-line, and never change the state word or the action.
-        if secondSubscriber {
-            return RowPresentation(word: row.word, tint: row.tint,
-                                   subline: "Two sessions are attached; sketches may go to either",
-                                   action: row.action, actionEnabled: row.actionEnabled)
+        var row = display == .ownedAttached ? connected(sessions) : base(display)
+        if let blocker = startBlocker {
+            if row.action == .start {
+                row = RowPresentation(word: row.word, tint: row.tint, subline: blockerText(blocker), action: .start, actionEnabled: false)
+            } else if row.action == .newSession {
+                // Connected sessions keep their sub-line; only the button waits on a project.
+                row.actionEnabled = false
+            }
         }
         if pendingUploads > 0, row.subline == nil {
             return RowPresentation(word: row.word, tint: row.tint, subline: pendingText(pendingUploads),
                                    action: row.action, actionEnabled: row.actionEnabled)
         }
         return row
+    }
+
+    /// One or more sessions are connected (X21 to X26). The sub-line says where the next sketch
+    /// goes, which is the one thing the user cannot see from the Terminal windows themselves.
+    private static func connected(_ sessions: SessionsMessage) -> RowPresentation {
+        guard let target = sessions.targetEntry else {
+            if sessions.needsPick {
+                return RowPresentation(word: "Choose one", tint: .orange,
+                                       subline: "Pick which session gets sketches", action: .newSession)
+            }
+            // Connected by the daemon's count, with the list not read yet.
+            return RowPresentation(word: "Connected", tint: .green, subline: nil, action: .newSession)
+        }
+        if target.state == .waiting {
+            return RowPresentation(word: "Connected", tint: .green,
+                                   subline: "Claude Code is waiting for you in the Terminal", action: .newSession)
+        }
+        let destination = "Sketches go to \(target.folder)"
+        let subline = sessions.sessions.count > 1 ? "\(sessions.sessions.count) sessions \u{00B7} \(destination.prefix(1).lowercased() + destination.dropFirst())" : destination
+        return RowPresentation(word: "Connected", tint: .green, subline: subline, action: .newSession)
+    }
+
+    /// What tells two sessions apart in the list (X25): the title when the user gave one, else
+    /// when it started; then the branch and the last reply. `clock` turns the daemon's ISO time
+    /// into a short local one, and is injected so the wording is testable.
+    static func sessionDetail(_ entry: CanvasSessionEntry, clock: (String) -> String?) -> String {
+        var parts: [String] = []
+        if let title = entry.title {
+            parts.append(title)
+        } else if let started = clock(entry.startedAt) {
+            parts.append("Started \(started)")
+        }
+        if let branch = entry.branch { parts.append(branch) }
+        if let lastReplyAt = entry.lastReplyAt, let replied = clock(lastReplyAt) {
+            parts.append("replied \(replied)")
+        }
+        return parts.joined(separator: " \u{00B7} ")
     }
 
     private static func base(_ display: DisplayState) -> RowPresentation {
@@ -67,10 +103,10 @@ enum MenuPresentation {
         case .launchTimedOut:
             return RowPresentation(word: "Not connected", tint: .red, subline: "Check the Terminal window", action: .retry)
         case .ownedAttached:
-            return RowPresentation(word: "Connected", tint: .green, subline: nil, action: .disconnect)
+            return connected(.empty)
         case .existingSessionDetected:
-            return RowPresentation(word: "Another session", tint: .orange,
-                                   subline: "A Claude Code session this app didn't start is attached", action: .details)
+            return RowPresentation(word: "Connected elsewhere", tint: .orange,
+                                   subline: "Claude Code is connected to another copy of Design Canvas", action: .details)
         case .foreignDaemon:
             return RowPresentation(word: "Another instance", tint: .orange,
                                    subline: "Design Canvas is already running elsewhere", action: .details)
@@ -78,6 +114,14 @@ enum MenuPresentation {
             return RowPresentation(word: "Blocked", tint: .red,
                                    subline: "Another app is using Design Canvas's port", action: .details)
         }
+    }
+
+    /// X10: what to look for in the Terminal when a launch has not connected. The app cannot
+    /// see inside Claude Code, so it names the causes it knows produce exactly this: the trust
+    /// question (whose default answer is no), and an organisation that blocks plugins.
+    static func launchHelp(_ display: DisplayState) -> String? {
+        guard display == .launchTimedOut else { return nil }
+        return "If Claude Code asks whether you trust the folder, choose Yes. If it says plugins are disabled by your organization, Design Canvas can't connect on this Mac."
     }
 
     private static func blockerText(_ blocker: StartBlocker) -> String {

@@ -170,4 +170,22 @@
 **Priority:** P3
 **Depends on:** None.
 
+### Claude Code mod: follow-ups from Claude Code 2.1.290 to 2.1.292
+
+From a read of the Claude Code changelog on 2026-10-06. Backlog only, not prioritized (owner, 2026-10-06). The mod was built and tested on 2.1.289; it passes `claude plugin validate --strict` on 2.1.292 and has not been run live on anything newer than 2.1.289. Context for all of these: `technical_doc-ClaudeMods.md`.
+
+**Re-run the live checks on the current Claude Code.** One session against a scratch daemon: a round end to end, the permission wait, a daemon restart, a session ended mid-round. Three releases changed how hooks behave while the hooks worker restarts and how a mod's prompts are queued. **Effort:** S
+
+**Limit the sketch-read approval to the main session.** `tool.check` carries `agentId` since 2.1.290. X7 approves the read of the current round's composite whoever asks; with `agentId` it can decline to approve for a subagent. Treat the field as optional so the minimum stays 2.1.287. **Effort:** S
+
+**Respect an organisation's approval ceiling in the sketch-read approval.** `tool.check` reports `ceiling` since 2.1.290, the approval an organisation requires for a tool. X7 should return the decision unchanged when a ceiling asks for a prompt. Optional field, as above. **Effort:** S
+
+**Give the mod's gating hooks a `.catch`.** Since 2.1.290 `claude plugin validate --json` lists each hook at a gating site with `hasCatch`; all of the mod's (`tool.call`, `tool.check`, the three `classic.*` hooks) report false. They guard themselves inside the hook body, but a `.catch` is the documented way to say what happens when one throws or times out, and what should happen differs: fail open for the reply tool and the waiting tracker, fail to "ask" for the read approval. **Effort:** S
+
+**Use `claude plugin install --marketplace` for the published mod.** Added in 2.1.292: adds the marketplace if needed and installs from it in one command. It is the mechanism for the marketplace half of the every-session option (XG7), in place of the `CLAUDE_CODE_PLUGIN_DIRS` entry. **Depends on:** the marketplace listing. **Effort:** M
+
+**Channel baseline: expect a slower first connect.** Since 2.1.292 local MCP servers negotiate protocol version 2026-07-28 by default, and a server that ignores the check is connected the older way after one slow attempt. The channel uses an older MCP SDK. When the reply-compliance baseline is run on the channel, allow for that or set `MCP_PROTOCOL_NEGOTIATION=legacy`, and record which. **Effort:** none beyond the run
+
+**Phase 2: approving the call does not answer a question.** Since 2.1.292 a `tool.check` hook that answers "allow" no longer skips the dialog of a tool that needs the user's own answer (a question, a plan approval). X13's answer-from-the-iPad cannot be built by approving the call; it has to supply the answer. Note for the Phase 2 design, nothing to do now.
+
 ## Completed

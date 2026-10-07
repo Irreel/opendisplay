@@ -14,6 +14,7 @@ final class CanvasStatus {
     private var storedChannelState: ChannelState = .none
     private var storedProjectName: String?
     private var storedLastFrameAt: Date?
+    private var storedSessions: SessionsMessage = .empty
 
     var channelState: ChannelState {
         get {
@@ -41,6 +42,21 @@ final class CanvasStatus {
         }
     }
 
+    /// The connected Claude Code sessions as last heard from the daemon. Written
+    /// by `CanvasHub`, read by each session when its iPad says hello.
+    var sessions: SessionsMessage {
+        get {
+            lock.lock()
+            defer { lock.unlock() }
+            return storedSessions
+        }
+        set {
+            lock.lock()
+            storedSessions = newValue
+            lock.unlock()
+        }
+    }
+
     /// `channel` always; `project` only when a project is selected — an
     /// absent key is how the iPad is told there is none (spec section 2).
     var pingFields: [String: String] {
@@ -53,8 +69,10 @@ final class CanvasStatus {
             CanvasWire.pingChannelKey: storedChannelState.rawValue,
             CanvasWire.pingBlankKey: "1",
         ]
-        if let storedProjectName {
-            fields[CanvasWire.pingProjectKey] = storedProjectName
+        // The project the iPad names is where the next sketch goes: the target
+        // session's folder. With no session it is the folder Start would open.
+        if let project = storedSessions.targetEntry?.folder ?? storedProjectName {
+            fields[CanvasWire.pingProjectKey] = project
         }
         return fields
     }
@@ -158,6 +176,18 @@ final class CanvasSession: SenderCanvasDelegate {
         lock.unlock()
 
         sendRoundsSnapshot(deviceID: peer.installID, via: outbound)
+        send(type: CanvasWire.sessions, status.sessions.json, via: outbound)
+    }
+
+    /// The session list changed (or the target did). `CanvasHub` calls this for
+    /// every live session; one with no link has nowhere to send it, and its
+    /// next hello sends the list anyway.
+    func sendSessions() {
+        lock.lock()
+        let outbound = self.outbound
+        lock.unlock()
+        guard let outbound else { return }
+        send(type: CanvasWire.sessions, status.sessions.json, via: outbound)
     }
 
     /// The same snapshot hello sends, on demand. `CanvasHub` calls this after
@@ -227,6 +257,8 @@ final class CanvasSession: SenderCanvasDelegate {
             handleFreeze(object, outbound: outbound)
         case CanvasWire.annotation:
             handleAnnotation(object)
+        case CanvasWire.selectSession:
+            handleSelectSession(object)
         default:
             break
         }
@@ -248,6 +280,26 @@ final class CanvasSession: SenderCanvasDelegate {
     }
 
     func canvasPingFields() -> [String: String] { status.pingFields }
+
+    // MARK: - selectSession
+
+    /// The iPad picked the target (X24). The daemon owns the target, so the
+    /// choice goes there; the list that comes back on the sessions stream is
+    /// what tells this iPad, and every other one, that it took.
+    private func handleSelectSession(_ object: [String: Any]) {
+        guard let message = SelectSessionMessage(json: object) else {
+            Log.info("canvas: unparseable selectSession")
+            return
+        }
+        let daemon = self.daemon
+        Task {
+            do {
+                try await daemon.setTarget(instance: message.id, fromIPad: true)
+            } catch {
+                Log.info("canvas: selectSession failed (\(error))")
+            }
+        }
+    }
 
     // MARK: - freeze
 
@@ -364,7 +416,8 @@ final class CanvasSession: SenderCanvasDelegate {
             viewport: message.viewport,
             note: message.note,
             deviceID: installID,
-            createdAt: createdAt
+            createdAt: createdAt,
+            session: message.session
         ))
 
         Log.info("canvas: annotation queued (\(message.sketchPNG.count)-byte sketch\(message.base == .blank ? ", blank page" : ""))")

@@ -18,6 +18,7 @@ final class CanvasHub {
     private let status: CanvasStatus
     private var sessions: [WeakSession] = []
     private var consumer: Task<Void, Never>?
+    private var sessionsConsumer: Task<Void, Never>?
     /// Outlives sessions, which is the whole point: a frozen frame and the
     /// identity of the round it belongs to wait here while the sender rebuilds
     /// the session a link drop killed (C1).
@@ -33,6 +34,7 @@ final class CanvasHub {
     /// the next update happened to arrive.
     deinit {
         consumer?.cancel()
+        sessionsConsumer?.cancel()
     }
 
     /// A session for one device, wired to the same daemon and status and
@@ -77,11 +79,33 @@ final class CanvasHub {
                 }
             }
         }
+        // The Claude Code sessions and their state. On the stream, not the app's
+        // 2 s health poll, so "Waiting at the Mac" reaches the iPad as it happens.
+        let sessionUpdates = daemon.sessionUpdates()
+        sessionsConsumer = Task { [weak self] in
+            for await snapshot in sessionUpdates {
+                guard let self else { return }
+                self.publish(snapshot.message)
+            }
+        }
     }
 
     func stop() {
         consumer?.cancel()
         consumer = nil
+        sessionsConsumer?.cancel()
+        sessionsConsumer = nil
+    }
+
+    /// Records the list and tells every connected iPad, but only when it
+    /// actually changed: the stream repeats itself on every reconnect.
+    private func publish(_ message: SessionsMessage) {
+        guard message != status.sessions else { return }
+        status.sessions = message
+        prune()
+        for entry in sessions {
+            entry.session?.sendSessions()
+        }
     }
 
     /// A (re)connection of the rounds stream. The daemon replays nothing, so

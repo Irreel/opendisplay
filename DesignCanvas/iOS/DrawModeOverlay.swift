@@ -63,6 +63,18 @@ struct DrawModeOverlay: View {
                 .autocorrectionDisabled()
                 .frame(maxWidth: 520)
 
+            // X26: the session this sketch would have gone to ended while it was
+            // being drawn, and several are left. Done waits for a choice, made here
+            // because the status panel is hidden in Draw Mode.
+            if model.sessions.needsPick {
+                SessionMenu(model: model) {
+                    Label("Choose which Claude Code session gets this sketch", systemImage: "arrow.triangle.branch")
+                        .font(.footnote.weight(.semibold))
+                }
+                .tint(.orange)
+                .frame(maxWidth: 520, alignment: .leading)
+            }
+
             HStack(spacing: 12) {
                 // M6: leaves Draw Mode, keeps the strokes for the next entry.
                 Button("Cancel") { model.cancel() }

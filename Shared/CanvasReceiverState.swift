@@ -50,9 +50,9 @@ struct CanvasReceiverState: Equatable {
         case canvasMessage(type: String)
     }
 
-    /// The canvas types the Mac sends us. `freeze` and `annotation` go the
-    /// other way, so they are never routed inbound.
-    private static let inboundCanvasTypes: Set<String> = ["frozen", "agentReply", "rounds"]
+    /// The canvas types the Mac sends us. `freeze`, `annotation` and
+    /// `selectSession` go the other way, so they are never routed inbound.
+    private static let inboundCanvasTypes: Set<String> = ["frozen", "agentReply", "rounds", "sessions"]
 
     /// A new connection was adopted: the previous Mac's capability and state
     /// say nothing about this one. Input suppression is app configuration

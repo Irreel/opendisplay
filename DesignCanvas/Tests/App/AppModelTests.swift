@@ -59,7 +59,8 @@ final class AppModelTests: XCTestCase {
         pid: Int? = nil,
         instanceId: String? = nil,
         channelAttached: Bool = false,
-        channelCount: Int? = nil
+        channelCount: Int? = nil,
+        sessionCount: Int? = nil
     ) -> DaemonHealth {
         DaemonHealth(
             status: "ok",
@@ -71,8 +72,30 @@ final class AppModelTests: XCTestCase {
             serverEntry: nil,
             port: 47100,
             channelCount: channelCount,
-            channelAttachedAt: nil
+            channelAttachedAt: nil,
+            sessionCount: sessionCount
         )
+    }
+
+    private final class SessionsBox {
+        var value: DaemonSessions?
+    }
+
+    private func session(_ id: String, folder: String = "acme", launch: String? = nil, state: CanvasSessionState = .idle) -> DaemonSession {
+        DaemonSession(
+            entry: CanvasSessionEntry(id: id, folder: folder, title: nil, branch: "main",
+                                      startedAt: "2026-10-05T10:00:00.000Z", lastReplyAt: nil, state: state),
+            cwd: "/work/\(folder)", launch: launch
+        )
+    }
+
+    /// A fresh, empty defaults domain, so nothing a test stores (the launch nonce, the
+    /// "asked" flag) outlives it or leaks in from another.
+    private func scratchDefaults() -> UserDefaults {
+        let name = "dc-tests-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: name)!
+        addTeardownBlock { defaults.removePersistentDomain(forName: name) }
+        return defaults
     }
 
     private func makeModel(childPid: Int32? = 100) -> (model: AppModel, probe: ProbeBox, clock: TestClock, childPid: ChildPidBox) {
@@ -103,27 +126,33 @@ final class AppModelTests: XCTestCase {
         return (model, probeBox, engine)
     }
 
-    // MARK: - 1. CRITICAL regression: legacy attached payload without sessionStarted must
-    // never render as owned. This is the original bug (menu showing "Claude Code attached"
-    // for a channel this app run never launched).
+    // MARK: - 1. X9: a session is usable whoever started it. The channel-era rule ("attached but
+    // not started by this app run is someone else's") is gone, and so is its Reset-only way out.
 
-    func testLegacyAttachedWithoutSessionStartedIsExistingSessionNeverOwned() async {
+    func testASessionThisRunDidNotStartIsConnected() async {
         let (model, probe, _, _) = makeModel()
-        probe.result = .healthy(health(channelAttached: true))
+        probe.result = .healthy(health(pid: 100, sessionCount: 1))
         await model.pollOnce()
-        XCTAssertEqual(model.sessionState.display, .existingSessionDetected)
-        XCTAssertNotEqual(model.sessionState.display, .ownedAttached)
+        XCTAssertEqual(model.sessionState.display, .ownedAttached)
+        XCTAssertFalse(model.sessionStarted, "nothing was launched from here")
+    }
+
+    func testAnAttachedChannelAloneIsNotAConnection() async {
+        let (model, probe, _, _) = makeModel()
+        probe.result = .healthy(health(pid: 100, channelAttached: true, channelCount: 1))
+        await model.pollOnce()
+        XCTAssertEqual(model.sessionState.display, .daemonOnly, "the old channel carries nothing for this app")
     }
 
     // MARK: - 2. Pinning: instanceId change on the same pid drops ownership.
 
     func testPinnedInstanceMismatchDropsOwnership() async {
         let (model, probe, _, _) = makeModel(childPid: 100)
-        probe.result = .healthy(health(pid: 100, instanceId: "A", channelCount: 0))
+        probe.result = .healthy(health(pid: 100, instanceId: "A", sessionCount: 0))
         await model.pollOnce()
         XCTAssertEqual(model.sessionState.daemon, .owned, "first sighting pins the instanceId")
 
-        probe.result = .healthy(health(pid: 100, instanceId: "B", channelCount: 1))
+        probe.result = .healthy(health(pid: 100, instanceId: "B", sessionCount: 1))
         await model.pollOnce()
         XCTAssertEqual(model.sessionState.daemon, .foreign, "different instanceId on the same pid is not us")
         XCTAssertEqual(model.sessionState.display, .existingSessionDetected)
@@ -133,131 +162,140 @@ final class AppModelTests: XCTestCase {
 
     func testChildPidChangeRePins() async {
         let (model, probe, _, pidBox) = makeModel(childPid: 100)
-        probe.result = .healthy(health(pid: 100, instanceId: "A", channelCount: 0))
+        probe.result = .healthy(health(pid: 100, instanceId: "A", sessionCount: 0))
         await model.pollOnce()
         XCTAssertEqual(model.sessionState.daemon, .owned)
 
         pidBox.pid = 200
-        probe.result = .healthy(health(pid: 200, instanceId: "C", channelCount: 0))
+        probe.result = .healthy(health(pid: 200, instanceId: "C", sessionCount: 0))
         await model.pollOnce()
         XCTAssertEqual(model.sessionState.daemon, .owned, "supervisor handing us a new child re-pins automatically")
     }
 
-    // MARK: - 4. canStart gating.
+    // MARK: - 4. canStart gating: only a launch in flight holds Start.
 
     func testCanStartGating() async {
         let (model, probe, _, _) = makeModel(childPid: 100)
-        probe.result = .healthy(health(pid: 100, channelCount: 1))
+        probe.result = .healthy(health(pid: 100, sessionCount: 1))
         await model.pollOnce()
-        XCTAssertFalse(model.sessionState.canStart, "a channel is already attached")
+        XCTAssertTrue(model.sessionState.canStart, "another session can be started beside a connected one (X18)")
 
-        probe.result = .healthy(health(pid: 100, channelCount: 0))
+        probe.result = .healthy(health(pid: 100, sessionCount: 0))
         await model.pollOnce()
-        XCTAssertTrue(model.sessionState.canStart, "owned daemon, count 0, not started")
+        XCTAssertTrue(model.sessionState.canStart, "owned daemon, nothing connected")
+
+        model.sessionStarted = true
+        await model.pollOnce()
+        XCTAssertFalse(model.sessionState.canStart, "a launch is on its way")
+
+        probe.result = .refused
+        model.sessionStarted = false
+        await model.pollOnce()
+        XCTAssertFalse(model.sessionState.canStart, "no daemon")
     }
 
-    // MARK: - 5. Launch timeout, cleared by attach.
+    // MARK: - 5. Launch timeout, cleared when a session registers.
 
-    func testLaunchTimeoutThenClearedByAttach() async {
+    func testLaunchTimeoutThenClearedByASessionRegistering() async {
         let (model, probe, clock, _) = makeModel(childPid: 100)
-        probe.result = .healthy(health(pid: 100, channelCount: 0))
+        probe.result = .healthy(health(pid: 100, sessionCount: 0))
         await model.pollOnce() // establishes the pin; daemonOnly
 
         model.sessionStarted = true // simulates "Start" without real Terminal launch
-        probe.result = .healthy(health(pid: 100, channelCount: 0))
         await model.pollOnce()
         XCTAssertEqual(model.sessionState.display, .launchPending)
 
         clock.advance(61)
         await model.pollOnce()
         XCTAssertEqual(model.sessionState.display, .launchTimedOut)
+        XCTAssertTrue(model.sessionStarted, "still waiting: the user may yet answer the trust question")
 
-        probe.result = .healthy(health(pid: 100, channelCount: 1))
+        probe.result = .healthy(health(pid: 100, sessionCount: 1))
         await model.pollOnce()
-        XCTAssertEqual(model.sessionState.display, .ownedAttached, "a channel attaching clears the timeout")
+        XCTAssertEqual(model.sessionState.display, .ownedAttached, "a session registering ends the wait")
+        XCTAssertFalse(model.sessionStarted, "the launch has arrived; Start is free again")
     }
 
-    // MARK: - 6. Auto-clear when the owned channel drops back to 0 — but only after TWO
-    // consecutive authoritative zeros. The channel process's SSE stream reconnects (undici's
-    // 300 s body timeout closes an idle one), and for the ~0.5 s of that gap the daemon honestly
-    // reports zero subscribers. Ending the session on one such poll turned a routine reconnect
-    // into "existing session detected", which only Reset clears (I2).
+    // MARK: - 6. The launched session is recognised by its nonce, not by "something connected".
 
-    func testAutoClearsSessionStartedWhenChannelDrops() async {
-        let (model, probe, _, _) = makeModel(childPid: 100)
-        probe.result = .healthy(health(pid: 100, channelCount: 0))
-        await model.pollOnce()
+    func testALaunchArrivesOnlyWhenItsOwnSessionRegisters() async throws {
+        let sessions = SessionsBox()
+        let probeBox = ProbeBox()
+        var launches: [ClaudeLaunch] = []
+        let model = AppModel(
+            probe: { probeBox.result }, now: Date.init, childPidProvider: { 100 },
+            launchInTerminal: { launches.append($0); return nil },
+            sessionsFetch: { sessions.value }, defaults: scratchDefaults()
+        )
+        model.selectedProject = URL(fileURLWithPath: "/work/acme")
 
-        model.sessionStarted = true
-        probe.result = .healthy(health(pid: 100, channelCount: 1))
+        // Someone's hand-started session is already connected when Start is clicked.
+        probeBox.result = .healthy(health(pid: 100, sessionCount: 1))
+        sessions.value = DaemonSessions(sessions: [session("dc-by-hand-0001")], target: "dc-by-hand-0001")
         await model.pollOnce()
-        XCTAssertEqual(model.sessionState.display, .ownedAttached)
-        XCTAssertTrue(model.sessionStarted)
+        model.startSession()
+        let launch = try XCTUnwrap(launches.first)
+        XCTAssertEqual(launch.repoRoot.path, "/work/acme")
+        XCTAssertEqual(launch.modDirectory, model.modDirectory)
 
-        probe.result = .healthy(health(pid: 100, channelCount: 0))
         await model.pollOnce()
-        XCTAssertTrue(model.sessionStarted, "one zero could be a channel reconnect in progress")
+        XCTAssertTrue(model.sessionStarted, "the session that is connected is not the one just launched")
 
+        probeBox.result = .healthy(health(pid: 100, sessionCount: 2))
+        sessions.value = DaemonSessions(
+            sessions: [session("dc-by-hand-0001"), session("dc-launched-0002", launch: launch.nonce)],
+            target: "dc-by-hand-0001"
+        )
         await model.pollOnce()
-        XCTAssertFalse(model.sessionStarted, "a second zero means the user really quit Claude Code")
-        XCTAssertEqual(model.sessionState.display, .daemonOnly)
+        XCTAssertFalse(model.sessionStarted, "its nonce is in the list: the launch has arrived")
+        XCTAssertEqual(model.sessions.sessions.count, 2)
+        XCTAssertEqual(model.sessions.target, "dc-by-hand-0001", "sticky: the launch did not take the target (X22)")
     }
 
-    func testAChannelReconnectGapDoesNotEndAnOwnedSession() async {
-        let (model, probe, _, _) = makeModel(childPid: 100)
-        probe.result = .healthy(health(pid: 100, channelCount: 0))
+    func testTheSessionListIsEmptiedWhenTheDaemonIsNotThere() async {
+        let sessions = SessionsBox()
+        let probeBox = ProbeBox()
+        let model = AppModel(probe: { probeBox.result }, now: Date.init, childPidProvider: { 100 },
+                             sessionsFetch: { sessions.value }, defaults: scratchDefaults())
+        probeBox.result = .healthy(health(pid: 100, sessionCount: 1))
+        sessions.value = DaemonSessions(sessions: [session("dc-one-00000001")], target: "dc-one-00000001")
         await model.pollOnce()
+        XCTAssertEqual(model.sessions.sessions.count, 1)
 
-        model.sessionStarted = true
-        probe.result = .healthy(health(pid: 100, channelCount: 1))
+        probeBox.result = .refused
         await model.pollOnce()
-        XCTAssertEqual(model.sessionState.display, .ownedAttached)
-
-        // The gap: the channel's stream is between connections for one poll.
-        probe.result = .healthy(health(pid: 100, channelCount: 0))
-        await model.pollOnce()
-        XCTAssertTrue(model.sessionStarted)
-
-        // It reconnects, and the session is back to attached with no Reset.
-        probe.result = .healthy(health(pid: 100, channelCount: 1))
-        await model.pollOnce()
-        XCTAssertTrue(model.sessionStarted)
-        XCTAssertEqual(model.sessionState.display, .ownedAttached)
-
-        // And the zero counter started over: one more zero is not two.
-        probe.result = .healthy(health(pid: 100, channelCount: 0))
-        await model.pollOnce()
-        XCTAssertTrue(model.sessionStarted, "the run of zeros restarted after the reconnect")
+        XCTAssertEqual(model.sessions, .empty, "no daemon, no list: a stale one would name a target that cannot be reached")
     }
 
-    // MARK: - 6b. Auto-clear requires an AUTHORITATIVE zero: `channelCount()` also reads as 0 for
-    // a non-healthy probe (.timedOut/.refused/etc.), so a transient 1.5s probe stall must NOT be
-    // read as "the channel dropped to 0" and must never orphan a live, owned+attached session.
+    func testSelectingATargetAsksTheDaemonAndRereadsTheList() async {
+        let sessions = SessionsBox()
+        var asked: [String] = []
+        let model = AppModel(
+            probe: { .refused }, now: Date.init, childPidProvider: { 100 },
+            sessionsFetch: { sessions.value },
+            targetSetter: { instance in
+                asked.append(instance)
+                sessions.value = DaemonSessions(sessions: sessions.value?.sessions ?? [], target: instance)
+            },
+            defaults: scratchDefaults()
+        )
+        sessions.value = DaemonSessions(sessions: [session("dc-a-000000001"), session("dc-b-000000002")], target: "dc-a-000000001")
+        model.selectTarget("dc-b-000000002")
+        for _ in 0..<20 where model.sessions.target != "dc-b-000000002" { await Task.yield() }
+        XCTAssertEqual(asked, ["dc-b-000000002"])
+        XCTAssertEqual(model.sessions.target, "dc-b-000000002")
+    }
 
-    func testTransientProbeStallDoesNotClearOwnedSession() async {
+    // MARK: - 6b. A probe stall is not "the daemon has no sessions".
+
+    func testTransientProbeStallDoesNotEndAPendingLaunch() async {
         let (model, probe, _, _) = makeModel(childPid: 100)
-        probe.result = .healthy(health(pid: 100, channelCount: 0))
+        probe.result = .healthy(health(pid: 100, sessionCount: 0))
         await model.pollOnce()
-
         model.sessionStarted = true
-        probe.result = .healthy(health(pid: 100, channelCount: 1))
-        await model.pollOnce()
-        XCTAssertEqual(model.sessionState.display, .ownedAttached)
-        XCTAssertTrue(model.sessionStarted)
-
-        // A transient stall: the probe times out, which reads as an unhealthy/unknown occupant,
-        // not an authoritative "channel count is 0" — the session must survive this blip.
         probe.result = .timedOut
         await model.pollOnce()
-        XCTAssertTrue(model.sessionStarted, "a probe timeout must never orphan a live session")
-
-        // The daemon answers healthy again with the channel still attached -> back to
-        // ownedAttached, proving the session survived the blip rather than having been silently
-        // cleared and (coincidentally) never noticed.
-        probe.result = .healthy(health(pid: 100, channelCount: 1))
-        await model.pollOnce()
-        XCTAssertEqual(model.sessionState.display, .ownedAttached, "session survived a transient probe blip")
-        XCTAssertTrue(model.sessionStarted)
+        XCTAssertTrue(model.sessionStarted, "a stalled probe says nothing about whether the launch arrived")
     }
 
     // MARK: - 7. startDisabled flips synchronously on sessionStarted, without waiting for a poll.
@@ -266,7 +304,7 @@ final class AppModelTests: XCTestCase {
 
     func testStartDisabledFlipsSynchronouslyWithoutPoll() async {
         let (model, probe, _, _) = makeModel(childPid: 100)
-        probe.result = .healthy(health(pid: 100, channelCount: 0))
+        probe.result = .healthy(health(pid: 100, sessionCount: 0))
         await model.pollOnce()
         XCTAssertTrue(model.sessionState.canStart)
         XCTAssertFalse(model.startDisabled)
@@ -279,13 +317,138 @@ final class AppModelTests: XCTestCase {
     // MARK: - 8. statusText mapping.
 
     func testStatusTextMappingMatchesCopy() {
-        XCTAssertEqual(DisplayState.ownedAttached.statusText, "\u{25CF} Claude Code attached (this session)")
+        XCTAssertEqual(DisplayState.ownedAttached.statusText, "\u{25CF} Claude Code connected")
         XCTAssertEqual(
             DisplayState.existingSessionDetected.statusText,
-            "Existing Claude Code session detected \u{2014} not started by this app"
+            "Claude Code is connected to another Design Canvas instance"
         )
         XCTAssertNotEqual(DisplayState.ownedAttached.statusText, DisplayState.existingSessionDetected.statusText)
         XCTAssertEqual(DisplayState.portOccupiedUnknown.statusText, "Port 47100 is in use by an unknown process")
+    }
+
+    // MARK: - 8b. Start session (X1, X2, X10)
+
+    func testStartWritesNothingIntoTheProjectAndLeavesAnOldMcpEntryAlone() throws {
+        let project = FileManager.default.temporaryDirectory.appendingPathComponent("dc-proj-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: project) }
+        let old = Data(#"{"mcpServers":{"design-canvas":{"command":"node","args":["old.js","--channel"]}}}"#.utf8)
+        try old.write(to: project.appendingPathComponent(".mcp.json"))
+
+        var launches = 0
+        let model = AppModel(probe: { .refused }, now: Date.init, childPidProvider: { 100 },
+                             launchInTerminal: { _ in launches += 1; return nil }, defaults: scratchDefaults())
+        model.selectedProject = project
+        model.startSession()
+
+        XCTAssertEqual(launches, 1)
+        XCTAssertTrue(model.sessionStarted)
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: project.path), [".mcp.json"], "nothing new in the project (X2)")
+        XCTAssertEqual(try Data(contentsOf: project.appendingPathComponent(".mcp.json")), old, "the old entry is untouched (XG5)")
+    }
+
+    func testStartSaysSoWhenClaudeCodeIsTooOldOrMissingAndRechecksNextTime() {
+        var versionOutput: String? = "2.1.200 (Claude Code)"
+        var launches = 0
+        let model = AppModel(probe: { .refused }, now: Date.init, childPidProvider: { 100 },
+                             launchInTerminal: { _ in launches += 1; return nil },
+                             claudeVersionOutput: { versionOutput }, defaults: scratchDefaults())
+        model.selectedProject = URL(fileURLWithPath: "/work/acme")
+
+        model.startSession()
+        XCTAssertEqual(launches, 0, "no Terminal window that would only show an error")
+        XCTAssertFalse(model.sessionStarted)
+        XCTAssertTrue(model.configWarning?.contains("2.1.200") ?? false)
+        XCTAssertTrue(model.configWarning?.contains("claude update") ?? false)
+
+        versionOutput = nil
+        model.startSession()
+        XCTAssertTrue(model.configWarning?.contains("not found") ?? false)
+
+        versionOutput = "2.1.289 (Claude Code)" // the user updated, and clicks Start again
+        model.startSession()
+        XCTAssertEqual(launches, 1)
+        XCTAssertNil(model.configWarning)
+        XCTAssertTrue(model.sessionStarted)
+    }
+
+    func testModDirectoryPrefersTheCopyInsideTheApp() {
+        let resources = URL(fileURLWithPath: "/Applications/Design Canvas.app/Contents/Resources")
+        let checkout = URL(fileURLWithPath: "/Users/me/src/opendisplay")
+        let bundled = "/Applications/Design Canvas.app/Contents/Resources/mod"
+        let inCheckout = "/Users/me/src/opendisplay/DesignCanvas/mod"
+        XCTAssertEqual(AppModel.defaultModDirectory(resources: resources, roots: [checkout]) { _ in true }, bundled)
+        XCTAssertEqual(
+            AppModel.defaultModDirectory(resources: resources, roots: [checkout]) { $0 == inCheckout + "/hooks/register.js" },
+            inCheckout, "a Debug build with no bundled mod falls back to the checkout"
+        )
+        XCTAssertNil(AppModel.defaultModDirectory(resources: resources, roots: [checkout]) { _ in false })
+    }
+
+    // MARK: - 8c. Every session (X20, XG7)
+
+    private func everySessionModel(mod: String, defaults: UserDefaults) throws -> (AppModel, ClaudeSettingsManager, URL) {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("dc-claude-\(UUID().uuidString)")
+        addTeardownBlock { try? FileManager.default.removeItem(at: dir) }
+        let settings = ClaudeSettingsManager(settingsURL: dir.appendingPathComponent("settings.json"))
+        let model = AppModel(probe: { .refused }, now: Date.init, childPidProvider: { 100 },
+                             modDirectory: mod, claudeSettings: settings, defaults: defaults)
+        return (model, settings, dir)
+    }
+
+    func testEverySessionIsOffUntilTheUserSaysYesAndIsAskedOnce() throws {
+        let defaults = scratchDefaults()
+        let (model, settings, _) = try everySessionModel(mod: "/Apps/Design Canvas.app/Contents/Resources/mod", defaults: defaults)
+        XCTAssertTrue(model.shouldAskAboutEverySession)
+        XCTAssertFalse(model.everySessionEnabled)
+
+        model.answerEverySessionQuestion(false)
+        XCTAssertFalse(model.shouldAskAboutEverySession, "asked once, whatever the answer")
+        XCTAssertFalse(model.everySessionEnabled)
+        XCTAssertEqual(try settings.directories(), [], "No writes nothing")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: settings.settingsURL.path))
+    }
+
+    func testTurningEverySessionOnAndOffIsACleanRoundTrip() throws {
+        let defaults = scratchDefaults()
+        let mod = "/Apps/Design Canvas.app/Contents/Resources/mod"
+        let (model, settings, _) = try everySessionModel(mod: mod, defaults: defaults)
+
+        model.answerEverySessionQuestion(true)
+        XCTAssertTrue(model.everySessionEnabled)
+        XCTAssertEqual(try settings.directories(), [mod])
+
+        model.setEverySession(false)
+        XCTAssertFalse(model.everySessionEnabled)
+        XCTAssertEqual(try settings.directories(), [], "off removes what on added")
+        XCTAssertNil(model.everySessionError)
+    }
+
+    func testAMovedAppRepairsItsRegistrationAtLaunch() throws {
+        let defaults = scratchDefaults()
+        let old = "/Users/me/Downloads/Design Canvas.app/Contents/Resources/mod"
+        let (first, settings, _) = try everySessionModel(mod: old, defaults: defaults)
+        first.setEverySession(true)
+
+        // Same defaults and settings file, the app now somewhere else.
+        let new = "/Applications/Design Canvas.app/Contents/Resources/mod"
+        let moved = AppModel(probe: { .refused }, now: Date.init, childPidProvider: { 100 },
+                             modDirectory: new, claudeSettings: settings, defaults: defaults)
+        moved.refreshEverySession()
+        XCTAssertTrue(moved.everySessionEnabled)
+        XCTAssertEqual(try settings.directories(), [new], "the old path is replaced, not left beside the new one")
+    }
+
+    func testAMalformedSettingsFileIsLeftAloneAndTheSwitchSaysWhy() throws {
+        let defaults = scratchDefaults()
+        let (model, settings, dir) = try everySessionModel(mod: "/Apps/DC.app/Contents/Resources/mod", defaults: defaults)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        try Data("{ not json".utf8).write(to: settings.settingsURL)
+
+        model.setEverySession(true)
+        XCTAssertFalse(model.everySessionEnabled)
+        XCTAssertTrue(model.everySessionError?.contains("not valid JSON") ?? false)
+        XCTAssertEqual(try String(contentsOf: settings.settingsURL, encoding: .utf8), "{ not json")
     }
 
     // MARK: - 9. resetProcesses() publishes the outcome, restarts the supervisor, and polls
@@ -365,8 +528,8 @@ final class AppModelTests: XCTestCase {
             now: Date.init,
             childPidProvider: { pidBox.pid },
             resetService: resetService,
-            launchInTerminal: { url in
-                launchedRepoRoots.append(url)
+            launchInTerminal: { launch in
+                launchedRepoRoots.append(launch.repoRoot)
                 return nil
             },
             retryDelay: {}
@@ -597,20 +760,20 @@ final class AppModelTests: XCTestCase {
     func testPushesTheMenusChannelVerdictAfterEveryPoll() async {
         let (model, probe, engine) = makeEngineModel(childPid: 100)
 
-        // A channel is attached, but this app run never clicked Start: the menu says
-        // "Another session", and the iPad must hear the same thing, not "attached".
-        probe.result = .healthy(health(pid: 100, channelCount: 1))
+        // A session is connected though this app run never clicked Start: with the mod it is
+        // usable all the same (X9), so the menu says Connected and the iPad hears `attached`.
+        probe.result = .healthy(health(pid: 100, sessionCount: 1))
+        await model.pollOnce()
+        probe.result = .healthy(health(pid: 100, sessionCount: 0))
         await model.pollOnce()
         model.sessionStarted = true
-        await model.pollOnce()
-        probe.result = .healthy(health(pid: 100, channelCount: 0))
         await model.pollOnce()
         probe.result = .refused
         await model.pollOnce()
 
         XCTAssertEqual(
-            engine.channelStates, [.existing, .attached, .detached, .none],
-            "the iPad's channel dot follows the menu's D7 verdict — someone else's session, ours, a daemon with none, or no daemon at all"
+            engine.channelStates, [.attached, .detached, .detached, .none],
+            "the iPad's dot follows the menu's D7 verdict: a session, a daemon with none, a launch not yet arrived, no daemon"
         )
     }
 
@@ -632,7 +795,7 @@ final class AppModelTests: XCTestCase {
         XCTAssertEqual(model.pendingUploads, 0)
 
         engine.pendingUploads = 3
-        probe.result = .healthy(health(pid: 100, channelCount: 1))
+        probe.result = .healthy(health(pid: 100, sessionCount: 1))
         await model.pollOnce()
         XCTAssertEqual(model.pendingUploads, 3)
 

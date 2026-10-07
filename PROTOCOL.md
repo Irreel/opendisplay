@@ -693,6 +693,10 @@ once, never fatal.
 | `annotation` | receiver to sender | `sketch`, `zoomRect`, `viewport`, `note`?, `base`?, `t` | The finished sketch (strokes only, no background) |
 | `agentReply` | sender to receiver | `annotationId`, `status`, `message`?, `prUrl`?, `t` | One round's live status, or the agent's outcome |
 | `rounds` | sender to receiver | `rounds[]` | Snapshot of the last 20 rounds for this device |
+| `sessions` | sender to receiver | `sessions[]`, `target`? | The Claude Code sessions the sender is connected to, and which one gets the next sketch |
+| `selectSession` | receiver to sender | `id`, `t` | Make that session the target |
+
+`annotation` also gains an optional `session` field (below).
 
 Field types, exactly as implemented (`DesignCanvas/Shared/CanvasMessages.swift`):
 
@@ -741,6 +745,34 @@ Field types, exactly as implemented (`DesignCanvas/Shared/CanvasMessages.swift`)
   optional)). Sent after every `hello`, including a rotation re-`hello`,
   so a reconnecting receiver is stateless and a status change that
   landed while it was disconnected still shows up.
+* **`sessions`** (sender to receiver): `sessions` (array, at most 20
+  entries; each an object with `id` (string, opaque), `folder` (string,
+  at most 60 characters: the session's project folder name), `title`
+  (string, optional, at most 80 characters), `branch` (string, optional,
+  at most 80 characters), `startedAt` (string, ISO 8601), `lastReplyAt`
+  (string, optional, ISO 8601), `state` (string, one of `idle`, `busy`,
+  `waiting`; a receiver reads a value it does not know as `busy`));
+  `target` (string, optional: the `id` of the session the next sketch
+  goes to). Sent after every `hello` and whenever the list, a session's
+  state, or the target changes; each one replaces the last. An empty
+  `sessions` means none is connected. `target` absent with one session
+  listed means that session; absent with several means the user has to
+  choose, and a receiver SHOULD NOT send an `annotation` until a
+  `sessions` with a `target` arrives. `state: "waiting"` on the target
+  means the agent is stopped on a permission prompt at the sender's
+  machine; nothing about the prompt itself is sent. A sender that
+  predates this message never sends it, and a receiver that has never
+  received one behaves as before.
+* **`selectSession`** (receiver to sender): `id` (string, an `id` from
+  the last `sessions`); `t` (number, as above). The sender answers with a
+  fresh `sessions`, which is the only confirmation; a receiver does not
+  assume the choice took. An unknown `id` is ignored.
+* **`annotation.session`** (string, optional): the `sessions.target` the
+  receiver was showing when the sketch was finished. The round is
+  delivered to that session even if the target changes afterwards, and
+  a resend after a link loss carries the same value. Absent, the sender
+  uses its target at the moment the annotation arrives. If the named
+  session has ended by then, the round is recorded as `failed`.
 
 ### 11.3 `ping` additions
 
@@ -754,8 +786,13 @@ sent only on a canvas session:
   user started by hand); `detached` means the local daemon is up with no
   channel; `none` means no usable daemon. A receiver that does not know a
   value reads it as `none`.
-* `project` — the selected project folder's name; absent when none is
-  selected.
+  Since the sender reaches its agent through sessions (`sessions`,
+  section 11.2), `attached` means at least one session is connected to
+  this sender's daemon and `existing` is no longer sent; a receiver must
+  still accept it from an older sender.
+* `project` — the target session's project folder name; with no session
+  connected, the folder selected in the sender's menu; absent when there
+  is neither.
 * `blank` — `"1"` when the sender accepts `annotation.base: "blank"`
   (section 11.2); absent when it does not. A receiver treats absence as
   "not supported" and does not offer its blank surface.

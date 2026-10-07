@@ -6,8 +6,12 @@ import {
   HTTP_PATHS,
   isAllowedPrUrl,
   PR_URL_MAX_LENGTH,
+  REPLY_REASONS,
   REPLY_STATUSES,
+  type ReplyReason,
   type ReplyStatus,
+  SESSION_STATES,
+  type SessionState,
   ROUNDS_LIMIT,
   SERVER_PORT,
   type Viewport,
@@ -29,6 +33,14 @@ import {
   readRequestBody,
 } from './multipart.js';
 import { openRoundsStream, RoundsEventBus } from './rounds-stream.js';
+import { type PollInput, type RegisterInput, SessionRegistry } from '../sessions/registry.js';
+import {
+  failRoundsOfEndedSessions,
+  nextRoundFor,
+  SESSION_ENDED_MESSAGE,
+  sessionRef,
+} from '../sessions/rounds.js';
+import { openSessionsStream, SessionsEventBus } from '../sessions/sessions-stream.js';
 
 const LOOPBACK_HOST = '127.0.0.1';
 
@@ -39,12 +51,55 @@ export interface HttpServerOptions {
   bus: AnnotationEventBus;
   /** Optional: a RoundsEventBus is created internally when omitted. */
   roundsBus?: RoundsEventBus;
+  /** Optional: a registry (and its bus) is created internally when omitted. */
+  sessions?: SessionRegistry;
+  sessionsBus?: SessionsEventBus;
   logger: Logger;
 }
 
 interface ResolvedHttpServerOptions extends HttpServerOptions {
   resolvedPort: number;
   resolvedRoundsBus: RoundsEventBus;
+  resolvedSessions: SessionRegistry;
+  resolvedSessionsBus: SessionsEventBus;
+}
+
+/**
+ * A registry wired to a bus and the log, for callers that do not bring their own
+ * (tests bring one to control its clock).
+ */
+export function createSessionRegistry(
+  logger: Logger,
+  bus: SessionsEventBus,
+  startedAt = Date.now(),
+): SessionRegistry {
+  return new SessionRegistry(
+    {
+      changed: (snapshot) => bus.emit(snapshot),
+      log: (type, fields) => {
+        void logger.event(type, fields);
+      },
+    },
+    startedAt,
+  );
+}
+
+/**
+ * Closes the rounds of sessions that are gone and tells the rounds stream. Called
+ * when a session deregisters or goes stale, and once after the settle window for
+ * rounds bound to sessions that never came back from a daemon restart.
+ */
+export async function closeRoundsOfEndedSessions(
+  options: Pick<HttpServerOptions, 'store'> & {
+    roundsBus: RoundsEventBus;
+    gone: (instance: string) => boolean;
+  },
+): Promise<number> {
+  const failed = await failRoundsOfEndedSessions(options.store, options.gone);
+  for (const meta of failed) {
+    options.roundsBus.emit({ ...toRound(meta), deviceId: meta.device.id });
+  }
+  return failed.length;
 }
 
 export async function startHttpServer(options: HttpServerOptions): Promise<Server> {
@@ -53,7 +108,11 @@ export async function startHttpServer(options: HttpServerOptions): Promise<Serve
     ...options,
     resolvedPort: port,
     resolvedRoundsBus: options.roundsBus ?? new RoundsEventBus(),
+    resolvedSessions: undefined as unknown as SessionRegistry,
+    resolvedSessionsBus: options.sessionsBus ?? new SessionsEventBus(),
   };
+  resolvedOptions.resolvedSessions =
+    options.sessions ?? createSessionRegistry(options.logger, resolvedOptions.resolvedSessionsBus);
   const server = createServer((request, response) => {
     // `handleRequest` answers its own errors (so the response log records the
     // status that was actually sent, M8). This catch is the last resort for a
@@ -95,7 +154,11 @@ async function handleRequest(
   // The Mac app polls health every 2 s for as long as it runs. Logging that is two
   // lines every two seconds, for ever, in a file that never rotates — it drowns
   // everything worth reading and it is the whole reason the log grew (I5).
-  const logged = !(method === 'GET' && url.pathname === HTTP_PATHS.health);
+  // The health probe (every 2 s) and a session's poll (every 1 s, per session) would
+  // otherwise be the log. What a poll changes is logged where it changes it.
+  const logged =
+    !(method === 'GET' && url.pathname === HTTP_PATHS.health) &&
+    !(method === 'POST' && POLL_PATH.test(url.pathname));
   if (logged) {
     await options.logger.event('http.request', { method, path: url.pathname });
   }
@@ -137,6 +200,7 @@ async function route(
       port: options.resolvedPort,
       channelCount: options.bus.subscriberCount,
       channelAttachedAt: options.bus.oldestAttachedAt,
+      sessionCount: options.resolvedSessions.size,
     };
     sendJson(response, 200, body);
     return;
@@ -150,10 +214,23 @@ async function route(
   }
 
   if (method === 'POST' && url.pathname === HTTP_PATHS.annotations) {
-    const upload = await parseAnnotationUpload(request);
+    const { requestedSession, ...upload } = await parseAnnotationUpload(request);
+    // X23: the round goes to the session the iPad was showing at Done. An iPad
+    // that names none (an older one) gets the target as it stands now; with no
+    // target the round stays unbound and the next target takes it.
+    const sessions = options.resolvedSessions;
+    const named = requestedSession ?? sessions.target;
+    const info = named ? sessions.get(named) : null;
+    const endedBeforeArrival = requestedSession !== undefined && info === null;
     let meta;
     try {
-      meta = await options.store.createAnnotation(upload);
+      meta = await options.store.createAnnotation({
+        ...upload,
+        ...(info ? { session: sessionRef(info) } : {}),
+        ...(endedBeforeArrival
+          ? { session: { instance: requestedSession, sessionId: '', folder: '' } }
+          : {}),
+      });
     } catch (error) {
       if (error instanceof UnknownCaptureError) {
         sendJson(response, 404, {
@@ -164,11 +241,23 @@ async function route(
       }
       throw error;
     }
-    options.bus.emitPending(meta.id);
+    if (endedBeforeArrival) {
+      // The session it was drawn for is gone: say so now, as an outcome.
+      meta =
+        (await options.store.setReply(meta.id, {
+          status: 'failed',
+          message: SESSION_ENDED_MESSAGE,
+          prUrl: null,
+          reason: 'session_ended',
+        })) ?? meta;
+    } else if (!meta.session) {
+      options.bus.emitPending(meta.id);
+    }
     options.resolvedRoundsBus.emit({ ...toRound(meta), deviceId: meta.device.id });
     const body: AnnotationUploadResponse = {
       annotationId: meta.id,
-      dispatched: options.bus.subscriberCount > 0,
+      // Someone is listening: a channel process, or the session it is bound to.
+      dispatched: options.bus.subscriberCount > 0 || (meta.session !== undefined && !endedBeforeArrival),
     };
     sendJson(response, 201, body);
     return;
@@ -211,7 +300,24 @@ async function route(
       return;
     }
     const meta = await options.store.markAnnotationServed(servedMatch[1]);
+    if (meta.session) {
+      await options.logger.event('round.served', {
+        annotationId: meta.id,
+        instance: meta.session.instance,
+      });
+    }
     options.resolvedRoundsBus.emit({ ...toRound(meta), deviceId: meta.device.id });
+    sendJson(response, 200, { meta });
+    return;
+  }
+
+  const remindedMatch = /^\/v1\/annotations\/([^/]+)\/reminded$/.exec(url.pathname);
+  if (method === 'POST' && remindedMatch?.[1]) {
+    const meta = await options.store.markReminded(remindedMatch[1]);
+    if (!meta) {
+      sendJson(response, 404, { error: 'annotation_not_found', message: 'Annotation not found.' });
+      return;
+    }
     sendJson(response, 200, { meta });
     return;
   }
@@ -291,10 +397,167 @@ async function route(
     return;
   }
 
+  if (await routeSessions(method, url, request, response, options)) return;
+
   sendJson(response, 404, {
     error: 'not_found',
     message: `${method} ${url.pathname} is not implemented.`,
   });
+}
+
+const POLL_PATH = /^\/v1\/sessions\/([^/]+)\/poll$/;
+const SESSION_PATH = /^\/v1\/sessions\/([^/]+)$/;
+
+/** The session registry's routes. Returns false when the request is not one of them. */
+async function routeSessions(
+  method: string,
+  url: URL,
+  request: IncomingMessage,
+  response: ServerResponse,
+  options: ResolvedHttpServerOptions,
+): Promise<boolean> {
+  const sessions = options.resolvedSessions;
+
+  if (method === 'GET' && url.pathname === HTTP_PATHS.sessions) {
+    sendJson(response, 200, sessions.snapshot());
+    return true;
+  }
+
+  if (method === 'GET' && url.pathname === HTTP_PATHS.sessionsStream) {
+    openSessionsStream(request, response, options.resolvedSessionsBus, () => sessions.snapshot());
+    return true;
+  }
+
+  if (method === 'POST' && url.pathname === HTTP_PATHS.sessions) {
+    const input = parseRegisterBody(await readJsonBody(request, 'Session body'));
+    sendJson(response, 200, sessions.register(input, Date.now()));
+    return true;
+  }
+
+  if (method === 'PUT' && url.pathname === HTTP_PATHS.sessionsTarget) {
+    const body = await readJsonBody(request, 'Target body');
+    const instance = requireString(body['instance'], 'instance');
+    const by = body['by'] === 'ipad' ? 'ipad' : 'mac';
+    if (!sessions.setTarget(instance, by)) {
+      sendJson(response, 404, { error: 'session_not_found', message: 'No such session.' });
+      return true;
+    }
+    sendJson(response, 200, sessions.snapshot());
+    return true;
+  }
+
+  const pollMatch = POLL_PATH.exec(url.pathname);
+  if (method === 'POST' && pollMatch?.[1]) {
+    const instance = pollMatch[1];
+    const body = await readJsonBody(request, 'Poll body');
+    const result = sessions.poll(instance, parsePollBody(body), Date.now());
+    if (!result) {
+      // Not an error: this daemon is newer than the session. It registers again.
+      sendJson(response, 404, { error: 'session_not_found', message: 'Register first.' });
+      return true;
+    }
+    const wantsRound = body['want'] === true && body['state'] === 'idle';
+    const round = wantsRound ? await nextRoundFor(options.store, sessions, instance) : null;
+    sendJson(response, 200, {
+      target: result.target,
+      ...(round
+        ? {
+            round: {
+              meta: round.meta,
+              compositePath: round.compositePath,
+              capturedAt: round.capturedAt,
+            },
+          }
+        : {}),
+    });
+    return true;
+  }
+
+  const sessionMatch = SESSION_PATH.exec(url.pathname);
+  if (method === 'DELETE' && sessionMatch?.[1]) {
+    const instance = sessionMatch[1];
+    const removed = sessions.remove(instance, 'deregistered', Date.now());
+    if (removed) {
+      await closeRoundsOfEndedSessions({
+        store: options.store,
+        roundsBus: options.resolvedRoundsBus,
+        gone: (candidate) => candidate === instance,
+      });
+    }
+    sendJson(response, removed ? 200 : 404, removed ? { ended: true } : { error: 'session_not_found', message: 'No such session.' });
+    return true;
+  }
+
+  return false;
+}
+
+async function readJsonBody(
+  request: IncomingMessage,
+  context: string,
+): Promise<Record<string, unknown>> {
+  const body = await readRequestBody(request);
+  const parsed = parseJson(body.toString('utf8') || '{}', context);
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+    throw new HttpError(400, 'invalid_request', `${context} must be a JSON object.`);
+  }
+  return parsed as Record<string, unknown>;
+}
+
+/** Longest free-text field a session may report; these travel on to the iPad. */
+const SESSION_TEXT_MAX = 200;
+
+function optionalText(value: unknown, field: string): string | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== 'string') {
+    throw new HttpError(400, 'invalid_request', `${field} must be a string when present.`);
+  }
+  return value.slice(0, SESSION_TEXT_MAX);
+}
+
+function parseRegisterBody(body: Record<string, unknown>): RegisterInput {
+  const instance = requireString(body['instance'], 'instance');
+  if (!/^[A-Za-z0-9-]{8,64}$/.test(instance)) {
+    throw new HttpError(400, 'invalid_request', 'instance must match [A-Za-z0-9-]{8,64}.');
+  }
+  const startedAt = requireString(body['startedAt'], 'startedAt');
+  if (!Number.isFinite(Date.parse(startedAt))) {
+    throw new HttpError(400, 'invalid_request', 'startedAt must be an ISO 8601 time.');
+  }
+  const input: RegisterInput = {
+    instance,
+    sessionId: requireString(body['sessionId'], 'sessionId').slice(0, SESSION_TEXT_MAX),
+    cwd: requireString(body['cwd'], 'cwd'),
+    startedAt,
+  };
+  const repoRoot = optionalText(body['repoRoot'], 'repoRoot');
+  const branch = optionalText(body['branch'], 'branch');
+  const title = optionalText(body['title'], 'title');
+  const modVersion = optionalText(body['modVersion'], 'modVersion');
+  const launch = optionalText(body['launch'], 'launch');
+  if (repoRoot) input.repoRoot = repoRoot;
+  if (branch) input.branch = branch;
+  if (title) input.title = title;
+  if (modVersion) input.modVersion = modVersion;
+  if (launch) input.launch = launch;
+  if (body['wasTarget'] === true) input.wasTarget = true;
+  return input;
+}
+
+function parsePollBody(body: Record<string, unknown>): PollInput {
+  const state = body['state'];
+  if (typeof state !== 'string' || !(SESSION_STATES as readonly string[]).includes(state)) {
+    throw new HttpError(400, 'invalid_request', `state must be one of ${SESSION_STATES.join(', ')}.`);
+  }
+  const input: PollInput = { state: state as SessionState };
+  const sessionId = optionalText(body['sessionId'], 'sessionId');
+  const branch = optionalText(body['branch'], 'branch');
+  const title = optionalText(body['title'], 'title');
+  const lastReplyAt = optionalText(body['lastReplyAt'], 'lastReplyAt');
+  if (sessionId) input.sessionId = sessionId;
+  if (branch !== undefined) input.branch = branch;
+  if (title !== undefined) input.title = title;
+  if (lastReplyAt && Number.isFinite(Date.parse(lastReplyAt))) input.lastReplyAt = lastReplyAt;
+  return input;
 }
 
 /** Parses JSON text, converting a syntax error into a 400 invalid_request instead of a 500. */
@@ -342,7 +605,18 @@ async function parseCaptureUpload(request: IncomingMessage) {
   };
 }
 
-async function parseAnnotationUpload(request: IncomingMessage): Promise<CreateAnnotationInput> {
+type AnnotationUpload = CreateAnnotationInput & { requestedSession?: string };
+
+/** `session` in an upload's meta: the instance the iPad chose at Done, when it chose one. */
+function requestedSessionField(value: unknown): { requestedSession?: string } {
+  if (value === undefined || value === null) return {};
+  if (typeof value !== 'string' || !/^[A-Za-z0-9-]{8,64}$/.test(value)) {
+    throw new HttpError(400, 'invalid_request', 'session must be a session instance id.');
+  }
+  return { requestedSession: value };
+}
+
+async function parseAnnotationUpload(request: IncomingMessage): Promise<AnnotationUpload> {
   const contentType = request.headers['content-type'] ?? '';
   const body = await readRequestBody(request);
   if (contentType.startsWith('application/json')) {
@@ -356,8 +630,10 @@ async function parseAnnotationUpload(request: IncomingMessage): Promise<CreateAn
       device: AnnotationDevice;
       createdAt?: string;
       base?: unknown;
+      session?: unknown;
     };
     return {
+      ...requestedSessionField(parsed.session),
       composite: Buffer.from(requireString(parsed.compositeBase64, 'compositeBase64'), 'base64'),
       sketch: Buffer.from(requireString(parsed.sketchBase64, 'sketchBase64'), 'base64'),
       sourceCaptureId: requireString(parsed.sourceCaptureId, 'sourceCaptureId'),
@@ -388,8 +664,10 @@ async function parseAnnotationUpload(request: IncomingMessage): Promise<CreateAn
     device: AnnotationDevice;
     createdAt?: string;
     base?: unknown;
+    session?: unknown;
   };
   return {
+    ...requestedSessionField(meta.session),
     composite,
     sketch,
     sourceCaptureId: requireString(meta.sourceCaptureId, 'sourceCaptureId'),
@@ -432,10 +710,22 @@ async function parseReplyBody(request: IncomingMessage): Promise<SetReplyInput> 
       `prUrl must be an http(s) URL of at most ${PR_URL_MAX_LENGTH} characters.`,
     );
   }
+  const reason = 'reason' in parsed ? parsed.reason : undefined;
+  if (
+    reason !== undefined &&
+    (typeof reason !== 'string' || !(REPLY_REASONS as readonly string[]).includes(reason))
+  ) {
+    throw new HttpError(
+      400,
+      'invalid_request',
+      `reason must be one of ${REPLY_REASONS.join(', ')} when present.`,
+    );
+  }
   return {
     status: status as ReplyStatus,
     message: message ?? null,
     prUrl: prUrl ?? null,
+    ...(reason !== undefined ? { reason: reason as ReplyReason } : {}),
   };
 }
 
