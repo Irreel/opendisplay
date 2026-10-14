@@ -68,11 +68,15 @@ DesignCanvas/
                                 OpenDisplaySenderEngine.
     DesignCanvasMac.entitlements
   iOS/
-    DesignCanvasApp.swift, CanvasScreen.swift, CanvasVideoView.swift,
-    DrawModeOverlay.swift, SketchCanvas.swift, AgentRepliesView.swift,
-    ConnectionStatusView.swift, ReceiverAdapter.swift
-    Logic/                     CanvasModel.swift, ZoomModel.swift — the pure,
-                                testable logic behind the views above.
+    DesignCanvasApp.swift, CanvasScreen.swift (the screen and its chrome),
+    CanvasVideoView.swift, SketchCanvas.swift, ControlPanel.swift (the
+    floating panel), ProjectPill.swift (the session pill and list),
+    ReplyNotificationCard.swift, ConnectionStatusView.swift (connection
+    details), CanvasColors.swift (the colour tokens), ReceiverAdapter.swift
+    Logic/                     CanvasModel.swift, ZoomModel.swift,
+                                PanelDock.swift, ReplyNotification.swift —
+                                the pure, testable logic behind the views
+                                above.
     DesignCanvasiOS.entitlements
   Tests/                       The hostless XCTest bundle, `DesignCanvasTests`.
   mod/                         The Claude Code mod: one plain-JavaScript hooks
@@ -171,11 +175,11 @@ real device or simulator, and run.
    decision on PRD open question G1, 2026-09-17). With more than one
    monitor attached, it is the first display macOS reports, normally the
    main one. Two consequences: **everything on
-   that screen is streamed to the iPad**, and whatever is inside the region
-   you sketch on becomes part of the image Claude Code receives — so zoom in
-   on the area you mean before you draw. The mirror keeps the Mac's aspect
-   ratio, so expect letterbox bars on the iPad; zoom and sketch coordinates
-   are relative to the picture, not the bars.
+   that screen is streamed to the iPad**, and every round sends the whole
+   screen to Claude Code with your sketch over it. Zooming in is for placing
+   a stroke; it does not crop what is sent. The mirror keeps the Mac's
+   aspect ratio, so expect letterbox bars on the iPad; nothing can be drawn
+   on the bars.
 4. In the Mac app, click **Open Project…** and choose the repo you want
    Claude Code to work in (or pick it from **Recent projects**).
 5. The server and the Claude Code mod ship inside the app, so there is
@@ -201,28 +205,36 @@ real device or simulator, and run.
    D20) — the one from step 3, which is where it opens unless you move it
    to another monitor. Claude Code's own permission prompts (tool-use
    confirmations, etc.) still appear there and are answered there. While
-   one is open the iPad shows "Waiting at the Mac", and nothing more than
+   one is open the iPad's session list shows "Waiting for reply at desktop", and nothing more than
    that; keeping the Terminal on the mirrored screen lets you see what it
    is asking. One consequence: since
-   the terminal is on the mirrored screen, it can end up inside a sketch's
-   captured frame or composite. Zoom into just the region you're drawing on
-   before you draw to keep it out of the crop.
-8. On the iPad: pinch to zoom into the area you want to annotate, enter
-   Draw Mode, sketch, optionally add a note, and tap Done. The composite
+   the terminal is on the mirrored screen, it is inside every sketch's
+   captured frame and composite. A round is always the whole screen, so
+   zooming in does not keep it out.
+8. On the iPad: tap Draw in the panel, sketch, optionally add a note, and
+   tap Send. Two fingers zoom and pan at any time, in Draw Mode too, so you can
+   zoom into a detail to draw on it; one finger or the Pencil draws. The composite
    (your sketch flattened over the clean frame) is pushed to Claude Code as
-   soon as it's ready; you'll see the round go from queued to sent, and
-   Claude Code's reply (applied / failed / needs input, plus an optional PR
-   link) shows up on the iPad once it reports the outcome. Sketches are
-   worked on one per turn, in order; one sent while Claude Code is busy
-   shows as queued until its turn.
-9. **To sketch an idea with nothing on screen to point at**, switch the
-   iPad's panel from **Mirror** to **Blank** (added 2026-10-03). The mirror
+   soon as it's ready. A chip in the top right says "Sending sketch…" until
+   the Mac has it, and when Claude Code reports the outcome a notification
+   takes its place: applied, failed or needs input, with a PR link when
+   there is one. Sketches are worked on one per turn, in order; one sent
+   while Claude Code is busy waits on the Mac until its turn. The project
+   pill in the top left names the session the next sketch goes to; tap it
+   to see every session and what each is doing, or to switch.
+9. **To sketch an idea with nothing on screen to point at**, tap **Blank**
+   in the iPad's panel instead of **Mirror** (added 2026-10-03). The mirror
    is replaced by a white page with Draw Mode already open; sketch, add a note saying what the
-   sketch is for, and tap Done. The round goes to Claude Code the same way,
+   sketch is for, and tap Send. The round goes to Claude Code the same way,
    described to it as a freehand sketch and not a screenshot, and the page
    is cleared. There is nothing to set on the Mac. The switch is greyed out
    when the Mac app is older than this feature. See
    [`spec/PRD-BlankCanvas.md`](spec/PRD-BlankCanvas.md).
+10. **The panel can go to any edge.** Drag it from anywhere on it, or
+    long-press it and choose an edge; it stays there across launches.
+    The interface is designed in the
+    [Figma file](https://www.figma.com/design/N7DN83jg1SrZV9Gx4SIMlq/Design-Canvas-Design)
+    (screens and design system, 2026-10-13).
 
 ## Security note
 
@@ -260,7 +272,7 @@ files. Treat the daemon as trusting everything already running on your Mac.
 ## Known limits
 
 - **Mirroring streams the screen at its native pixel size.** That is what
-  makes a zoomed-in sketch sharp, but H.264 tops out around 4096×2304: a 5K
+  keeps the picture sharp when you zoom in, but H.264 tops out around 4096×2304: a 5K
   main display at the default quality is rejected by the encoder frame
   after frame (the same ceiling OpenDisplay upstream issue #271 describes
   for a 5K receiver). Until the app has a

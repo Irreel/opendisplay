@@ -50,6 +50,18 @@
 **Priority:** P3
 **Depends on:** None.
 
+### Withdraw a queued round from the iPad
+
+**What:** Let the designer take back a round that is still `queued`: stored on the Mac but not yet handed to Claude Code. A Withdraw action on the iPad; the round ends in a new final status, `withdrawn`, and is never delivered.
+
+**Why:** Once Send is tapped there is no way back. A sketch sent by mistake, or one made stale by the round before it, waits in the queue while Claude Code is busy or not running, and is then applied. Withdrawing is only safe while the round is `queued`; once it is `sent`, Claude Code already has it. Owner request, 2026-10-09, after device testing.
+
+**Context:** Needs a design decision first: where the action lives, now that the iPad has no list of rounds (2026-10-13; the send chip is the one place a sent round still shows), what a withdrawn round shows as, and whether its strokes come back to the canvas. Then three pieces. An additive iPad-to-Mac control message naming the `annotationId` (PROTOCOL.md section 11.2; no `pv` bump). A daemon endpoint that marks a round withdrawn only if it has not been claimed or served, so it cannot race the delivery: status is derived today in `DesignCanvas/server/src/store/rounds.ts` from `servedAt` and `reply`, and `RoundStatus` gains the value in `server/src/shared.ts` and `DesignCanvas/Shared/CanvasMessages.swift`. The action itself in the iPad chrome, `DesignCanvas/iOS/CanvasScreen.swift`. Check how an iPad app from before the change decodes a status it does not know. Shares the "never emit this round" path with Pending-round TTL above.
+
+**Effort:** M
+**Priority:** Not set
+**Depends on:** A design decision.
+
 ### `annotationAck` so the iPad clears strokes only once the Mac accepted the job
 
 **What:** An additive `annotationAck {ok, reason?}` control message, sender to receiver: the Mac sends it once an `annotation` has been queued for upload (or refused), and the iPad leaves SENDING on that rather than on its own socket write completing.
@@ -86,18 +98,6 @@
 **Priority:** P3
 **Depends on:** None.
 
-### Tool panel covers the bottom band of the frozen frame
-
-**What:** Decide where Draw Mode's tool panel lives so it stops sitting over the frame being annotated — a side rail, a collapsible bar, or a panel that fades while a stroke is in progress.
-
-**Why:** The panel floats over the bottom of the mirror in Draw Mode, so anything in that band cannot be drawn on without moving it out of the way first. The sketch surface is the whole video rect, so the strokes underneath the panel would be fine — the designer just cannot reach them.
-
-**Context:** A design decision, not a bug, so the final fix wave left it alone. `DesignCanvas/iOS/CanvasScreen.swift` (the `chrome` layer) and `DrawModeOverlay.swift`.
-
-**Effort:** S
-**Priority:** P3
-**Depends on:** A design decision.
-
 ### Daemon log rotation
 
 **What:** Rotate `~/Library/Logs/DesignCanvas/server.log` — size-based, keeping a bounded number of previous files.
@@ -122,25 +122,13 @@
 **Priority:** P3
 **Depends on:** None.
 
-### `.mcp.json` carries absolute machine-specific paths
-
-**What:** Stop committing machine-specific paths in the `design-canvas` entry: resolve the node binary and the server entry at spawn time (a wrapper script in the repo, a user-scoped MCP config, or an entry that runs `npx`/a checked-in launcher).
-
-**Why:** The entry is written as `{command: <the node path this Mac resolved>, args: [<this checkout's dist/index.js>, "--channel"]}` and `.mcp.json` is a committed, project-scoped file. A collaborator who pulls it inherits an entry naming paths that do not exist on their machine, and Claude Code will try to spawn it. Since M9 this app at least *recognizes* a foreign entry and offers to rewrite it rather than accepting it, which makes the failure explicit instead of silent — it does not make the committed file portable.
-
-**Context:** Plan ruling 8 chose the ai.cst.2 behaviour deliberately for the MVP; the final review recorded the consequence. `DesignCanvas/Mac/App/McpConfigManager.swift`, and `AppModel.startSession()` which supplies the two paths.
-
-**Effort:** M
-**Priority:** P2
-**Depends on:** None.
-
 ### Kept strokes are not re-anchored when the video rect changes
 
-**What:** Re-anchor (or explicitly drop) the strokes kept in the sketch canvas when the rect the video covers on screen changes between Draw Mode entries — a zoom, a rotation, a resolution change on the Mac.
+**What:** Re-anchor (or explicitly drop) the strokes kept in the sketch canvas when the rect the picture covers at scale 1 changes between Draw Mode entries — a rotation, a resolution change on the Mac. Zoom is no longer a cause: since 2026-10-09 strokes are stored relative to the unzoomed view and zoomed together with the video (technical_doc.md section 3).
 
-**Why:** Strokes survive leaving Draw Mode by cancel, rotation, link loss or a refused freeze (M6, M7, PRD G6), and the canvas is one object that is never rebuilt. If the designer zooms in before entering again, those strokes are still at their old points on a surface that now maps to a different part of the frame, so they land somewhere they were not drawn.
+**Why:** Strokes survive leaving Draw Mode by cancel, rotation, link loss or a refused freeze (M6, M7, PRD G6), and the canvas is one object that is never rebuilt. After a rotation, or a resolution change on the Mac, those strokes are still at their old points on a surface that now maps to a different part of the frame, so they land somewhere they were not drawn.
 
-**Context:** Noticed in the final whole-branch review and deferred: what *should* happen is a design question (scale them, offset them, or warn and clear). `DesignCanvas/iOS/SketchCanvas.swift` (the controller owns the `PKCanvasView` and its `drawing`), `CanvasScreen.videoRect`, and `ZoomModel`.
+**Context:** Noticed in the final whole-branch review and deferred: what *should* happen is a design question (scale them, offset them, or warn and clear). `DesignCanvas/iOS/SketchCanvas.swift` (the controller owns the `PKCanvasView` and its `drawing`; the host view lays it out) and `ZoomModel.sketchRect`.
 
 **Effort:** M
 **Priority:** P3
@@ -148,11 +136,11 @@
 
 ### Oversize-sketch notice is not visible in Draw Mode
 
-**What:** Show the `sketchTooLarge` notice while Draw Mode is open, for example by rendering the notice banner over `DrawModeOverlay`.
+**What:** Show the `sketchTooLarge` notice while Draw Mode is open, for example by rendering the notice banner over the Draw Mode chrome.
 
-**Why:** When a sketch would exceed the 16 MiB canvas frame cap, `CanvasModel.done` correctly refuses to send it, keeps the strokes and sets the notice. But `CanvasScreen` renders the notice banner only outside Draw Mode, and the connection sheet that also shows it sits behind the panel that Draw Mode hides. So Done on an oversize sketch looks like a dead button.
+**Why:** When a sketch would exceed the 16 MiB canvas frame cap, `CanvasModel.done` correctly refuses to send it, keeps the strokes and sets the notice. But `CanvasScreen` renders the notice banner only outside Draw Mode, and the connection sheet that also shows it is out of reach in Draw Mode. So Send on an oversize sketch looks like a dead button.
 
-**Context:** Found by the scoped re-review of the final fix wave (2026-09-17) as the one finding left partially addressed; parked because the process allows no second fix wave, nothing else builds on it, and the trigger (a sketch PNG over 15 MiB) is rare. Start at `DesignCanvas/iOS/CanvasScreen.swift` where `DrawModeOverlay` and `NoticeBanner` are chosen; the model side is already tested (`test_done_withAnOversizeSketch_staysInDrawingAndSaysSo`).
+**Context:** Found by the scoped re-review of the final fix wave (2026-09-17) as the one finding left partially addressed; parked because the process allows no second fix wave, nothing else builds on it, and the trigger (a sketch PNG over 15 MiB) is rare. Start at `DesignCanvas/iOS/CanvasScreen.swift`, where the chrome decides when `NoticeBanner` shows; the model side is already tested (`test_done_withAnOversizeSketch_staysInDrawingAndSaysSo`).
 
 **Effort:** S
 **Priority:** P2
@@ -189,3 +177,11 @@ From a read of the Claude Code changelog on 2026-10-06. Backlog only, not priori
 **Phase 2: approving the call does not answer a question.** Since 2.1.292 a `tool.check` hook that answers "allow" no longer skips the dialog of a tool that needs the user's own answer (a question, a plan approval). X13's answer-from-the-iPad cannot be built by approving the call; it has to supply the answer. Note for the Phase 2 design, nothing to do now.
 
 ## Completed
+
+### Tool panel covers the bottom band of the frozen frame
+
+Done 2026-10-13 with the iPad redesign. The panel docks to the top by default, sits in the top bar in Draw Mode where the screen is wide enough, and can be dragged, or moved from a long-press menu, to any screen edge, where it stays (PRD P4).
+
+### `.mcp.json` carries absolute machine-specific paths
+
+Done with the Claude Code mod (2026-10-05, `technical_doc-ClaudeMods.md`). Sketches reach Claude Code through the mod, `McpConfigManager` is gone, and nothing is written to a project's `.mcp.json` any more. An old `design-canvas` entry left there by an earlier build is not touched; since the plugin was renamed `designcanvas` it no longer stops the mod.

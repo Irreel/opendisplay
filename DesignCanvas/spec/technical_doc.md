@@ -1,6 +1,6 @@
 # Design Canvas: Technical Specification
 
-**Status:** Draft v0.5, 2026-10-05 (v0.4 was 2026-10-03; v0.3 was 2026-09-18, after the first hardware sessions; v0.2 was 2026-09-16, after the engineering review of the same day). Companion to `PRD-DesignCanvas.md` v0.8. The blank canvas surface is specified separately in `technical_doc-BlankCanvas.md`. Requirement IDs (D, C, M, P) and gap numbers (G) are shared with the PRD.
+**Status:** Draft v0.7, 2026-10-13 (v0.6 was 2026-10-09; v0.5 was 2026-10-05; v0.4 was 2026-10-03; v0.3 was 2026-09-18, after the first hardware sessions; v0.2 was 2026-09-16, after the engineering review of the same day). v0.7 adds section 3.1 on the redesigned iPad interface. v0.6 unlocks zoom in Draw Mode and makes every mirror round the full frame (section 3). Companion to `PRD-DesignCanvas.md` v0.10. The blank canvas surface is specified separately in `technical_doc-BlankCanvas.md`. Requirement IDs (D, C, M, P) and gap numbers (G) are shared with the PRD.
 **Sources:** ai.cst.2 (tech-doc v0.5, desktop-app.md, ADR-0001 to ADR-0004, `packages/server/src/channel/index.ts`); OpenDisplay `PROTOCOL.md` (pv 3) and `Mac/MacSender.swift`; the Claude Code Channels reference and the fakechat reference channel, both read 2026-09-16.
 
 **Document history**
@@ -12,6 +12,8 @@
 | 2026-09-18 v0.3 | G1 decided after the first hardware sessions: mirror the Mac's main display, no extended display. Sections 1, 3, 5.6, 7 and 10 updated; section 11 left as the dated record of the 2026-09-16 review |
 | 2026-10-03 v0.4 | Header brought up to date (the 2026-09-30 `existing` channel state in section 2 had not been recorded here; companion PRD is v0.8). Sections 2 and 3 point to `technical_doc-BlankCanvas.md` for the blank canvas surface, which this document does not describe |
 | 2026-10-05 v0.5 | Section 5.6 corrected on two points: Channels accept a Console API key, and reading the store path does prompt (found in the Claude Mods spike). Section 5 now points to `technical_doc-ClaudeMods.md`, the planned replacement for the channel. Nothing else changed; this document still describes what is built |
+| 2026-10-09 v0.6 | Zoom unlocked in Draw Mode; every mirror round is the whole frame (section 3) |
+| 2026-10-13 v0.7 | Section 3.1 added for the redesigned iPad interface (PRD v0.10); Done renamed Send in the state machine diagram's labels. Nothing on the wire changed |
 
 ## 1. Architecture
 
@@ -22,7 +24,7 @@ Mac                                                          iPad
 │  ├─ SenderEngine module (OpenDisplay-derived)  │
 │  │    main-display capture, frame ring, H.264 ─┼──USB/WiFi──▶ Design Canvas app
 │  │    freeze / annotation / agentReply / rounds│            (OpenDisplay receiver core
-│  │    NO input injection                       │             + Draw Mode + Agent replies)
+│  │    NO input injection                       │             + Draw Mode + reply notice)
 │  ├─ DaemonClient (HTTP + SSE, loopback)        │
 │  └─ supervises ▼                               │
 │ designtool --http (Node)   store, events       │
@@ -42,9 +44,9 @@ Mac                                                          iPad
 
 **Decided after the first hardware sessions (G1, owner, 2026-09-17).** Design Canvas mirrors the Mac's main display and has no extended display. It runs OpenDisplay's existing mirror capture path: ScreenCaptureKit captures the first display macOS reports (normally the main one) at its native pixel size times the quality scale, and no `CGVirtualDisplay` is created. The mode is fixed rather than defaulted (`SenderControllerConfig.fixedMode = .mirror`, resolved by `CaptureMode.resolve(stored:fixed:)`), so a stored `mode` default or a `-mode` launch argument cannot select extend. OpenDisplay itself keeps its user-selectable mode. Consequences:
 
-- The stream has the Mac's resolution and aspect ratio, not the iPad's. The iPad aspect-fits it, so there are letterbox bars, and `zoomRect` is normalized to the picture rather than to the iPad's screen (`ZoomModel.fittedRect`), so a crop lines up wherever the bars fall. `hello`'s panel size and `maxEncodeWide/High` do not size a mirrored stream, and a rotation re-`hello` rebuilds nothing.
+- The stream has the Mac's resolution and aspect ratio, not the iPad's. The iPad aspect-fits it, so there are letterbox bars, and `zoomRect` is normalized to the picture rather than to the iPad's screen (`ZoomModel.fittedRect`), so a crop lines up wherever the bars fall. Since 2026-10-09 the iPad sends the full rect on every mirror round (section 3, zoom in Draw Mode), so only an iPad app from before that date makes the Mac crop. `hello`'s panel size and `maxEncodeWide/High` do not size a mirrored stream, and a rotation re-`hello` rebuilds nothing.
 - The encode size follows the Mac's panel, for example 3024x1964 for a 1512x982-point Retina panel. H.264 tops out near 4096x2304, so a 5K main display at the default quality exceeds it (OpenDisplay upstream #271 describes the same ceiling). Until the app has a quality control of its own, the sender's `quality` default (`balanced` 75%, `fast` 50%) is the workaround.
-- Everything on the main display is streamed to the iPad, and a round sent without zooming in captures the whole screen. This widens G13 (redaction) and is why D20's terminal ends up in frame.
+- Everything on the main display is streamed to the iPad, and every round captures the whole screen (since 2026-10-09 zooming in no longer crops it). This widens G13 (redaction) and is why D20's terminal ends up in frame.
 - No virtual display means none of macOS's saved per-display state is involved. The first hardware session failed on exactly that: macOS held state under which the display identities it was offered never came online (OpenDisplay upstream #206 and #221), so nothing was ever captured.
 
 **Invariants carried from ai.cst.2.** The daemon is the only writer to the store. An annotation is immutable once written; only its meta state changes. The channel directory is the only code that imports the MCP SDK (lint-enforced). No code in Design Canvas calls an LLM or edits user source. Every request, notification, reply, and state change is logged as JSON lines.
@@ -59,7 +61,7 @@ Additive JSON control messages, no `pv` bump, gated on `welcome.canvas: true`. A
 
 | Message | Direction | Fields | Purpose |
 |---|---|---|---|
-| `freeze` | iPad to Mac | `captureMs`, `zoomRect`, `t` | Draw Mode entered on the frame captured at `captureMs` (from the frame's telemetry prefix, PROTOCOL.md 5.1); zoom locked (M1, D9) |
+| `freeze` | iPad to Mac | `captureMs`, `zoomRect`, `t` | Draw Mode entered on the frame captured at `captureMs` (from the frame's telemetry prefix, PROTOCOL.md 5.1) (M1, D9). `zoomRect` is the full rect since 2026-10-09; zoom is no longer locked (section 3) |
 | `frozen` | Mac to iPad | `ok` | `true` when the ring held the frame; `false` only if no frame exists (M7) |
 | `annotation` | iPad to Mac | `sketch` (base64 PNG, transparent), `zoomRect`, `viewport`, `note`?, `t` | The finished round; sketch only, no composite (M5, D10) |
 | `agentReply` | Mac to iPad | `annotationId`, `status`, `message`? (≤ 2 KB), `prUrl`?, `t` | Claude Code's outcome (D6, M8) |
@@ -81,7 +83,14 @@ This section describes a round on the mirror surface. A round on the blank canva
 
 **Join (review 4A).** The engine holds the last freeze capture per connection. On `annotation` it attaches that capture, the install id, and the device name, and posts to the daemon. A second `freeze` before Done discards the first capture with a log line. No capture id crosses the wire.
 
-**Compositing (review 1A).** The engine, on a serial utility queue (review 11A), decodes the sketch, crops the clean frame to `zoomRect` when the user had zoomed in (G8) or uses the full frame otherwise, flattens the sketch over it, caps the long side at about 1568 px, and posts `composite.png` and `sketch.png`. The full-resolution capture is kept as `screenshot.png`. The receive loop is re-armed before any of this starts, so pings and the next messages are never blocked.
+**Compositing (review 1A).** The engine, on a serial utility queue (review 11A), decodes the sketch, crops the clean frame to `zoomRect` when that rect is smaller than the frame (G8; since 2026-10-09 the iPad never sends one, see the next paragraph) or uses the full frame otherwise, flattens the sketch over it, caps the long side at about 1568 px, and posts `composite.png` and `sketch.png`. The full-resolution capture is kept as `screenshot.png`. The receive loop is re-armed before any of this starts, so pings and the next messages are never blocked.
+
+**Zoom in Draw Mode (owner, 2026-10-09; C2, M5).** Zoom is not locked while drawing. Two fingers always zoom and pan the frozen frame, in Draw Mode as outside it; one finger or the Pencil draws, and a stroke that a second finger interrupts is dropped. Strokes are stored in the coordinates of the unzoomed view and the sketch surface is magnified together with the video, so a stroke stays on the part of the frame it was drawn on, and strokes kept from an earlier entry come back in the right place at any zoom. Done exports the sketch over the whole picture, and both `freeze` and `annotation` carry the full rect, so a mirror round is always the full frame with the sketch over it. This replaces G8 on the iPad. Nothing changes on the Mac or on the wire: the engine still crops to a smaller rect, which only an iPad app from before this change sends. Consequences, accepted with the decision:
+
+- The composite's long side is still capped at about 1568 px, and it now always covers the whole frame, so detail drawn at high zoom is small in the image Claude Code reads.
+- Pen width is fixed relative to the frame, so ink looks thicker on screen as the designer zooms in, and reads the same in the composite wherever it was drawn.
+- Zooming no longer keeps anything out of a round (G13, and D20 in section 5.6).
+- The blank page does not zoom (`technical_doc-BlankCanvas.md`).
 
 **Draw Mode state machine (review 8A).** Pure struct in `Shared/`, tested in MacTests; the iOS layer drives PencilKit from its transitions.
 
@@ -89,7 +98,7 @@ This section describes a round on the mirror surface. A round on the blank canva
             pinch/pan (view-only, no forwarding)
    ┌────────────────────────────────────────────────┐
    ▼                                                │
- LIVE ──enter Draw Mode──▶ FREEZING ──frozen.ok──▶ DRAWING ──Done (≥1 stroke)──▶ SENDING ──sent──▶ LIVE
+ LIVE ──enter Draw Mode──▶ FREEZING ──frozen.ok──▶ DRAWING ──Send (≥1 stroke)──▶ SENDING ──sent──▶ LIVE
    ▲                          │  │                     │  │                          │
    │      frozen.ok=false or  │  │ cancel              │  │ cancel / discard         │ link lost:
    │      2 s timeout ────────┘  └──────▶ LIVE         │  └──────▶ LIVE               │ keep sketch,
@@ -97,8 +106,23 @@ This section describes a round on the mirror surface. A round on the blank canva
    │                                                   │ rotation or link lost:       ▼
    └───────────────────────────────────────────────────┘ strokes kept, back to LIVE, RETRY ──▶ SENDING
                                                          Draw Mode re-entered by the user
- Done is disabled while the stroke count is 0.  A second freeze is not possible: FREEZING and DRAWING ignore it.
+ Send is disabled while the stroke count is 0.  A second freeze is not possible: FREEZING and DRAWING ignore it.
+ Pinch and pan stay available in FREEZING and DRAWING (two fingers, 2026-10-09); they change no state.
 ```
+
+The state machine's `done` event keeps its name; the button that fires it has been Send since 2026-10-13.
+
+### 3.1 The iPad interface (2026-10-13)
+
+Redesigned in the style of Apple Freeform; the screens and design system are in the Figma file the PRD names (section 6 there). Everything below lives in `DesignCanvas/iOS/`. The chrome is one SwiftUI layer over the picture, laid out in the safe area, and is never part of a sketch: Send exports the ink alone.
+
+- **Surface (`ControlPanel.swift`, `canvasGlass(in:)`).** Every piece of chrome is a capsule with a 92% fill over Liquid Glass on iOS 26, or over the regular material before it, so it reads over a dark mirror as well as a white page. The deployment target stays iOS 16.4.
+- **Colour tokens (`CanvasColors.swift`).** Text uses darker versions of the system orange, red, blue and green in light appearance, and secondary text is the secondary label at 78%, so the chrome meets WCAG 2.2 AA contrast; dark appearance keeps the system colours. Small filled marks use separate, stronger versions. The values match the Figma variables (`text/warning`, `text/danger`, `accent/strong`, `status/*-strong`).
+- **Panel (`ControlPanel.swift`, `Logic/PanelDock.swift`).** One view holds Mirror, Blank and Draw between sketches and the drawing tools in Draw Mode, so entering Draw Mode stretches it where it stands. It docks to an edge (`PanelEdge`, stored in `canvasPanelEdge`); a drag anywhere on it moves it, and the nearest edge to where it is dropped wins (`PanelEdge.nearest`, unit-tested). Its grabber shows only while it is being dragged and for 1.5 s when it first appears, on the side that faces its edge. A long press opens a menu with the four edges, the way to move it without dragging (WCAG 2.5.7), and VoiceOver has the same four actions. In Draw Mode a top-docked palette sits in the top bar between Cancel and the note, and takes the row below only where the screen is too narrow for both; the note field then stops growing before it reaches the palette.
+- **Project pill and session list (`ProjectPill.swift`).** The pill names the target session's folder; with no session or a pick needed it says so in the warning colour, with a dot so colour is not the only cue. Its popover lists the sessions (X24, X25) and ends with "Connection details…", the sheet in `ConnectionStatusView.swift`.
+- **Waiting screen (`CanvasScreen.swift`).** With no Mac connected it fills the screen; there is no separate iPad-to-Mac indicator.
+- **Reply notification (`Logic/ReplyNotification.swift`, `ReplyNotificationCard.swift`).** One card, top right, for the newest round that reached an outcome (M8). Applied leaves after 5 s; failed and needs input stay until tapped or swiped away. It is announced to VoiceOver. There is no list of rounds; `rounds` and `agentReply` still arrive and still drive the send chip and the card.
+- **Send chip.** Between sketches it shows a round that is sending or kept to resend; on a kept one its trash gives the sketch up after a confirmation.
 
 ## 4. Store (D4)
 
@@ -175,7 +199,7 @@ The notification carries the composite's file path; Claude Code's Read tool rend
 - Claude Code only. Channels work with a claude.ai login or a Claude Console API key (corrected 2026-10-05 from the current Channels docs; earlier versions of this line said claude.ai only. Not tested with a key).
 - Development flag required until marketplace listing.
 - Protocol may change; the channel adapter is isolated.
-- Terminal permission prompts still fire and no reply arrives while one waits (G19). **Owner decision (D20):** the MVP mitigation is to keep the terminal window on the mirrored display so the prompt is visible from the iPad. Since G1 that is the Mac's main display, where the terminal opens anyway; with more than one monitor it must stay on the main one. Consequence, recorded from the outside voice and accepted: the clean capture and composite may include the terminal, which then travels back into Claude Code's context; zooming into the preview region before drawing keeps it out of the crop.
+- Terminal permission prompts still fire and no reply arrives while one waits (G19). **Owner decision (D20):** the MVP mitigation is to keep the terminal window on the mirrored display so the prompt is visible from the iPad. Since G1 that is the Mac's main display, where the terminal opens anyway; with more than one monitor it must stay on the main one. Consequence, recorded from the outside voice and accepted: the clean capture and composite may include the terminal, which then travels back into Claude Code's context. Until 2026-10-09 zooming into the preview region before drawing kept it out of the crop; a round is now always the full frame, so nothing does.
 - **Unverified assumptions kept by owner decision (D22):** that Read on the store path never prompts, and that the `.mcp.json` entry does not trigger the project-MCP trust prompt for the user or for collaborators who inherit the committed file. If either prompts, the fix is an app-managed allow rule or a user-scoped MCP config. **The first is now known to be false (2026-10-05):** in the Claude Mods spike, a Read of a composite under a store outside the project resolved to "ask" and opened a permission dialog in default mode; in auto mode the mode's classifier answered it. The channel has no fix for this yet. The mod design answers it with its requirement X7 (`technical_doc-ClaudeMods.md` section 4.4). The second assumption is still untested.
 - Manually launched Claude Code sessions are unsupported; the app recognizes only a channel it started (ADR-0004).
 
@@ -217,7 +241,7 @@ If pursued, add an agent backend abstraction in the daemon with two implementati
 
 ## 10. Decisions and open technical questions
 
-**Decided.** G1 the iPad mirrors the Mac's main display; no extended display, and the capture mode is fixed (section 1; owner, 2026-09-17, after the first hardware sessions). G2 Channels with one reply tool. G3 payload: sketch, note, viewport, zoom rect, device, reply; composite built on the Mac. G4 minimal reply. G7 no input forwarding, so no gesture handoff exists; zoom is view-only. G8 crop when zoomed. G14 separate app, in-app engine module, own ids and Bonjour type. G15 iPad and macOS only. G16 UUID v7 per round with reply stored. G20 base frame from the engine's ring at the iPad's capture time; no fallback frame. G21 OpenDisplay pairing only; daemon loopback-only. G23 file path in the notification. G24 device tagging. G25 canvas cap 16 MiB with chunked reads. G26 store under `~/.claude/channels/design-canvas/`. G27 GPL-3.0 final. Security: trust-on-first-use for the MVP.
+**Decided.** G1 the iPad mirrors the Mac's main display; no extended display, and the capture mode is fixed (section 1; owner, 2026-09-17, after the first hardware sessions). G2 Channels with one reply tool. G3 payload: sketch, note, viewport, zoom rect, device, reply; composite built on the Mac. G4 minimal reply. G7 no input forwarding, so no gesture handoff exists; zoom is view-only, and since 2026-10-09 it is not locked in Draw Mode, where two fingers always zoom (section 3). G8 crop when zoomed; superseded on the iPad on 2026-10-09, when every mirror round became the full frame (section 3). G14 separate app, in-app engine module, own ids and Bonjour type. G15 iPad and macOS only. G16 UUID v7 per round with reply stored. G20 base frame from the engine's ring at the iPad's capture time; no fallback frame. G21 OpenDisplay pairing only; daemon loopback-only. G23 file path in the notification. G24 device tagging. G25 canvas cap 16 MiB with chunked reads. G26 store under `~/.claude/channels/design-canvas/`. G27 GPL-3.0 final. Security: trust-on-first-use for the MVP.
 
 **Open.**
 
