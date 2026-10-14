@@ -49,3 +49,9 @@ DesignCanvas/Mac/Info.plist
 DesignCanvas/iOS/Info.plist
 .superpowers/
 .gstack/
+
+# Other coding agents' local state
+.codex/
+.cursor/
+.opencode/
+.pi/
