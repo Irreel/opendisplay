@@ -1,6 +1,6 @@
 # PRD: Design Canvas Claude Mods
 
-**Status:** Draft v0.3, 2026-10-05, after the spike (v0.2 was earlier the same day; v0.1 was 2026-10-04), for owner review. Phase 1 was implemented on 2026-10-05 on the `claude-mods` branch (X1 to X11, X18 to X26); the daemon and the mod have been run against real Claude Code sessions, the two apps' new screens have not been run on hardware. Phase 2 is not built. Product requirements only; the design and the spike's results are in [technical_doc-ClaudeMods.md](./technical_doc-ClaudeMods.md).
+**Status:** Draft v0.3, 2026-10-05, after the spike (v0.2 was earlier the same day; v0.1 was 2026-10-04), for owner review. Phase 1 was implemented on 2026-10-05 on the `claude-mods` branch (X1 to X11, X18 to X26); the iPad's screens were redesigned on 2026-10-13 (PRD-DesignCanvas.md v0.10). Phase 2 is not built. Product requirements only; the design and the spike's results are in [technical_doc-ClaudeMods.md](./technical_doc-ClaudeMods.md).
 **Owner:** AntheaZ
 **Extends:** [PRD-DesignCanvas.md](./PRD-DesignCanvas.md) v0.8 and [PRD-BlankCanvas.md](./PRD-BlankCanvas.md) v0.2. Those documents own the sketch loop on both surfaces. This one owns only how the loop gets into and out of Claude Code. Requirements there are cited by ID and not restated.
 

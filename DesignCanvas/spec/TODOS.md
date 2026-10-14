@@ -50,18 +50,6 @@
 **Priority:** P3
 **Depends on:** None.
 
-### Withdraw a queued round from the iPad
-
-**What:** Let the designer take back a round that is still `queued`: stored on the Mac but not yet handed to Claude Code. A Withdraw action on the iPad; the round ends in a new final status, `withdrawn`, and is never delivered.
-
-**Why:** Once Send is tapped there is no way back. A sketch sent by mistake, or one made stale by the round before it, waits in the queue while Claude Code is busy or not running, and is then applied. Withdrawing is only safe while the round is `queued`; once it is `sent`, Claude Code already has it. Owner request, 2026-10-09, after device testing.
-
-**Context:** Needs a design decision first: where the action lives, now that the iPad has no list of rounds (2026-10-13; the send chip is the one place a sent round still shows), what a withdrawn round shows as, and whether its strokes come back to the canvas. Then three pieces. An additive iPad-to-Mac control message naming the `annotationId` (PROTOCOL.md section 11.2; no `pv` bump). A daemon endpoint that marks a round withdrawn only if it has not been claimed or served, so it cannot race the delivery: status is derived today in `DesignCanvas/server/src/store/rounds.ts` from `servedAt` and `reply`, and `RoundStatus` gains the value in `server/src/shared.ts` and `DesignCanvas/Shared/CanvasMessages.swift`. The action itself in the iPad chrome, `DesignCanvas/iOS/CanvasScreen.swift`. Check how an iPad app from before the change decodes a status it does not know. Shares the "never emit this round" path with Pending-round TTL above.
-
-**Effort:** M
-**Priority:** Not set
-**Depends on:** A design decision.
-
 ### `annotationAck` so the iPad clears strokes only once the Mac accepted the job
 
 **What:** An additive `annotationAck {ok, reason?}` control message, sender to receiver: the Mac sends it once an `annotation` has been queued for upload (or refused), and the iPad leaves SENDING on that rather than on its own socket write completing.
@@ -175,6 +163,42 @@ From a read of the Claude Code changelog on 2026-10-06. Backlog only, not priori
 **Channel baseline: expect a slower first connect.** Since 2.1.292 local MCP servers negotiate protocol version 2026-07-28 by default, and a server that ignores the check is connected the older way after one slow attempt. The channel uses an older MCP SDK. When the reply-compliance baseline is run on the channel, allow for that or set `MCP_PROTOCOL_NEGOTIATION=legacy`, and record which. **Effort:** none beyond the run
 
 **Phase 2: approving the call does not answer a question.** Since 2.1.292 a `tool.check` hook that answers "allow" no longer skips the dialog of a tool that needs the user's own answer (a question, a plan approval). X13's answer-from-the-iPad cannot be built by approving the call; it has to supply the answer. Note for the Phase 2 design, nothing to do now.
+
+### The every-session switch rewrites the whole settings file
+
+**What:** Turn the every-session option on and off with a text-level edit of `~/.claude/settings.json` that touches only the one `env` entry and leaves the rest of the file as the user wrote it.
+
+**Why:** Today the content after on-then-off is identical key for key, but `JSONSerialization` re-sorts the top-level keys and reformats the file. For a file people edit by hand that is more than the "one entry" the Settings window promises.
+
+**Context:** Found on the Mac on 2026-10-06 (technical_doc-ClaudeMods.md section 13). The write is in `DesignCanvas/Mac/App/ClaudeSettingsManager.swift`.
+
+**Effort:** S
+**Priority:** Not set
+**Depends on:** None.
+
+### The Mac menu's buttons have no accessibility names
+
+**What:** Give every button in the menu-bar popover, the session rows included, an accessibility label.
+
+**Why:** VoiceOver and UI scripting see only the rows' help text, so the controls cannot be named or found by what they do.
+
+**Context:** Found on the Mac on 2026-10-06 (technical_doc-ClaudeMods.md section 13). Start at `DesignCanvas/Mac/App/MenuBarView.swift`.
+
+**Effort:** S
+**Priority:** Not set
+**Depends on:** None.
+
+### The iPad shows in the Mac menu as "iPhone / iPad"
+
+**What:** Find why the menu names a USB-connected iPad "iPhone / iPad" instead of its device name, as earlier builds did, and fix it.
+
+**Why:** With more than one device the rows cannot be told apart.
+
+**Context:** Seen on the Mac on 2026-10-06, not traced. "iPhone / iPad" is the fallback when usbmuxd gives no name: `Mac/Usbmux.swift` (`label`) and `Mac/SenderController.swift`.
+
+**Effort:** S
+**Priority:** Not set
+**Depends on:** None.
 
 ## Completed
 

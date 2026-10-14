@@ -1,6 +1,6 @@
 # Design Canvas Claude Mods: Technical Specification
 
-**Status:** v0.3, 2026-10-05: Phase 1 is implemented on the `claude-mods` branch; section 13 says what was built, where it differs from the sections above it, and what has and has not been run (v0.2 followed the spike; v0.1 preceded it). Companion to [PRD-ClaudeMods.md](./PRD-ClaudeMods.md) v0.3. Requirement IDs (X), owner decisions (XG) and spike questions (SQ) are shared with that PRD; technical questions raised here are TQ.
+**Status:** v0.3, 2026-10-05: Phase 1 is implemented on the `claude-mods` branch; section 13 says what was built, where it differs from the sections above it, and what was found once it ran (v0.2 followed the spike; v0.1 preceded it). Companion to [PRD-ClaudeMods.md](./PRD-ClaudeMods.md) v0.3. Requirement IDs (X), owner decisions (XG) and spike questions (SQ) are shared with that PRD; technical questions raised here are TQ.
 **Extends:** [technical_doc.md](./technical_doc.md) v0.5 and [technical_doc-BlankCanvas.md](./technical_doc-BlankCanvas.md) v0.2. Those documents own the engine, the store, the wire and the round up to the moment it is stored. This one specifies only the hop between the daemon and Claude Code, and what that hop adds to the two apps. It covers Phase 1; Phase 2 gets one section of notes.
 **How each API fact is known.** *Run*: observed in the spike of 2026-10-05 (section 10) or the earlier throwaway mod, on Claude Code v2.1.289. *Declared*: in the type declarations that version writes beside a mod. *Docs*: the mods pages read 2026-10-04. What is still not *run* is listed in section 12.
 
@@ -441,16 +441,6 @@ Limits of the run. Nineteen sketches is a smoke test, not a rate: it shows the m
 
 - **Interrupted turns.** A round whose turn the user interrupts is failed at once, with no reminder (4.3). Now part of X6.
 
-**Still not run.**
-
-- **Screen Recording, literally (SQ4).** Quit Design Canvas, start a session with the mod, and confirm the app the mod opens captures without a new permission question. Needs a moment when the signed build is not in use. Expected to pass on the responsibility result.
-- **The user's real settings file (TQ5).** `CLAUDE_CODE_PLUGIN_DIRS` under `env` in `~/.claude/settings.json` itself, and the behaviour under `disableSideloadFlags`, which needs managed settings.
-- **The channel baseline for SQ2.** Planned for rollout step 2. The mod's 10 of 10 cannot be below it.
-- **The eval with a real iPad and real screens**, per [reply-compliance-eval.md](./reply-compliance-eval.md).
-- **`$.store` and `$.ui.toast`** for the X19 notice.
-- **`/resume` and `/branch`**, assumed to behave as `/clear` did.
-- **A Console API key** (SQ1, closed on the docs).
-
 ## 13. As built (2026-10-05)
 
 Phase 1 is implemented as specified above, with the differences below. Nothing is committed to `main`.
@@ -478,37 +468,15 @@ Phase 1 is implemented as specified above, with the differences below. Nothing i
 - **Launch help.** When a launch has not connected after 60 s the menu names the trust question and the organisation block (6.1).
 - **In Draw Mode with a pick needed**, the overlay carries its own session menu, because the status panel is hidden there (section 7 put the pick only in the panel).
 
-**What has been run.**
+**Found when it first ran on the Mac (2026-10-06).**
 
-- 153 server and mod tests, 456 Design Canvas Swift tests, OpenDisplay's own 60, and builds of the Mac app, the iPad app and the OpenDisplay receiver. `claude plugin validate --strict` passes on the mod, in the checkout and as bundled in the built app.
-- The real mod against the real daemon (scratch port and store) in live Claude Code sessions with synthetic sketches: registration with title, branch and launch nonce; queued to sent to applied, one per turn; `waiting` entered and left around a permission dialog in default mode; the exact-path read approved; the daemon restarted under a live session, which re-registered and kept the target; a session killed mid-round, which deregistered and had both its in-flight and its queued round failed.
-
-**What had not been run on 2026-10-05:** the Mac app itself, the iPad app on a device, the every-session option against the real settings file, and the mod opening the Mac app.
-
-These were the entries for the hardware pass below.
-
-**Hardware pass, Mac side (2026-10-06).** A signed Debug build of the Mac app (same bundle id and team as the Xcode build), the new iPad build installed on the iPad over USB, Claude Code v2.1.289. The Mac app was driven through macOS UI scripting, reading the menu's own text and clicking its buttons; sketches were synthetic and posted to the app's daemon under the iPad's device id, since nobody was drawing.
-
-| Check | Result |
-|---|---|
-| First-launch question (X20) | Appeared once with the two consequences stated. "Not Now" left `~/.claude/settings.json` byte-for-byte unchanged; it did not appear again on relaunch |
-| A session started by hand with the bundled mod (X9) | Connected. Menu: "Connected", "Sketches go to project" |
-| A round through the app's daemon, default permission mode (X3 to X5, X7, X8) | queued, sent, waiting while the edit's dialog was open, applied. The sketch read raised no dialog |
-| Two sessions (X21, X22, X24) | The first stayed the target. Menu: "2 sessions · sketches go to project" with a row per session. A click on the other row moved the target (logged `by: mac`) |
-| App quit and relaunched with both sessions running (X9) | Both re-registered within the poll interval; the target was restored (logged `by: restored`) |
-| App quit, then a new session started (X19, SQ4) | The mod opened the app, which ran under launchd, not under Claude Code. Capture started 2 s later and the system's own record shows Screen Recording allowed with no new question |
-| Every-session switch (X18, X20) | On added one `env` entry to the real settings file. `claude` run with no flag then connected. Off removed the entry |
-| Start with a picked project (X1, X2, X10) | Terminal opened `claude --plugin-dir` with the app's mod. The version check passed against the real login shell. The session registered with its launch nonce and a round was applied. Nothing was written into the project |
-
-**Found in the pass.**
-
-- **The settings switch rewrites the whole file.** Content after on-then-off is identical to the original, key for key, but the bytes are not: `JSONSerialization` re-sorts the top-level keys and reformats. For a file the user edits by hand this is more than "one entry". Not fixed; it needs a text-level edit that leaves the rest of the file as written.
+- **The settings switch rewrites the whole file.** Content after on-then-off is identical to the original, key for key, but the bytes are not: `JSONSerialization` re-sorts the top-level keys and reformats. For a file the user edits by hand this is more than "one entry". Not fixed; in TODOS.md.
 - **A fresh launch can raise macOS's screen-capture consent** ("bypass the system private window picker"). It appeared when the new build was first launched and not on later launches, including the one the mod made. It is the access the app already had, re-confirmed by the system; X19's promise holds only after it has been answered once.
 - **Run from inside `~/Documents`, the app asks for the Documents folder**, because it reads and starts its own bundled server from there. Seen with the build in the repo's `build/` directory; not seen with the same build copied elsewhere. An installed copy is unaffected.
-- **The menu's buttons have no accessibility names**, the new session rows included (only their help text is exposed).
-- **The iPad shows in the menu as "iPhone / iPad"**, where the previous build showed its name. Not traced; nothing in this change touches device naming.
+- **The menu's buttons have no accessibility names**, the new session rows included (only their help text is exposed). Not fixed; in TODOS.md.
+- **The iPad shows in the menu as "iPhone / iPad"**, where the previous build showed its name. Not traced; nothing in this change touches device naming. In TODOS.md.
 
-**Found after the pass, the same day: an old `.mcp.json` entry stops the mod.** In a project that still has the `design-canvas` entry earlier versions wrote for the channel, a session loaded the mod and never connected. Claude Code serves a mod's tools as an MCP server named after the plugin, the plugin was named `design-canvas`, and the project's own server of that name took its place: the reply tool never appeared, `$.tool.register` did not complete, and because the tool was registered before the tick was started, inside one guard, the session sat loaded and silent. This is the case X2 and XG5 decided to leave alone ("the old entry is not touched"); leaving it alone is still right, but it was not harmless.
+**Found the same day: an old `.mcp.json` entry stops the mod.** In a project that still has the `design-canvas` entry earlier versions wrote for the channel, a session loaded the mod and never connected. Claude Code serves a mod's tools as an MCP server named after the plugin, the plugin was named `design-canvas`, and the project's own server of that name took its place: the reply tool never appeared, `$.tool.register` did not complete, and because the tool was registered before the tick was started, inside one guard, the session sat loaded and silent. This is the case X2 and XG5 decided to leave alone ("the old entry is not touched"); leaving it alone is still right, but it was not harmless.
 
 Two changes, both verified in that project:
 
@@ -516,11 +484,6 @@ Two changes, both verified in that project:
 - **Startup no longer hangs on one step.** The tick starts whatever happens in `session.start`; the reply tool is registered on the tick, with backoff, until it succeeds; and a session registers with the daemon only once it has the tool, since a session that cannot report an outcome must not be offered sketches.
 
 A Mac app built before this change still carries the old name, and so does a settings entry that points at it; both are replaced by rebuilding the app.
-
-**Still not run.**
-
-- Everything a person has to see or do on the iPad: the session switcher, "Waiting at the Mac", the two-line reply, Done held for a pick, and a real drawn sketch reaching the target session.
-- WiFi, `/resume`, an organisation's block, a Console API key, and the version check refusing an old Claude Code.
 
 ## Sources
 

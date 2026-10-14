@@ -11,30 +11,19 @@ on top of OpenDisplay's mirroring code, plus a small local Node daemon and
 a Claude Code mod, a plugin that runs inside the Claude Code session. No input is ever forwarded
 from the iPad: it is a display and a sketchpad, never a remote control.
 
-**Status:** the Node half (daemon, channel, this whole round lifecycle) is
-proven end to end without hardware — see
+**Status:** the Node half (daemon, mod, the whole round lifecycle) has an
+automated end-to-end test that needs no devices — see
 [`server/scripts/e2e-round.mjs`](server/scripts/e2e-round.mjs) and
-`pnpm --dir DesignCanvas/server test:e2e` below. **On real devices, only
-the first step is proven.** The first hardware sessions (2026-09-17, one
-Mac and one iPad over USB) got as far as the iPad connecting on its own
-and showing the Mac's stream. They also found two defects, both fixed —
-a `start` script that never launched the daemon, and macOS refusing to
-bring the sender's virtual displays online — and settled what the iPad
-shows: the Mac's own screen, mirror only (see "First session"). The
-mirror-only build itself, WiFi, zoom, Draw Mode and its freeze, a full
-round, and replies on the iPad have **not** been run on hardware yet.
-[`spec/device-checklist.md`](spec/device-checklist.md) is the manual pass
-that still has to happen before this is considered proven end to end.
+`pnpm --dir DesignCanvas/server test:e2e` below. Everything that needs a
+real Mac and iPad is checked by hand with
+[`spec/device-checklist.md`](spec/device-checklist.md).
 
 **Claude Code mod (2026-10-05).** Sketches now reach Claude Code through a
 mod instead of an MCP channel: no development flag, nothing written into
 your project, a clear outcome for every sketch, and any session with the
 mod loaded is usable (see [`spec/PRD-ClaudeMods.md`](spec/PRD-ClaudeMods.md)
 and [`spec/technical_doc-ClaudeMods.md`](spec/technical_doc-ClaudeMods.md)).
-The daemon and the mod have been run against real Claude Code sessions with
-synthetic sketches. The Mac menu's session list, the every-session option
-and the iPad's session switcher are built and unit-tested but **have not
-been run on hardware**. The channel process still ships in `server/` for
+The channel process still ships in `server/` for
 the reply-compliance baseline; the app no longer uses it.
 
 ## What's in here
@@ -127,10 +116,11 @@ pnpm --dir DesignCanvas/server build
 pnpm --dir DesignCanvas/server start          # designtool --http, on 127.0.0.1:47100
 ```
 
-The Mac app supervises this process for you in normal use — the manual
-`start` above is for developing the daemon on its own. Point the Mac app's
-"Set server build…" picker at `DesignCanvas/server/dist/index.js` (see
-"First session" below).
+The Mac app supervises this process for you in normal use, from the copy
+bundled inside it; the manual `start` above is for developing the daemon on
+its own. A Debug build made without pnpm has no bundled server: point its
+**Settings ▸ Server build ▸ Choose…** at `DesignCanvas/server/dist/index.js`
+(see "First session" below).
 
 ### The Mac app
 
@@ -303,8 +293,8 @@ files. Treat the daemon as trusting everything already running on your Mac.
   in the Terminal. There is no fallback.
 - **Old Claude Code, old iPad app.** Claude Code before 2.1.287 has no
   mods and Start refuses it. An iPad app from before the session list
-  keeps working and simply shows no session switcher and no "Waiting at
-  the Mac".
+  keeps working and simply shows no session switcher and no "Waiting for
+  reply at desktop".
 - **The mod approves one thing on your behalf:** Claude Code reading the
   sketch for the round it is working on, from the store under
   `~/.claude/channels/design-canvas/`. Without that, the read opens a
@@ -317,12 +307,14 @@ files. Treat the daemon as trusting everything already running on your Mac.
 Recorded here rather than left silently unbuilt, per the implementation
 plan's ruling 9:
 
-- Custom app icons (design still open, G18).
+- Custom app icons. G18 settled the interface (2026-10-13), not the icons;
+  both apps still use the default icon.
 - Sparkle update wiring and an appcast feed (no feed exists yet).
 - A release/signing/notarization pipeline for the Mac app.
 - Metal rendering on the iPad (the current layer-based path already makes
   freeze/Draw Mode fast enough; revisit only if that changes).
-- Redo and clear-all in Draw Mode (open design question, G6).
+- Clear-all in Draw Mode (open design question, G6). Redo is built; the
+  panel's trash leaves Draw Mode and throws the sketch away.
 - Automated device-level end-to-end testing — it needs real hardware.
   [`spec/device-checklist.md`](spec/device-checklist.md) is the manual
   checklist that stands in for it.

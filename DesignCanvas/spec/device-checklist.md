@@ -11,16 +11,18 @@ actual PencilKit/UIKit surface on a real iPad.
 
 Run the whole list once over **USB** and once over **WiFi** — most checks
 apply to both transports, but a bug in one binding rarely shows up in the
-other. Record pass/fail and notes per transport in the table below; append
-a dated row per run rather than overwriting the last one.
+other.
 
 ## Setup
 
-- A Mac running the Design Canvas Mac app (Screen Recording granted) and
-  the daemon built and pointed at from "Set server build…".
+- A Mac running the Design Canvas Mac app (Screen Recording granted). The
+  daemon and the Claude Code mod ship inside the app; only a Debug build
+  made without pnpm needs **Settings ▸ Server build ▸ Choose…** pointed at
+  `DesignCanvas/server/dist/index.js`.
 - A real iPad running the Design Canvas iPad app, on iOS/iPadOS 16.4+.
-- A real Claude Code session started from the Mac app ("Start session"),
-  attached to a real project.
+- A real Claude Code session with the Design Canvas mod, started from the
+  Mac app (**Open Project…**, then **Start**) or, with the every-session
+  option on, by running `claude` in the project.
 - Something with visible motion to freeze against (a video, a spinner, or
   a digital clock with seconds) for the freeze-exactness check.
 
@@ -45,13 +47,7 @@ a dated row per run rather than overwriting the last one.
 | 15 | **Top bar layout** (added 2026-10-13) | Top-docked, in Draw Mode, in landscape: the palette sits in the top row between Cancel and the note field, level with them, and nothing overlaps. In portrait it takes the row below. Type a long note: the field grows and stops before the palette. With a reply notification showing, nothing overlaps the panel in either orientation. |
 | 16 | **Legibility** (added 2026-10-13) | In light and in dark appearance, over a dark mirror and over a white one, read every piece of chrome: the pill, the panel, the note placeholder, the send chip, the notification and the session list. Nothing is faint or unreadable. Run once below iOS 26 if a device is available, where the glass falls back to the frosted material. |
 
-## Results
-
-| Date | Tester | Transport | Build/commit | Pass | Fail | Notes |
-|---|---|---|---|---|---|---|
-| 2026-09-17 | owner | USB | `72104fe`, then `c9f59d2` | 1 (USB half) | — | **Not a checklist run** — first bring-up. USB auto-connect works once a flaky cable was replaced (its signature: `usbmux attached` then `usbmux detached` within ~300 ms, repeatedly). The iPad showed the Mac's stream, at the time as an extended display. Found and fixed: `pnpm start` never launched the daemon; macOS never brought the virtual displays online, so the first session showed nothing. Decided from these sessions: mirror only. Checks 2–11 not run; the mirror-only build has not been on the iPad yet. |
-| | | USB | | | | |
-| | | WiFi | | | | |
+## Reporting a failure
 
 Log a fail with enough detail to file an issue: which check, which step of
 the check, what was expected vs. observed, and — if it's plausibly a wire
