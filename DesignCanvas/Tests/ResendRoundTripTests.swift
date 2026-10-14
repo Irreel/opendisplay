@@ -129,7 +129,7 @@ final class ResendRoundTripTests: XCTestCase {
         )
 
         // Draw Mode: the freeze goes out, the Mac answers, the user draws.
-        model.enterDrawMode(zoomRect: .full, viewport: CanvasViewport(width: 40, height: 30, scale: 2))
+        model.enterDrawMode(viewport: CanvasViewport(width: 40, height: 30, scale: 2))
         let frozen = try XCTUnwrap(wire.take(CanvasWire.frozen), "the Mac answers every freeze")
         model.canvasMessage(type: CanvasWire.frozen, object: frozen)
         XCTAssertEqual(model.drawState, .drawing)

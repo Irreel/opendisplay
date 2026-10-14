@@ -703,7 +703,10 @@ Field types, exactly as implemented (`DesignCanvas/Shared/CanvasMessages.swift`)
 * **`freeze`** (receiver to sender): `captureMs` (integer, milliseconds —
   the same clock as the video telemetry prefix's `cap`, section 5.1);
   `zoomRect` (object `{x, y, w, h}`, numbers, normalized 0..1, top-left
-  origin — the region the receiver had zoomed into, or the full frame);
+  origin — the part of the frame the sketch covers: the full frame from a
+  current receiver, which zooms freely in Draw Mode and exports the sketch
+  over the whole picture, or the region an older receiver was zoomed into
+  when Draw Mode began);
   `t` (number, milliseconds since the Unix epoch on the receiver's clock,
   as in `touch.t`).
 * **`frozen`** (sender to receiver): `ok` (bool). `true` when the sender
@@ -714,11 +717,12 @@ Field types, exactly as implemented (`DesignCanvas/Shared/CanvasMessages.swift`)
   `zoomRect` (object, as above); `viewport` (object `{w, h, scale}`: `w`
   and `h` integers, `scale` a number). **`viewport` describes the sketch
   surface, not the device**: `w` and `h` are the size in points of the rect
-  the video actually covered on screen — the rect the `sketch` PNG was
-  drawn over and is stretched back onto — and `scale` is the screen scale
-  that PNG was rendered at, so `w * scale` by `h * scale` is its pixel
-  size. On a receiver that letterboxes the video, or one zoomed into part
-  of it, that is smaller than the panel. `note` (string, optional — the
+  the `sketch` PNG covers and is stretched back onto — on a current
+  receiver the whole picture as fitted to the screen, whatever the zoom
+  was while drawing; on an older one the part of it that was on screen —
+  and `scale` is the screen scale that PNG was rendered at, so `w * scale`
+  by `h * scale` is its pixel size. On a receiver that letterboxes the
+  video that is smaller than the panel. `note` (string, optional — the
   user's typed note); `base` (string, optional — the only defined value is
   `blank`); `t` (number, as above). With `base` absent, or any value the
   sender does not know, the sender composites the sketch over the frame

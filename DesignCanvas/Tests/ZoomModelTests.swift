@@ -180,39 +180,82 @@ final class ZoomModelTests: XCTestCase {
         XCTAssertEqual(model.offset.height, 0, accuracy: 1e-9)
     }
 
-    // MARK: - lock
+    // MARK: - the sketch surface follows the zoom
 
-    func test_lockedModel_ignoresPinchAndPan() {
+    // The sketch is a scroll view whose content is the whole unzoomed view.
+    // These pin down where it has to be scrolled to so that ink stays on the
+    // video pixel it was drawn on (technical_doc section 3, zoom in Draw Mode).
+
+    private let wideVideo = CGSize(width: 1600, height: 1000)
+
+    func test_sketchContentOffset_atScaleOne_isZero() {
+        let model = ZoomModel()
+        XCTAssertEqual(model.sketchContentOffset(viewSize: squareView), .zero)
+    }
+
+    func test_sketchContentOffset_keepsInkOnTheVideoPixelItWasDrawnOn() {
         var model = ZoomModel()
-        model.pinch(by: 2, anchor: CGPoint(x: 500, y: 500),
-                    viewSize: squareView, videoSize: squareVideo)
-        let locked = { () -> ZoomModel in
-            var copy = model
-            copy.isLocked = true
-            return copy
-        }()
+        model.pinch(by: 3, anchor: CGPoint(x: 200, y: 400),
+                    viewSize: squareView, videoSize: wideVideo)
+        model.pan(by: CGSize(width: -50, height: 30),
+                  viewSize: squareView, videoSize: wideVideo)
 
-        var underTest = locked
-        underTest.pinch(by: 3, anchor: .zero, viewSize: squareView, videoSize: squareVideo)
-        underTest.pan(by: CGSize(width: 300, height: 300),
-                      viewSize: squareView, videoSize: squareVideo)
-        XCTAssertEqual(underTest, locked)
-        XCTAssertEqual(underTest.scale, 2, accuracy: 1e-9)
-        XCTAssertEqual(underTest.offset, .zero)
+        // A point 30% across and 60% down the video...
+        let u = 0.3, v = 0.6
+        // ...is here in the unzoomed view, which is where its ink is stored...
+        let fitted = ZoomModel.fittedRect(videoSize: wideVideo, in: squareView)
+        let stored = CGPoint(x: fitted.minX + u * fitted.width, y: fitted.minY + v * fitted.height)
+        // ...and here on screen now.
+        let drawn = model.transformedRect(viewSize: squareView, videoSize: wideVideo)
+        let onScreen = CGPoint(x: drawn.minX + u * drawn.width, y: drawn.minY + v * drawn.height)
+
+        let offset = model.sketchContentOffset(viewSize: squareView)
+        XCTAssertEqual(stored.x * model.scale - offset.x, onScreen.x, accuracy: 1e-9)
+        XCTAssertEqual(stored.y * model.scale - offset.y, onScreen.y, accuracy: 1e-9)
+    }
+
+    func test_sketchContentOffset_staysInsideTheScrollRange() {
+        // The letterboxed axis has the least room, so it is the one that would
+        // leave the range first.
+        for drag in [CGSize(width: 10_000, height: 10_000), CGSize(width: -10_000, height: -10_000)] {
+            var model = ZoomModel()
+            model.pinch(by: 1.2, anchor: .zero, viewSize: squareView, videoSize: wideVideo)
+            model.pan(by: drag, viewSize: squareView, videoSize: wideVideo)
+
+            let offset = model.sketchContentOffset(viewSize: squareView)
+            let maxX = squareView.width * (model.scale - 1)
+            let maxY = squareView.height * (model.scale - 1)
+            XCTAssertGreaterThanOrEqual(offset.x, -1e-9)
+            XCTAssertGreaterThanOrEqual(offset.y, -1e-9)
+            XCTAssertLessThanOrEqual(offset.x, maxX + 1e-9)
+            XCTAssertLessThanOrEqual(offset.y, maxY + 1e-9)
+        }
+    }
+
+    func test_sketchRect_isThePictureAtScaleOne() {
+        // What Done exports and what `viewport` reports: the whole picture,
+        // wherever the zoom has got to.
+        let rect = ZoomModel.sketchRect(videoSize: wideVideo, in: squareView)
+        XCTAssertEqual(rect, ZoomModel.fittedRect(videoSize: wideVideo, in: squareView))
+        XCTAssertEqual(rect, CGRect(x: 0, y: 187.5, width: 1000, height: 625))
+    }
+
+    func test_sketchRect_withoutAPicture_isTheWholeView() {
+        // The blank page: no video, and the sketch covers the page.
+        XCTAssertEqual(ZoomModel.sketchRect(videoSize: .zero, in: squareView),
+                       CGRect(origin: .zero, size: squareView))
     }
 
     // MARK: - reset
 
-    func test_reset_returnsToTheFittedVideoAndKeepsTheLock() {
+    func test_reset_returnsToTheFittedVideo() {
         var model = ZoomModel()
         model.pinch(by: 4, anchor: .zero, viewSize: squareView, videoSize: squareVideo)
         model.pan(by: CGSize(width: -200, height: 0),
                   viewSize: squareView, videoSize: squareVideo)
-        model.isLocked = true
         model.reset()
         XCTAssertEqual(model.scale, 1, accuracy: 1e-9)
         XCTAssertEqual(model.offset, .zero)
-        XCTAssertTrue(model.isLocked)
         assertRect(model.visibleRect(viewSize: squareView, videoSize: squareVideo), .full)
     }
 }

@@ -1,121 +1,25 @@
-// Both hops and the project, at a glance (P1), and the details behind a tap
-// (P2): what the receiver thinks it is doing, what the Mac said about its
-// channel, the connection parameters, the last notice, and the log.
+// The details behind the session list's "Connection details…" (P2): what the
+// receiver thinks it is doing, what the Mac said about its channel, the
+// connection parameters, the last notice, and the log. The at-a-glance half of
+// P1 is the project pill and its session list, in `ProjectPill.swift`.
 
 import SwiftUI
-
-struct ConnectionStatusView: View {
-
-    @ObservedObject var receiver: StreamReceiver
-    @ObservedObject var model: CanvasModel
-    let onTap: () -> Void
-
-    var body: some View {
-        HStack(spacing: 10) {
-            Button(action: onTap) {
-                HStack(spacing: 10) {
-                    StatusDot(state: linkState)
-                        .accessibilityLabel("\(deviceKind) to Mac: \(linkState.title)")
-                    StatusDot(state: channelState)
-                        .accessibilityLabel("Mac to Claude Code: \(channelTitle)")
-                    if model.sessions.sessions.count <= 1 { projectLabel }
-                }
-            }
-            .buttonStyle(.plain)
-            .accessibilityHint("Shows connection details")
-
-            // X24: with more than one session the project name is the switcher.
-            // With one there is nothing to choose and it stays plain text (X21).
-            if model.sessions.sessions.count > 1 {
-                SessionMenu(model: model) {
-                    HStack(spacing: 4) {
-                        projectLabel
-                        Image(systemName: "chevron.up.chevron.down")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-                .accessibilityHint("Chooses which Claude Code session gets the next sketch")
-            }
-
-            // X8, and nothing more than these words (XG6).
-            if model.waitingAtMac {
-                Text("Waiting at the Mac")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.orange)
-                    .lineLimit(1)
-            }
-        }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
-    }
-
-    @ViewBuilder
-    private var projectLabel: some View {
-        if model.sessions.needsPick {
-            Text("Choose a session")
-                .font(.subheadline.weight(.medium))
-                .lineLimit(1)
-                .foregroundStyle(.orange)
-        } else {
-            Text(model.project ?? "unselected")
-                .font(.subheadline.weight(.medium))
-                .lineLimit(1)
-                .foregroundStyle(model.project == nil ? .secondary : .primary)
-        }
-    }
-
-    private var linkState: StatusDot.State {
-        guard receiver.connected else { return .down }
-        return receiver.canvas.macSupportsCanvas ? .up : .warning
-    }
-
-    private var channelState: StatusDot.State {
-        switch model.channel {
-        case .attached: return .up
-        case .existing, .detached: return .warning
-        case .none: return .down
-        }
-    }
-
-    /// `existing` is orange like `detached`, but it is not "not ready": sketches do reach a
-    /// session — one the Mac app didn't start, which is what the Mac's own menu says too.
-    private var channelTitle: String {
-        model.channel == .existing ? "another session" : channelState.title
-    }
-}
-
-/// The connected sessions as a menu, with a tick on the target (X24, X25). Used by
-/// the status panel and, when a pick is needed mid-sketch, by the Draw Mode overlay.
-struct SessionMenu<Label: View>: View {
-    @ObservedObject var model: CanvasModel
-    @ViewBuilder let label: () -> Label
-
-    var body: some View {
-        Menu {
-            ForEach(model.sessions.sessions) { entry in
-                Button {
-                    model.selectSession(entry.id)
-                } label: {
-                    if entry.id == model.sessions.target {
-                        SwiftUI.Label(SessionText.line(entry), systemImage: "checkmark")
-                    } else {
-                        Text(SessionText.line(entry))
-                    }
-                }
-            }
-        } label: {
-            label()
-        }
-    }
-}
 
 /// How one session reads in a list (X25): its folder, then what tells it from
 /// another session in the same folder: the title the user gave it, or when it
 /// started; its branch; when it last replied.
 enum SessionText {
     static func line(_ entry: CanvasSessionEntry) -> String {
-        var parts = [entry.folder]
+        ([entry.folder] + details(entry)).joined(separator: " \u{00B7} ")
+    }
+
+    /// Everything but the folder, for a row that shows the folder on its own line.
+    static func detail(_ entry: CanvasSessionEntry) -> String {
+        details(entry).joined(separator: " \u{00B7} ")
+    }
+
+    private static func details(_ entry: CanvasSessionEntry) -> [String] {
+        var parts: [String] = []
         if let title = entry.title {
             parts.append(title)
         } else if let started = shortTime(entry.startedAt) {
@@ -125,7 +29,7 @@ enum SessionText {
         if let lastReplyAt = entry.lastReplyAt, let replied = shortTime(lastReplyAt) {
             parts.append("replied \(replied)")
         }
-        return parts.joined(separator: " \u{00B7} ")
+        return parts
     }
 
     private static let parsers: [ISO8601DateFormatter] = {
@@ -158,8 +62,8 @@ struct StatusDot: View {
 
         var color: Color {
             switch self {
-            case .up: return .green
-            case .warning: return .orange
+            case .up: return .canvasSuccessMark
+            case .warning: return .canvasWarningMark
             case .down: return .secondary
             }
         }
@@ -191,7 +95,7 @@ struct ConnectionDetailView: View {
                     LabeledContent("Mac to Claude Code", value: channelDescription)
                     LabeledContent("Project", value: model.project ?? "unselected")
                     if model.waitingAtMac {
-                        LabeledContent("Claude Code", value: "Waiting at the Mac")
+                        LabeledContent("Claude Code", value: CanvasSessionState.waiting.title)
                     }
                     if receiver.videoSize != .zero {
                         LabeledContent("Mirror",

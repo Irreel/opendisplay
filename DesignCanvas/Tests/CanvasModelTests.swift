@@ -58,7 +58,6 @@ final class CanvasModelTests: XCTestCase {
         set { clock.wallMs = newValue }
     }
 
-    private let zoom = NormalizedRect(x: 0.25, y: 0.25, width: 0.5, height: 0.5)
     private let viewport = CanvasViewport(width: 1180, height: 820, scale: 2)
     private let sketch = Data([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A])
 
@@ -76,7 +75,7 @@ final class CanvasModelTests: XCTestCase {
     /// Enter Draw Mode and let the Mac confirm the freeze.
     private func drawingModel(strokes: Int = 1) -> CanvasModel {
         let model = makeModel()
-        model.enterDrawMode(zoomRect: zoom, viewport: viewport)
+        model.enterDrawMode(viewport: viewport)
         model.canvasMessage(type: CanvasWire.frozen, object: FrozenMessage(ok: true).json)
         model.strokesChanged(count: strokes)
         return model
@@ -86,20 +85,21 @@ final class CanvasModelTests: XCTestCase {
 
     func test_enterDrawMode_freezesAtOnceAndAsksTheMacForTheSameFrame() {
         let model = makeModel()
-        model.enterDrawMode(zoomRect: zoom, viewport: viewport)
+        model.enterDrawMode(viewport: viewport)
 
         XCTAssertEqual(receiver.frozenCalls, [true])
         XCTAssertEqual(model.drawState, .freezing(deadline: 102))
         let freezes = receiver.messages(ofType: CanvasWire.freeze)
         XCTAssertEqual(freezes.count, 1)
         let freeze = FreezeMessage(json: freezes[0])
-        XCTAssertEqual(freeze, FreezeMessage(captureMs: 4_242, zoomRect: zoom, t: wallMs))
+        // The whole frame, always: zoom is the iPad's own business (M5).
+        XCTAssertEqual(freeze, FreezeMessage(captureMs: 4_242, zoomRect: .full, t: wallMs))
     }
 
     func test_enterDrawMode_withoutAFrame_showsANoticeAndStaysLive() {
         receiver.captureMs = nil
         let model = makeModel()
-        model.enterDrawMode(zoomRect: zoom, viewport: viewport)
+        model.enterDrawMode(viewport: viewport)
 
         XCTAssertEqual(model.notice, .noFrame)
         XCTAssertEqual(model.drawState, .live)
@@ -109,11 +109,11 @@ final class CanvasModelTests: XCTestCase {
 
     func test_enterDrawMode_clearsALeftoverNotice() {
         let model = makeModel()
-        model.enterDrawMode(zoomRect: zoom, viewport: viewport)
+        model.enterDrawMode(viewport: viewport)
         model.canvasMessage(type: CanvasWire.frozen, object: FrozenMessage(ok: false).json)
         XCTAssertEqual(model.notice, .noFrame)
 
-        model.enterDrawMode(zoomRect: zoom, viewport: viewport)
+        model.enterDrawMode(viewport: viewport)
         XCTAssertNil(model.notice)
     }
 
@@ -121,7 +121,7 @@ final class CanvasModelTests: XCTestCase {
 
     func test_frozenOk_entersDrawing() {
         let model = makeModel()
-        model.enterDrawMode(zoomRect: zoom, viewport: viewport)
+        model.enterDrawMode(viewport: viewport)
         model.canvasMessage(type: CanvasWire.frozen, object: FrozenMessage(ok: true).json)
 
         XCTAssertEqual(model.drawState, .drawing)
@@ -130,7 +130,7 @@ final class CanvasModelTests: XCTestCase {
 
     func test_frozenNotOk_returnsLiveUnfreezesAndKeepsTheStrokes() {
         let model = makeModel()
-        model.enterDrawMode(zoomRect: zoom, viewport: viewport)
+        model.enterDrawMode(viewport: viewport)
         model.canvasMessage(type: CanvasWire.frozen, object: FrozenMessage(ok: false).json)
 
         XCTAssertEqual(model.drawState, .live)
@@ -141,7 +141,7 @@ final class CanvasModelTests: XCTestCase {
 
     func test_tick_timesTheFreezeOutAfterTwoSeconds() {
         let model = makeModel()
-        model.enterDrawMode(zoomRect: zoom, viewport: viewport)
+        model.enterDrawMode(viewport: viewport)
 
         clock.uptime = 101.9
         model.tick()
@@ -157,7 +157,7 @@ final class CanvasModelTests: XCTestCase {
 
     // MARK: - Done
 
-    func test_done_sendsTheSketchWithTheEntryZoomAndResumesSync() {
+    func test_done_sendsTheSketchOverTheWholeFrameAndResumesSync() {
         let model = drawingModel(strokes: 3)
         model.note = "  align with the title baseline  "
         wallMs = 1_700_000_005_000
@@ -167,7 +167,7 @@ final class CanvasModelTests: XCTestCase {
         let annotations = receiver.messages(ofType: CanvasWire.annotation)
         XCTAssertEqual(annotations.count, 1)
         XCTAssertEqual(AnnotationMessage(json: annotations[0]),
-                       AnnotationMessage(sketchPNG: sketch, zoomRect: zoom, viewport: viewport,
+                       AnnotationMessage(sketchPNG: sketch, zoomRect: .full, viewport: viewport,
                                          note: "align with the title baseline",
                                          t: 1_700_000_005_000))
         XCTAssertEqual(receiver.frozenCalls, [true, false])
@@ -525,6 +525,109 @@ final class CanvasModelTests: XCTestCase {
         XCTAssertEqual(model.rounds.last?.annotationId, "id-19")
     }
 
+    // MARK: - Reply notification
+
+    private func reply(_ model: CanvasModel, _ id: String, _ status: RoundStatus,
+                       message: String? = nil, prUrl: String? = nil) {
+        model.canvasMessage(type: CanvasWire.agentReply,
+                            object: AgentReplyMessage(annotationId: id, status: status,
+                                                      message: message, prUrl: prUrl, t: wallMs).json)
+    }
+
+    func test_replyNotification_announcesAnAppliedRoundByItsNote() {
+        let model = makeModel()
+        model.canvasMessage(type: CanvasWire.rounds,
+                            object: RoundsMessage(rounds: [round("a", .sent, note: "align it")]).json)
+        XCTAssertNil(model.replyNotification)
+
+        reply(model, "a", .applied, message: "done", prUrl: "https://example.com/pr/1")
+
+        XCTAssertEqual(model.replyNotification?.status, .applied)
+        XCTAssertEqual(model.replyNotification?.detail, "align it")
+        XCTAssertEqual(model.replyNotification?.prURL, URL(string: "https://example.com/pr/1"))
+        XCTAssertEqual(model.replyNotification?.staysUntilDismissed, false)
+    }
+
+    func test_replyNotification_explainsAFailureWithClaudesMessage() {
+        let model = makeModel()
+        model.canvasMessage(type: CanvasWire.rounds,
+                            object: RoundsMessage(rounds: [round("a", .sent, note: "align it")]).json)
+        reply(model, "a", .failed, message: "no such component")
+
+        XCTAssertEqual(model.replyNotification?.detail, "no such component")
+        XCTAssertEqual(model.replyNotification?.staysUntilDismissed, true)
+    }
+
+    func test_replyNotification_isNotRaisedForQueuedOrSent() {
+        let model = makeModel()
+        reply(model, "a", .queued)
+        reply(model, "a", .sent)
+        XCTAssertNil(model.replyNotification)
+    }
+
+    func test_replyNotification_dropsALinkThatIsNotHTTP() {
+        let model = makeModel()
+        reply(model, "a", .applied, prUrl: "file:///etc/passwd")
+        XCTAssertNotNil(model.replyNotification)
+        XCTAssertNil(model.replyNotification?.prURL)
+    }
+
+    func test_replyNotification_aDuplicateRelayDoesNotBringBackADismissedCard() {
+        let model = makeModel()
+        reply(model, "a", .applied, message: "done")
+        model.dismissReplyNotification()
+        XCTAssertNil(model.replyNotification)
+
+        reply(model, "a", .applied, message: "done")
+        XCTAssertNil(model.replyNotification)
+    }
+
+    func test_replyNotification_aNewerReplyReplacesAnOlderOne() {
+        let model = makeModel()
+        reply(model, "a", .failed, message: "nope")
+        reply(model, "b", .needsInput, message: "which one?")
+        XCTAssertEqual(model.replyNotification?.annotationId, "b")
+        XCTAssertEqual(model.replyNotification?.status, .needsInput)
+    }
+
+    func test_replyNotification_theFirstSnapshotIsHistoryNotNews() {
+        let model = makeModel()
+        model.canvasMessage(type: CanvasWire.rounds,
+                            object: RoundsMessage(rounds: [round("a", .applied), round("b", .failed)]).json)
+        XCTAssertNil(model.replyNotification)
+    }
+
+    func test_replyNotification_aSnapshotAnnouncesAnOutcomeThatLandedWhileTheLinkWasDown() {
+        let model = makeModel()
+        model.canvasMessage(type: CanvasWire.rounds,
+                            object: RoundsMessage(rounds: [round("a", .sent, note: "align it")]).json)
+        model.canvasMessage(type: CanvasWire.rounds,
+                            object: RoundsMessage(rounds: [round("a", .applied, message: "done", note: "align it")]).json)
+
+        XCTAssertEqual(model.replyNotification?.annotationId, "a")
+        XCTAssertEqual(model.replyNotification?.status, .applied)
+    }
+
+    // MARK: - Claude Code session
+
+    func test_hasClaudeSession_followsTheSessionListOrAnOlderMacsChannel() {
+        let model = makeModel()
+        XCTAssertFalse(model.hasClaudeSession)
+
+        model.pingReceived(channel: "detached", project: "opendisplay")
+        XCTAssertFalse(model.hasClaudeSession)
+
+        model.pingReceived(channel: "attached", project: "opendisplay")
+        XCTAssertTrue(model.hasClaudeSession)
+
+        model.pingReceived(channel: "detached", project: nil)
+        let entry = CanvasSessionEntry(id: "s1", folder: "opendisplay", title: nil, branch: nil,
+                                       startedAt: "2026-09-16T10:00:00.000Z", lastReplyAt: nil, state: .idle)
+        model.canvasMessage(type: CanvasWire.sessions,
+                            object: SessionsMessage(sessions: [entry], target: "s1").json)
+        XCTAssertTrue(model.hasClaudeSession)
+    }
+
     // MARK: - Ping
 
     func test_ping_updatesTheChannelAndProject() {
@@ -582,7 +685,7 @@ final class CanvasModelTests: XCTestCase {
         XCTAssertFalse(model.canEnterDrawMode)
 
         receiver.supportsCanvas = true
-        model.enterDrawMode(zoomRect: zoom, viewport: viewport)
+        model.enterDrawMode(viewport: viewport)
         XCTAssertFalse(model.canEnterDrawMode)
     }
 
@@ -590,7 +693,7 @@ final class CanvasModelTests: XCTestCase {
         let model = makeModel()
         XCTAssertFalse(model.canSend)
 
-        model.enterDrawMode(zoomRect: zoom, viewport: viewport)
+        model.enterDrawMode(viewport: viewport)
         model.strokesChanged(count: 1)
         XCTAssertFalse(model.canSend, "freezing is not drawing (ruling 7)")
 
@@ -607,7 +710,7 @@ final class CanvasModelTests: XCTestCase {
         let model = makeModel()
         model.canvasMessage(type: CanvasWire.rounds,
                             object: RoundsMessage(rounds: [round("a", .queued)]).json)
-        model.enterDrawMode(zoomRect: zoom, viewport: viewport)
+        model.enterDrawMode(viewport: viewport)
 
         model.canvasMessage(type: CanvasWire.frozen, object: [:])
         model.canvasMessage(type: CanvasWire.frozen, object: ["ok": "yes"])
@@ -673,7 +776,7 @@ final class CanvasModelTests: XCTestCase {
     func test_blank_enterDrawMode_needsNoFrameAndAsksTheMacForNothing() {
         receiver.captureMs = nil
         let model = blankModel()
-        model.enterDrawMode(zoomRect: zoom, viewport: viewport)
+        model.enterDrawMode(viewport: viewport)
 
         XCTAssertEqual(model.drawState, .drawing)
         XCTAssertNil(model.notice)
@@ -683,7 +786,7 @@ final class CanvasModelTests: XCTestCase {
 
     func test_blank_done_sendsABlankBaseAnnotationOverTheWholePage() throws {
         let model = blankModel()
-        model.enterDrawMode(zoomRect: zoom, viewport: viewport)
+        model.enterDrawMode(viewport: viewport)
         model.strokesChanged(count: 3)
         model.note = "three cards in a row"
         model.done(sketchPNG: sketch)
@@ -702,7 +805,7 @@ final class CanvasModelTests: XCTestCase {
 
     func test_blank_resendAfterLinkLoss_isTheSameAnnotation() throws {
         let model = blankModel()
-        model.enterDrawMode(zoomRect: zoom, viewport: viewport)
+        model.enterDrawMode(viewport: viewport)
         model.strokesChanged(count: 1)
         model.done(sketchPNG: sketch)
         receiver.completeSend(false)
@@ -727,18 +830,18 @@ final class CanvasModelTests: XCTestCase {
 
     func test_mirrorEntry_afterABlankRound_freezesAgain() {
         let model = blankModel()
-        model.enterDrawMode(zoomRect: zoom, viewport: viewport)
+        model.enterDrawMode(viewport: viewport)
         model.cancel()
 
         model.preferredSurface = .mirror
-        model.enterDrawMode(zoomRect: zoom, viewport: viewport)
+        model.enterDrawMode(viewport: viewport)
         XCTAssertEqual(receiver.messages(ofType: CanvasWire.freeze).count, 1)
         model.canvasMessage(type: CanvasWire.frozen, object: FrozenMessage(ok: true).json)
         model.strokesChanged(count: 1)
         model.done(sketchPNG: sketch)
         let annotation = AnnotationMessage(json: receiver.messages(ofType: CanvasWire.annotation)[0])
         XCTAssertEqual(annotation?.base, .mirror)
-        XCTAssertEqual(annotation?.zoomRect, zoom)
+        XCTAssertEqual(annotation?.zoomRect, .full)
     }
 
     // MARK: - Choosing the blank surface goes straight to drawing

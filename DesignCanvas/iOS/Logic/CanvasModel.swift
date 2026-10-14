@@ -43,6 +43,9 @@ final class CanvasModel: ObservableObject {
     /// Newest first, at most `CanvasWire.roundsSnapshotLimit` (M8).
     @Published private(set) var rounds: [CanvasRound] = []
     @Published private(set) var notice: DrawModeStateMachine.Notice?
+    /// The outcome the screen is announcing (M8): the newest round that
+    /// reached one while this device was watching. Nil once dismissed.
+    @Published private(set) var replyNotification: ReplyNotification?
     /// `.none` until a ping says otherwise (P1).
     @Published private(set) var channel: ChannelState = .none
     @Published private(set) var project: String?
@@ -61,18 +64,19 @@ final class CanvasModel: ObservableObject {
     /// should empty itself and call `strokesCleared()`.
     @Published private(set) var shouldClearStrokes = false
 
-    /// The zoom, viewport and frame captured when Draw Mode was entered. The
-    /// sketch is drawn on that frame, so that is what the Mac is told about —
-    /// not whatever the live picture has moved on to.
-    private var entryZoomRect: NormalizedRect = .full
+    /// The viewport and frame captured when Draw Mode was entered. The sketch
+    /// is drawn on that frame, so that is what the Mac is told about — not
+    /// whatever the live picture has moved on to.
     private var entryViewport = CanvasViewport(width: 0, height: 0, scale: 1)
     private var entryCaptureMs: Int64 = 0
-    /// What the sketch in progress was drawn on. Fixed at entry, like the zoom:
-    /// the surface the screen shows later says nothing about this sketch.
+    /// What the sketch in progress was drawn on. Fixed at entry: the surface the screen shows later says nothing about this sketch.
     private var entryBase: CanvasSurface = .mirror
     /// Built by `done`, kept until the send lands so a retry after a link loss
     /// puts the identical bytes back on the wire (plan ruling 5).
     private var pendingAnnotation: AnnotationMessage?
+    /// The last outcome a live reply put on screen, so a duplicate relay of it
+    /// is not announced twice.
+    private var lastAnnounced: ReplyNotification?
 
     /// ISO-8601 with fractional seconds in UTC, the format the daemon's own
     /// `createdAt` uses, so a round this device invents for a reply about an
@@ -112,6 +116,12 @@ final class CanvasModel: ObservableObject {
     /// with several sessions connected and none chosen, only once the designer
     /// has picked where the sketch goes (X26).
     var canSend: Bool { machine.canSend && !sessions.needsPick }
+
+    /// A Claude Code session is there to take a sketch: one the Mac lists, or,
+    /// from a Mac that predates the session list, the one its ping reports.
+    var hasClaudeSession: Bool {
+        !sessions.sessions.isEmpty || channel == .attached || channel == .existing
+    }
 
     /// The session the next sketch goes to, when there is one to name.
     var targetSession: CanvasSessionEntry? { sessions.targetEntry }
@@ -164,18 +174,19 @@ final class CanvasModel: ObservableObject {
     func chooseSurface(_ chosen: CanvasSurface, pageViewport: CanvasViewport) {
         preferredSurface = chosen
         guard chosen == .blank, surface == .blank, canEnterDrawMode else { return }
-        enterDrawMode(zoomRect: .full, viewport: pageViewport)
+        enterDrawMode(viewport: pageViewport)
     }
 
     /// Freeze the picture and ask the Mac to keep the same frame (M1, D9).
-    /// `zoomRect` and `viewport` are what the sketch will be sent with.
+    /// `viewport` is what the sketch will be sent with. There is no zoom rect
+    /// to give: the designer can zoom while drawing, and a round is the whole
+    /// frame whatever the zoom was (M5).
     ///
     /// On the blank surface there is no frame: nothing is frozen, nothing is
     /// asked of the Mac, and the sketch covers the whole page (B4).
-    func enterDrawMode(zoomRect: NormalizedRect, viewport: CanvasViewport) {
+    func enterDrawMode(viewport: CanvasViewport) {
         if surface == .blank {
             entryBase = .blank
-            entryZoomRect = .full
             entryViewport = viewport
             notice = nil
             apply(.enterBlankDrawMode)
@@ -189,7 +200,6 @@ final class CanvasModel: ObservableObject {
             return
         }
         entryCaptureMs = captureMs
-        entryZoomRect = zoomRect
         entryViewport = viewport
         // Whatever the last exit said, it is not about this sketch.
         notice = nil
@@ -202,7 +212,7 @@ final class CanvasModel: ObservableObject {
 
     /// Send the finished sketch (M5). The message is built from the state Draw
     /// Mode was entered with, so a late live frame cannot change what the Mac
-    /// crops.
+    /// composites.
     func done(sketchPNG: Data) {
         // Only build and store the message when the machine will accept it.
         // Otherwise a Done the machine refuses — no strokes, or a round still
@@ -221,7 +231,7 @@ final class CanvasModel: ObservableObject {
         }
         let trimmed = note.trimmingCharacters(in: .whitespacesAndNewlines)
         pendingAnnotation = AnnotationMessage(sketchPNG: sketchPNG,
-                                              zoomRect: entryZoomRect,
+                                              zoomRect: .full,
                                               viewport: entryViewport,
                                               note: trimmed.isEmpty ? nil : trimmed,
                                               t: nowMs(),
@@ -248,6 +258,8 @@ final class CanvasModel: ObservableObject {
     func strokesCleared() { shouldClearStrokes = false }
 
     func dismissNotice() { notice = nil }
+
+    func dismissReplyNotification() { replyNotification = nil }
 
     /// Drives the freeze deadline. The screen runs this only while freezing.
     func tick() { apply(.tick(now: uptime())) }
@@ -297,7 +309,9 @@ final class CanvasModel: ObservableObject {
             apply(.frozen(ok: frozen.ok))
         case CanvasWire.rounds:
             guard let snapshot = RoundsMessage(json: object) else { return }
-            rounds = merged(snapshot: Array(snapshot.rounds.prefix(CanvasWire.roundsSnapshotLimit)))
+            let incoming = merged(snapshot: Array(snapshot.rounds.prefix(CanvasWire.roundsSnapshotLimit)))
+            announceOutcomes(in: incoming)
+            rounds = incoming
         case CanvasWire.agentReply:
             guard let reply = AgentReplyMessage(json: object) else { return }
             merge(reply)
@@ -345,7 +359,7 @@ final class CanvasModel: ObservableObject {
         // dropped in between, and the frame from the entry check is then still
         // the best thing to ask for.
         let captureMs = receiver.currentCaptureMs() ?? entryCaptureMs
-        let freeze = FreezeMessage(captureMs: captureMs, zoomRect: entryZoomRect, t: nowMs())
+        let freeze = FreezeMessage(captureMs: captureMs, zoomRect: .full, t: nowMs())
         send(CanvasWire.freeze, freeze.json) { _ in }
     }
 
@@ -390,9 +404,37 @@ final class CanvasModel: ObservableObject {
         }
     }
 
+    /// A snapshot can be the first this device hears of an outcome: the reply
+    /// landed while the link was down. Announce the newest round that was
+    /// still in flight here and has an outcome there. Rounds this device never
+    /// saw in flight are history, not news, so a first snapshot announces
+    /// nothing.
+    private func announceOutcomes(in incoming: [CanvasRound]) {
+        let known = Dictionary(rounds.map { ($0.annotationId, $0.status) }, uniquingKeysWith: { first, _ in first })
+        let finished = incoming.first { round in
+            guard let before = known[round.annotationId] else { return false }
+            return before.progressRank < round.status.progressRank
+        }
+        if let finished, let notification = ReplyNotification(round: finished) {
+            lastAnnounced = notification
+            replyNotification = notification
+        }
+    }
+
     /// A live status change (ruling 4). It updates the round it names, or — if
     /// this device has no snapshot of that round — becomes one at the front.
     private func merge(_ reply: AgentReplyMessage) {
+        defer {
+            // A reply that changes nothing — the same outcome relayed twice —
+            // must not bring back a card the designer already dismissed.
+            if let round = rounds.first(where: { $0.annotationId == reply.annotationId }),
+               round.status == reply.status,
+               let notification = ReplyNotification(round: round),
+               notification != lastAnnounced {
+                lastAnnounced = notification
+                replyNotification = notification
+            }
+        }
         if let index = rounds.firstIndex(where: { $0.annotationId == reply.annotationId }) {
             var round = rounds[index]
             // Forward only, for the same reason a snapshot is (M5): these two

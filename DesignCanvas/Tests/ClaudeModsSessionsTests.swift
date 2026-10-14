@@ -283,7 +283,7 @@ final class SessionsModelTests: XCTestCase {
 
     private func drawingModel() -> CanvasModel {
         let model = CanvasModel(receiver: receiver, nowMs: { 1_700_000_000_000 }, uptime: { 100 })
-        model.enterDrawMode(zoomRect: .full, viewport: viewport)
+        model.enterDrawMode(viewport: viewport)
         model.canvasMessage(type: CanvasWire.frozen, object: FrozenMessage(ok: true).json)
         model.strokesChanged(count: 1)
         return model
