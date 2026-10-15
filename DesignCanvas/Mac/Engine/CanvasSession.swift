@@ -5,12 +5,16 @@ import Foundation
 
 /// The two additive `ping` fields (spec section 2, P1), shared by every
 /// session and written by the app as the daemon health poll and the project
-/// picker change. Thread-safe because sessions read it from the sender's
-/// queue while the app writes it from the main one.
+/// picker change, plus the one fact that flows the other way: when the last
+/// captured frame arrived, which is how the app knows capture is running
+/// (`isCapturing`). Thread-safe because sessions read and stamp it from the
+/// sender's queue while the app writes and reads it from the main one.
 final class CanvasStatus {
     private let lock = NSLock()
     private var storedChannelState: ChannelState = .none
     private var storedProjectName: String?
+    private var storedLastFrameAt: Date?
+    private var storedSessions: SessionsMessage = .empty
 
     var channelState: ChannelState {
         get {
@@ -38,16 +42,56 @@ final class CanvasStatus {
         }
     }
 
+    /// The connected Claude Code sessions as last heard from the daemon. Written
+    /// by `CanvasHub`, read by each session when its iPad says hello.
+    var sessions: SessionsMessage {
+        get {
+            lock.lock()
+            defer { lock.unlock() }
+            return storedSessions
+        }
+        set {
+            lock.lock()
+            storedSessions = newValue
+            lock.unlock()
+        }
+    }
+
     /// `channel` always; `project` only when a project is selected — an
     /// absent key is how the iPad is told there is none (spec section 2).
     var pingFields: [String: String] {
         lock.lock()
         defer { lock.unlock() }
-        var fields = [CanvasWire.pingChannelKey: storedChannelState.rawValue]
-        if let storedProjectName {
-            fields[CanvasWire.pingProjectKey] = storedProjectName
+        // `blank` is a capability, not a state: this Mac composites a sketch
+        // drawn on the iPad's blank page, and says so on every beat so the
+        // iPad offers that page only to a Mac that can take it.
+        var fields = [
+            CanvasWire.pingChannelKey: storedChannelState.rawValue,
+            CanvasWire.pingBlankKey: "1",
+        ]
+        // The project the iPad names is where the next sketch goes: the target
+        // session's folder. With no session it is the folder Start would open.
+        if let project = storedSessions.targetEntry?.folder ?? storedProjectName {
+            fields[CanvasWire.pingProjectKey] = project
         }
         return fields
+    }
+
+    /// A frame was captured at `at`. Called at capture rate from the sender's queue.
+    func noteFrame(at: Date) {
+        lock.lock()
+        storedLastFrameAt = at
+        lock.unlock()
+    }
+
+    /// Frames are flowing: one arrived within the last `window` seconds. This is the ground
+    /// truth behind the menu's Screen Recording row — a permission preflight that says no
+    /// while this says yes is the preflight being wrong (seen on macOS 26, 2026-09-30).
+    func isCapturing(now: Date, window: TimeInterval = 2) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let last = storedLastFrameAt else { return false }
+        return now.timeIntervalSince(last) < window
     }
 }
 
@@ -132,6 +176,18 @@ final class CanvasSession: SenderCanvasDelegate {
         lock.unlock()
 
         sendRoundsSnapshot(deviceID: peer.installID, via: outbound)
+        send(type: CanvasWire.sessions, status.sessions.json, via: outbound)
+    }
+
+    /// The session list changed (or the target did). `CanvasHub` calls this for
+    /// every live session; one with no link has nowhere to send it, and its
+    /// next hello sends the list anyway.
+    func sendSessions() {
+        lock.lock()
+        let outbound = self.outbound
+        lock.unlock()
+        guard let outbound else { return }
+        send(type: CanvasWire.sessions, status.sessions.json, via: outbound)
     }
 
     /// The same snapshot hello sends, on demand. `CanvasHub` calls this after
@@ -192,6 +248,7 @@ final class CanvasSession: SenderCanvasDelegate {
         lock.lock()
         ring.append(pixelBuffer, captureMs: captureMs)
         lock.unlock()
+        status.noteFrame(at: Date())
     }
 
     func canvasDidReceive(type: String, object: [String: Any], outbound: CanvasOutbound) {
@@ -200,6 +257,8 @@ final class CanvasSession: SenderCanvasDelegate {
             handleFreeze(object, outbound: outbound)
         case CanvasWire.annotation:
             handleAnnotation(object)
+        case CanvasWire.selectSession:
+            handleSelectSession(object)
         default:
             break
         }
@@ -221,6 +280,26 @@ final class CanvasSession: SenderCanvasDelegate {
     }
 
     func canvasPingFields() -> [String: String] { status.pingFields }
+
+    // MARK: - selectSession
+
+    /// The iPad picked the target (X24). The daemon owns the target, so the
+    /// choice goes there; the list that comes back on the sessions stream is
+    /// what tells this iPad, and every other one, that it took.
+    private func handleSelectSession(_ object: [String: Any]) {
+        guard let message = SelectSessionMessage(json: object) else {
+            Log.info("canvas: unparseable selectSession")
+            return
+        }
+        let daemon = self.daemon
+        Task {
+            do {
+                try await daemon.setTarget(instance: message.id, fromIPad: true)
+            } catch {
+                Log.info("canvas: selectSession failed (\(error))")
+            }
+        }
+    }
 
     // MARK: - freeze
 
@@ -305,29 +384,58 @@ final class CanvasSession: SenderCanvasDelegate {
             return
         }
 
-        lock.lock()
-        let held = heldCapture
-        heldCapture = nil
-        lock.unlock()
+        let base: UploadPipeline.Base
+        if message.base == .blank {
+            // Drawn on the iPad's blank page: no `freeze` came first and no
+            // frame is involved. A held or parked capture belongs to a mirror
+            // sketch that may still arrive, so it is left exactly where it is.
+            guard let page = Self.blankPageSize(for: message.viewport) else {
+                Log.info("canvas: dropping blank annotation — viewport \(message.viewport.width)x\(message.viewport.height)@\(message.viewport.scale) has no area")
+                return
+            }
+            base = .blank(width: page.width, height: page.height)
+        } else {
+            lock.lock()
+            let held = heldCapture
+            heldCapture = nil
+            lock.unlock()
 
-        guard let capture = held ?? parking.parkedCapture(installID: installID, now: createdAt) else {
-            Log.info("canvas: dropping annotation — no freeze capture is held")
-            return
+            guard let capture = held ?? parking.parkedCapture(installID: installID, now: createdAt) else {
+                Log.info("canvas: dropping annotation — no freeze capture is held")
+                return
+            }
+            parking.removeParkedCapture(installID: installID)
+            base = .frame(capture)
         }
-        parking.removeParkedCapture(installID: installID)
         parking.recordAccepted(t: message.t, installID: installID)
 
         pipeline.enqueue(annotation: UploadPipeline.AnnotationJob(
-            capture: capture,
+            base: base,
             sketchPNG: message.sketchPNG,
             zoomRect: message.zoomRect,
             viewport: message.viewport,
             note: message.note,
             deviceID: installID,
-            createdAt: createdAt
+            createdAt: createdAt,
+            session: message.session
         ))
 
-        Log.info("canvas: annotation queued (\(message.sketchPNG.count)-byte sketch)")
+        Log.info("canvas: annotation queued (\(message.sketchPNG.count)-byte sketch\(message.base == .blank ? ", blank page" : ""))")
+    }
+
+    /// The most pixels a blank page may have on one side. Above any iPad's
+    /// panel; it only stops a nonsense viewport from asking for a huge bitmap.
+    static let blankPageMaxSide = 4096
+
+    /// The blank page for a sketch drawn at `viewport`: the sketch surface's
+    /// own pixel size (`w * scale` by `h * scale`, PROTOCOL.md 11.2), so the
+    /// sketch lands on it one-to-one. Nil when the viewport has no area.
+    static func blankPageSize(for viewport: CanvasViewport) -> (width: Int, height: Int)? {
+        guard viewport.width > 0, viewport.height > 0, viewport.scale > 0, viewport.scale.isFinite else { return nil }
+        let width = (Double(viewport.width) * viewport.scale).rounded()
+        let height = (Double(viewport.height) * viewport.scale).rounded()
+        return (max(1, Int(min(width, Double(blankPageMaxSide)))),
+                max(1, Int(min(height, Double(blankPageMaxSide)))))
     }
 
     // MARK: - sending

@@ -813,18 +813,18 @@ final class CanvasSessionTests: XCTestCase {
         let status = CanvasStatus()
         let session = makeSession(daemon: FakeDaemon(), status: status)
 
-        XCTAssertEqual(session.canvasPingFields(), [CanvasWire.pingChannelKey: "none"])
+        XCTAssertEqual(session.canvasPingFields(), [CanvasWire.pingChannelKey: "none", CanvasWire.pingBlankKey: "1"])
 
         status.channelState = .attached
         status.projectName = "site"
         XCTAssertEqual(
             session.canvasPingFields(),
-            [CanvasWire.pingChannelKey: "attached", CanvasWire.pingProjectKey: "site"]
+            [CanvasWire.pingChannelKey: "attached", CanvasWire.pingProjectKey: "site", CanvasWire.pingBlankKey: "1"]
         )
 
         status.channelState = .detached
         status.projectName = nil
-        XCTAssertEqual(session.canvasPingFields(), [CanvasWire.pingChannelKey: "detached"])
+        XCTAssertEqual(session.canvasPingFields(), [CanvasWire.pingChannelKey: "detached", CanvasWire.pingBlankKey: "1"])
     }
 
     // MARK: - lifetime
@@ -910,5 +910,130 @@ final class CanvasSessionTests: XCTestCase {
         XCTAssertTrue(uploaded.dropLast().allSatisfy { $0 == "capture-1" })
         XCTAssertEqual(daemon.captureCalls.count, 2)
     }
-}
 
+
+    // MARK: - annotation on the blank canvas surface
+
+    private func blankAnnotationJSON(
+        sketch: Data,
+        viewport: CanvasViewport,
+        note: String? = nil,
+        t: Double = 1_700_000_000_000
+    ) -> [String: Any] {
+        var object = AnnotationMessage(sketchPNG: sketch, zoomRect: .full, viewport: viewport,
+                                       note: note, t: t, base: .blank).json
+        object["type"] = CanvasWire.annotation
+        return object
+    }
+
+    func test_pingFields_sayThisMacTakesBlankSketches() {
+        XCTAssertEqual(CanvasStatus().pingFields[CanvasWire.pingBlankKey], "1")
+    }
+
+    func test_blankAnnotation_withNoFreeze_uploadsAWhitePageOfTheViewportsPixelSize() {
+        let daemon = FakeDaemon()
+        let outbound = FakeOutbound()
+        let createdAt = Date(timeIntervalSince1970: 1_700_000_000)
+        let session = makeSession(daemon: daemon, now: { createdAt })
+        hello(session, outbound: outbound, installID: "install-A")
+
+        // 20x15 points at 2x: the sketch PNG and the page are both 40x30 pixels.
+        let sketch = sketchPNG(width: 40, height: 30, bandHeight: 6, fill: TestImages.RGBA(255, 0, 0))
+        session.canvasDidReceive(
+            type: CanvasWire.annotation,
+            object: blankAnnotationJSON(sketch: sketch, viewport: CanvasViewport(width: 20, height: 15, scale: 2),
+                                        note: "three cards"),
+            outbound: outbound
+        )
+
+        guard waitUntil("the annotation to be uploaded", { daemon.annotationCalls.count == 1 }) else { return }
+        XCTAssertEqual(daemon.captureCalls.count, 1, "the page is posted as the round's capture")
+        XCTAssertEqual(daemon.captureCalls[0].width, 40)
+        XCTAssertEqual(daemon.captureCalls[0].height, 30)
+        XCTAssertEqual(daemon.captureCalls[0].capturedAt, createdAt)
+        XCTAssertEqual(TestImages.pixel(inPNG: daemon.captureCalls[0].png, x: 5, y: 2), TestImages.RGBA(255, 255, 255))
+
+        let upload = daemon.annotationCalls[0]
+        XCTAssertEqual(upload.base, .blank)
+        XCTAssertEqual(upload.sourceCaptureId, "capture-1")
+        XCTAssertEqual(upload.deviceID, "install-A")
+        XCTAssertNil(upload.zoomRect)
+        XCTAssertEqual(upload.note, "three cards")
+        XCTAssertEqual(pngSize(upload.compositePNG), CGSize(width: 40, height: 30))
+        XCTAssertEqual(TestImages.pixel(inPNG: upload.compositePNG, x: 5, y: 2), TestImages.RGBA(255, 0, 0))
+        XCTAssertEqual(TestImages.pixel(inPNG: upload.compositePNG, x: 5, y: 20), TestImages.RGBA(255, 255, 255))
+    }
+
+    func test_mirrorAnnotation_uploadsWithTheMirrorBase() {
+        let daemon = FakeDaemon()
+        let outbound = FakeOutbound()
+        let session = makeSession(daemon: daemon)
+        hello(session, outbound: outbound)
+        freeze(session, outbound: outbound, daemon: daemon, captureMs: 1_000, colour: TestImages.RGBA(0, 0, 200))
+        session.canvasDidReceive(type: CanvasWire.annotation,
+                                 object: annotationJSON(sketch: sketchPNG(width: 40, height: 30, bandHeight: 6, fill: TestImages.RGBA(255, 0, 0))),
+                                 outbound: outbound)
+        guard waitUntil("the annotation to be uploaded", { daemon.annotationCalls.count == 1 }) else { return }
+        XCTAssertEqual(daemon.annotationCalls[0].base, .mirror)
+    }
+
+    func test_blankAnnotation_resent_isUploadedOnce() {
+        let daemon = FakeDaemon()
+        let outbound = FakeOutbound()
+        let session = makeSession(daemon: daemon)
+        hello(session, outbound: outbound)
+        let sketch = sketchPNG(width: 40, height: 30, bandHeight: 6, fill: TestImages.RGBA(255, 0, 0))
+        let object = blankAnnotationJSON(sketch: sketch, viewport: CanvasViewport(width: 40, height: 30, scale: 1))
+
+        session.canvasDidReceive(type: CanvasWire.annotation, object: object, outbound: outbound)
+        session.canvasDidReceive(type: CanvasWire.annotation, object: object, outbound: outbound)
+
+        guard waitUntil("the annotation to be uploaded", { daemon.annotationCalls.count == 1 }) else { return }
+        waitUntil("the queue to drain") { session.pendingUploadCount == 0 }
+        XCTAssertEqual(daemon.annotationCalls.count, 1)
+    }
+
+    /// A blank round must not eat the frame a mirror sketch is still waiting on.
+    func test_blankAnnotation_leavesAHeldMirrorCaptureForItsOwnAnnotation() {
+        let daemon = FakeDaemon()
+        let outbound = FakeOutbound()
+        let session = makeSession(daemon: daemon)
+        hello(session, outbound: outbound)
+        freeze(session, outbound: outbound, daemon: daemon, captureMs: 1_000, colour: TestImages.RGBA(0, 0, 200))
+
+        let sketch = sketchPNG(width: 40, height: 30, bandHeight: 6, fill: TestImages.RGBA(255, 0, 0))
+        session.canvasDidReceive(
+            type: CanvasWire.annotation,
+            object: blankAnnotationJSON(sketch: sketch, viewport: CanvasViewport(width: 40, height: 30, scale: 1), t: 1),
+            outbound: outbound
+        )
+        session.canvasDidReceive(type: CanvasWire.annotation, object: annotationJSON(sketch: sketch, t: 2), outbound: outbound)
+
+        guard waitUntil("both annotations to be uploaded", { daemon.annotationCalls.count == 2 }) else { return }
+        XCTAssertEqual(daemon.annotationCalls.map(\.base), [.blank, .mirror])
+        XCTAssertEqual(TestImages.pixel(inPNG: daemon.annotationCalls[1].compositePNG, x: 5, y: 20), TestImages.RGBA(0, 0, 200),
+                       "the mirror sketch still lands on its frozen frame")
+    }
+
+    func test_blankAnnotation_withAnEmptyViewport_isDropped() {
+        let daemon = FakeDaemon()
+        let outbound = FakeOutbound()
+        let session = makeSession(daemon: daemon)
+        hello(session, outbound: outbound)
+        session.canvasDidReceive(
+            type: CanvasWire.annotation,
+            object: blankAnnotationJSON(sketch: Data(), viewport: CanvasViewport(width: 0, height: 30, scale: 2)),
+            outbound: outbound
+        )
+        XCTAssertEqual(session.pendingUploadCount, 0)
+        XCTAssertTrue(daemon.annotationCalls.isEmpty)
+    }
+
+    func test_blankPageSize_isTheViewportInPixels_cappedPerSide() {
+        XCTAssertEqual(CanvasSession.blankPageSize(for: CanvasViewport(width: 1366, height: 1024, scale: 2))?.width, 2732)
+        XCTAssertEqual(CanvasSession.blankPageSize(for: CanvasViewport(width: 1366, height: 1024, scale: 2))?.height, 2048)
+        XCTAssertEqual(CanvasSession.blankPageSize(for: CanvasViewport(width: 9000, height: 10, scale: 1))?.width, 4096)
+        XCTAssertNil(CanvasSession.blankPageSize(for: CanvasViewport(width: 10, height: 0, scale: 2)))
+        XCTAssertNil(CanvasSession.blankPageSize(for: CanvasViewport(width: 10, height: 10, scale: 0)))
+    }
+}

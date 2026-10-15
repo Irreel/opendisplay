@@ -39,7 +39,7 @@ struct DesignCanvasMacApp: App {
         let claude = MenuPresentation.claudeCodeRow(
             display: model.sessionState.display,
             daemonGaveUp: model.daemonGaveUp,
-            secondSubscriber: model.sessionState.secondSubscriber,
+            sessions: model.sessions.message,
             pendingUploads: model.pendingUploads,
             startBlocker: startBlocker
         )

@@ -1,11 +1,17 @@
 #!/usr/bin/env node
 // Design Canvas server entry. Mode dispatch lives here; domain logic stays in modules.
 
-import { CAPTURE_SWEEP_MS, CLAIM_LEASE_MS } from './shared.js';
+import { CAPTURE_SWEEP_MS, CLAIM_LEASE_MS, SESSION_SETTLE_MS, SESSION_SWEEP_MS } from './shared.js';
 import { createMcpChannel } from './channel/index.js';
 import { runChannelSubscriber } from './channel/subscriber.js';
 import { AnnotationEventBus } from './http/event-stream.js';
-import { startHttpServer } from './http/server.js';
+import { RoundsEventBus } from './http/rounds-stream.js';
+import {
+  closeRoundsOfEndedSessions,
+  createSessionRegistry,
+  startHttpServer,
+} from './http/server.js';
+import { SessionsEventBus } from './sessions/sessions-stream.js';
 import { createLogger } from './log.js';
 import { DesignCanvasStore } from './store/store.js';
 
@@ -38,13 +44,38 @@ if (isChannel) {
   // Daemon: owns the FS store and serves the HTTP API.
   const store = new DesignCanvasStore(logger);
   const bus = new AnnotationEventBus();
+  const roundsBus = new RoundsEventBus();
+  const sessionsBus = new SessionsEventBus();
+  const sessions = createSessionRegistry(logger, sessionsBus);
   await store.ensure();
   await startHttpServer({
     version: process.env['npm_package_version'] ?? '0.0.0',
     store,
     bus,
+    roundsBus,
+    sessions,
+    sessionsBus,
     logger,
   });
+  // Sessions that stopped polling (a closed terminal, a kill): drop them and close
+  // their rounds, so nothing stays "sent" behind a session that is gone (X6, X26).
+  const sessionSweep = setInterval(() => {
+    const removed = sessions.sweep(Date.now());
+    if (removed.length === 0) return;
+    const gone = new Set(removed.map((info) => info.instance));
+    void closeRoundsOfEndedSessions({ store, roundsBus, gone: (instance) => gone.has(instance) });
+  }, SESSION_SWEEP_MS);
+  sessionSweep.unref();
+  // Rounds bound to a session of the previous daemon that never registered again.
+  // Checked once, after every live session has had time to come back.
+  const orphanCheck = setTimeout(() => {
+    void closeRoundsOfEndedSessions({
+      store,
+      roundsBus,
+      gone: (instance) => !sessions.has(instance),
+    });
+  }, SESSION_SETTLE_MS);
+  orphanCheck.unref();
   // Periodic sweep: return stale `serving` records (from a crashed subscriber)
   // to pending. unref() so this timer never holds the process open.
   const timer = setInterval(() => {

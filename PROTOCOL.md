@@ -690,16 +690,23 @@ once, never fatal.
 |---|---|---|---|
 | `freeze` | receiver to sender | `captureMs`, `zoomRect`, `t` | Enter Draw Mode: hold the frame captured at `captureMs` |
 | `frozen` | sender to receiver | `ok` | Whether that frame was still available |
-| `annotation` | receiver to sender | `sketch`, `zoomRect`, `viewport`, `note`?, `t` | The finished sketch (strokes only, no background) |
+| `annotation` | receiver to sender | `sketch`, `zoomRect`, `viewport`, `note`?, `base`?, `t` | The finished sketch (strokes only, no background) |
 | `agentReply` | sender to receiver | `annotationId`, `status`, `message`?, `prUrl`?, `t` | One round's live status, or the agent's outcome |
 | `rounds` | sender to receiver | `rounds[]` | Snapshot of the last 20 rounds for this device |
+| `sessions` | sender to receiver | `sessions[]`, `target`? | The Claude Code sessions the sender is connected to, and which one gets the next sketch |
+| `selectSession` | receiver to sender | `id`, `t` | Make that session the target |
+
+`annotation` also gains an optional `session` field (below).
 
 Field types, exactly as implemented (`DesignCanvas/Shared/CanvasMessages.swift`):
 
 * **`freeze`** (receiver to sender): `captureMs` (integer, milliseconds —
   the same clock as the video telemetry prefix's `cap`, section 5.1);
   `zoomRect` (object `{x, y, w, h}`, numbers, normalized 0..1, top-left
-  origin — the region the receiver had zoomed into, or the full frame);
+  origin — the part of the frame the sketch covers: the full frame from a
+  current receiver, which zooms freely in Draw Mode and exports the sketch
+  over the whole picture, or the region an older receiver was zoomed into
+  when Draw Mode began);
   `t` (number, milliseconds since the Unix epoch on the receiver's clock,
   as in `touch.t`).
 * **`frozen`** (sender to receiver): `ok` (bool). `true` when the sender
@@ -710,12 +717,23 @@ Field types, exactly as implemented (`DesignCanvas/Shared/CanvasMessages.swift`)
   `zoomRect` (object, as above); `viewport` (object `{w, h, scale}`: `w`
   and `h` integers, `scale` a number). **`viewport` describes the sketch
   surface, not the device**: `w` and `h` are the size in points of the rect
-  the video actually covered on screen — the rect the `sketch` PNG was
-  drawn over and is stretched back onto — and `scale` is the screen scale
-  that PNG was rendered at, so `w * scale` by `h * scale` is its pixel
-  size. On a receiver that letterboxes the video, or one zoomed into part
-  of it, that is smaller than the panel. `note` (string, optional — the
-  user's typed note); `t` (number, as above).
+  the `sketch` PNG covers and is stretched back onto — on a current
+  receiver the whole picture as fitted to the screen, whatever the zoom
+  was while drawing; on an older one the part of it that was on screen —
+  and `scale` is the screen scale that PNG was rendered at, so `w * scale`
+  by `h * scale` is its pixel size. On a receiver that letterboxes the
+  video that is smaller than the panel. `note` (string, optional — the
+  user's typed note); `base` (string, optional — the only defined value is
+  `blank`); `t` (number, as above). With `base` absent, or any value the
+  sender does not know, the sender composites the sketch over the frame
+  its last `freeze` held, as described above. With `base: "blank"` there
+  is no frame: the sketch was drawn on a blank page the receiver rendered
+  itself, no `freeze` precedes it, `zoomRect` is the full rect, and the
+  sender composites the sketch over an opaque white image of `w * scale`
+  by `h * scale` pixels taken from `viewport`. A receiver MUST NOT send
+  `base: "blank"` unless the sender has advertised `ping.blank` on that
+  connection (section 11.3): a sender that predates the field would look
+  for a held frame, find none, and drop the annotation unacknowledged.
 * **`agentReply`** (sender to receiver): `annotationId` (string); `status`
   (string, one of `queued`, `sent`, `applied`, `failed`, `needs_input`);
   `message` (string, optional, at most 2048 UTF-8 bytes — the sender
@@ -731,19 +749,60 @@ Field types, exactly as implemented (`DesignCanvas/Shared/CanvasMessages.swift`)
   optional)). Sent after every `hello`, including a rotation re-`hello`,
   so a reconnecting receiver is stateless and a status change that
   landed while it was disconnected still shows up.
+* **`sessions`** (sender to receiver): `sessions` (array, at most 20
+  entries; each an object with `id` (string, opaque), `folder` (string,
+  at most 60 characters: the session's project folder name), `title`
+  (string, optional, at most 80 characters), `branch` (string, optional,
+  at most 80 characters), `startedAt` (string, ISO 8601), `lastReplyAt`
+  (string, optional, ISO 8601), `state` (string, one of `idle`, `busy`,
+  `waiting`; a receiver reads a value it does not know as `busy`));
+  `target` (string, optional: the `id` of the session the next sketch
+  goes to). Sent after every `hello` and whenever the list, a session's
+  state, or the target changes; each one replaces the last. An empty
+  `sessions` means none is connected. `target` absent with one session
+  listed means that session; absent with several means the user has to
+  choose, and a receiver SHOULD NOT send an `annotation` until a
+  `sessions` with a `target` arrives. `state: "waiting"` on the target
+  means the agent is stopped on a permission prompt at the sender's
+  machine; nothing about the prompt itself is sent. A sender that
+  predates this message never sends it, and a receiver that has never
+  received one behaves as before.
+* **`selectSession`** (receiver to sender): `id` (string, an `id` from
+  the last `sessions`); `t` (number, as above). The sender answers with a
+  fresh `sessions`, which is the only confirmation; a receiver does not
+  assume the choice took. An unknown `id` is ignored.
+* **`annotation.session`** (string, optional): the `sessions.target` the
+  receiver was showing when the sketch was finished. The round is
+  delivered to that session even if the target changes afterwards, and
+  a resend after a link loss carries the same value. Absent, the sender
+  uses its target at the moment the annotation arrives. If the named
+  session has ended by then, the round is recorded as `failed`.
 
 ### 11.3 `ping` additions
 
-`ping` (sender to receiver, section 6.2) gains two additive string fields,
+`ping` (sender to receiver, section 6.2) gains three additive string fields,
 sent only on a canvas session:
 
-* `channel` — one of `attached`, `detached`, `none`: whether a local
-  agent-channel process is currently subscribed on the sender's machine.
-* `project` — the selected project folder's name; absent when none is
-  selected.
+* `channel` — one of `attached`, `detached`, `existing`, `none`: the
+  sender's verdict on its agent-channel hop, the same one its own menu
+  shows. `attached` means a channel process this sender launched is
+  subscribed; `existing` means one it did not launch is (a session the
+  user started by hand); `detached` means the local daemon is up with no
+  channel; `none` means no usable daemon. A receiver that does not know a
+  value reads it as `none`.
+  Since the sender reaches its agent through sessions (`sessions`,
+  section 11.2), `attached` means at least one session is connected to
+  this sender's daemon and `existing` is no longer sent; a receiver must
+  still accept it from an older sender.
+* `project` — the target session's project folder name; with no session
+  connected, the folder selected in the sender's menu; absent when there
+  is neither.
+* `blank` — `"1"` when the sender accepts `annotation.base: "blank"`
+  (section 11.2); absent when it does not. A receiver treats absence as
+  "not supported" and does not offer its blank surface.
 
-Both are informational, exactly like the sender's other `ping` health
-fields, and follow the same rule as everything else on the wire: an
+`channel` and `project` are informational, exactly like the sender's other
+`ping` health fields, and follow the same rule as everything else on the wire: an
 unknown field on a known type MUST be ignored.
 
 ### 11.4 Frame size policy
@@ -856,3 +915,4 @@ This file is versioned by git; the authoritative change log is
 | 2026-08-19 | Initial specification, written against `pv` 3 |
 | 2026-08-26 | Additive: `hello.cursorPort` and the UDP cursor side channel (section 6.3) |
 | 2026-09-17 | Additive: Design Canvas extension (section 11) — `freeze`/`frozen`/`annotation`/`agentReply`/`rounds`, `ping.channel`/`ping.project`, the 16 MiB canvas frame cap |
+| 2026-10-03 | Additive: Design Canvas blank canvas surface — `annotation.base`, `ping.blank` (section 11.2, 11.3) |

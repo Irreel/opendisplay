@@ -47,4 +47,6 @@ enum WireMessage {
     static let annotation = "annotation"            // phone -> Mac: a finished sketch + its note
     static let agentReply = "agentReply"            // Mac -> phone: a round's status or the agent's reply
     static let rounds = "rounds"                    // Mac -> phone: recent rounds snapshot
+    static let sessions = "sessions"                // Mac -> phone: connected Claude Code sessions + target
+    static let selectSession = "selectSession"      // phone -> Mac: make this session the target
 }

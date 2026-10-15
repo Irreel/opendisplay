@@ -47,6 +47,25 @@ enum Compositor {
         return image
     }
 
+    /// The base a sketch drawn on the blank canvas surface is flattened over:
+    /// opaque white, in the same colour space as everything else here. Nil for
+    /// a page with no area.
+    static func blankImage(width: Int, height: Int) -> CGImage? {
+        guard width > 0, height > 0,
+              let context = CGContext(
+                data: nil,
+                width: width,
+                height: height,
+                bitsPerComponent: 8,
+                bytesPerRow: 0,
+                space: workingColorSpace,
+                bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue
+              ) else { return nil }
+        context.setFillColor(red: 1, green: 1, blue: 1, alpha: 1)
+        context.fill(CGRect(x: 0, y: 0, width: width, height: height))
+        return context.makeImage()
+    }
+
     static func pngData(_ image: CGImage) -> Data? {
         let data = NSMutableData()
         guard let destination = CGImageDestinationCreateWithData(data, UTType.png.identifier as CFString, 1, nil) else {

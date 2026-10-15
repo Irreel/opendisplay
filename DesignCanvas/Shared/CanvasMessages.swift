@@ -9,11 +9,23 @@ enum CanvasWire {
     static let annotation = "annotation"
     static let agentReply = "agentReply"
     static let rounds = "rounds"
+    /// The connected Claude Code sessions and the target (Mac to iPad), and the
+    /// iPad's choice of target back (`spec/technical_doc-ClaudeMods.md` section 5).
+    static let sessions = "sessions"
+    static let selectSession = "selectSession"
 
     static let welcomeCanvasKey = "canvas"                 // welcome.canvas: true
 
     static let pingChannelKey = "channel"
     static let pingProjectKey = "project"
+    /// `"1"` when the Mac accepts `annotation.base: "blank"` (PROTOCOL.md 11.3).
+    static let pingBlankKey = "blank"
+    static let annotationBaseKey = "base"
+    /// The target session the iPad was showing when Done was tapped (X23).
+    static let annotationSessionKey = "session"
+    static let sessionsMaxEntries = 20
+    static let sessionTextMaxCharacters = 80
+    static let sessionFolderMaxCharacters = 60
 
     static let senderJSONLimit = 32768                     // payload must be < this
     static let replyMessageMaxBytes = 2048
@@ -122,6 +134,17 @@ extension CanvasViewport {
     }
 }
 
+// MARK: - CanvasSurface
+
+/// What the iPad is showing, and so what a sketch was drawn on: the live
+/// mirror of the Mac, or a blank page the iPad renders itself
+/// (`spec/PRD-BlankCanvas.md`). Chosen on the iPad; the Mac only ever learns
+/// it from an `annotation`'s `base`.
+enum CanvasSurface: String {
+    case mirror
+    case blank
+}
+
 // MARK: - Round / channel status enums
 
 enum RoundStatus: String {
@@ -146,9 +169,15 @@ enum RoundStatus: String {
     }
 }
 
+/// The Mac's verdict on its Claude Code hop, relayed to the iPad in `ping.channel` (P1). It is
+/// the menu's verdict (D7), not the daemon's raw subscriber count: `attached` is this app's own
+/// session, `existing` is a session the app did not start (the menu's "Another session"),
+/// `detached` a daemon with no channel, `none` no usable daemon. A receiver reads an unknown
+/// string as `none`, which is how an older iPad sees `existing`.
 enum ChannelState: String {
     case attached
     case detached
+    case existing
     case none
 }
 
@@ -200,10 +229,18 @@ struct AnnotationMessage: Equatable {
     var viewport: CanvasViewport
     var note: String?
     var t: Double
+    /// `.blank` when the sketch was drawn on the blank page: no `freeze` came
+    /// first and the Mac composites it on white. On the wire only when blank,
+    /// so a mirror annotation is byte-for-byte what it always was.
+    var base: CanvasSurface = .mirror
+    /// The session this sketch was drawn for: the target the iPad was showing
+    /// at Done. Absent from an iPad that predates the session list, and when
+    /// there was no target to show; the Mac then uses the target of the moment.
+    var session: String?
 }
 
 extension AnnotationMessage {
-    /// "sketch" is base64.
+    /// "sketch" is base64. An absent or unknown "base" is a mirror sketch.
     init?(json: [String: Any]) {
         guard let sketchBase64 = json["sketch"] as? String,
               let sketchPNG = Data(base64Encoded: sketchBase64),
@@ -215,6 +252,8 @@ extension AnnotationMessage {
         self.viewport = viewport
         self.note = json["note"] as? String
         self.t = t
+        self.base = (json[CanvasWire.annotationBaseKey] as? String).flatMap(CanvasSurface.init(rawValue:)) ?? .mirror
+        self.session = (json[CanvasWire.annotationSessionKey] as? String).flatMap { $0.isEmpty ? nil : $0 }
     }
 
     var json: [String: Any] {
@@ -227,8 +266,125 @@ extension AnnotationMessage {
         if let note {
             dict["note"] = note
         }
+        if base == .blank {
+            dict[CanvasWire.annotationBaseKey] = base.rawValue
+        }
+        if let session {
+            dict[CanvasWire.annotationSessionKey] = session
+        }
         return dict
     }
+}
+
+// MARK: - Sessions (Mac to iPad) and SelectSession (iPad to Mac)
+
+/// What a Claude Code session is doing, as far as the iPad needs to know.
+/// `waiting`: a permission dialog is open at the Mac (X8). An unknown value
+/// reads as `busy`, the state that promises nothing.
+enum CanvasSessionState: String {
+    case idle
+    case busy
+    case waiting
+}
+
+/// One connected Claude Code session, as both apps list it (X25). `id` is the
+/// mod's instance id, which is what `selectSession` and `annotation.session`
+/// carry back.
+struct CanvasSessionEntry: Equatable, Identifiable {
+    var id: String
+    var folder: String
+    var title: String?
+    var branch: String?
+    /// ISO 8601, as the daemon reports it. Shown when there is no title.
+    var startedAt: String
+    var lastReplyAt: String?
+    var state: CanvasSessionState
+}
+
+extension CanvasSessionEntry {
+    /// From the wire (`id`) or from the daemon's snapshot (`instance`).
+    init?(json: [String: Any]) {
+        guard let id = (json["id"] as? String) ?? (json["instance"] as? String), !id.isEmpty,
+              let folder = json["folder"] as? String,
+              let startedAt = json["startedAt"] as? String else { return nil }
+        self.id = id
+        self.folder = folder
+        self.title = (json["title"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+        self.branch = (json["branch"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+        self.startedAt = startedAt
+        self.lastReplyAt = json["lastReplyAt"] as? String
+        self.state = (json["state"] as? String).flatMap(CanvasSessionState.init(rawValue:)) ?? .busy
+    }
+
+    var json: [String: Any] {
+        var dict: [String: Any] = [
+            "id": id,
+            "folder": String(folder.prefix(CanvasWire.sessionFolderMaxCharacters)),
+            "startedAt": startedAt,
+            "state": state.rawValue,
+        ]
+        if let title { dict["title"] = String(title.prefix(CanvasWire.sessionTextMaxCharacters)) }
+        if let branch { dict["branch"] = String(branch.prefix(CanvasWire.sessionTextMaxCharacters)) }
+        if let lastReplyAt { dict["lastReplyAt"] = lastReplyAt }
+        return dict
+    }
+}
+
+/// The connected sessions and which one receives sketches. `target` nil with
+/// several sessions means the user has to pick before sending (X26).
+struct SessionsMessage: Equatable {
+    var sessions: [CanvasSessionEntry]
+    var target: String?
+
+    static let empty = SessionsMessage(sessions: [], target: nil)
+
+    var targetEntry: CanvasSessionEntry? {
+        guard let target else { return nil }
+        return sessions.first { $0.id == target }
+    }
+
+    /// Several sessions and none chosen: Done must wait for a pick.
+    var needsPick: Bool { sessions.count > 1 && targetEntry == nil }
+}
+
+extension SessionsMessage {
+    /// Unreadable entries are skipped, like unreadable rounds; a missing or
+    /// non-array `sessions` is not a sessions message at all. A `target` that
+    /// names no listed session reads as no target.
+    init?(json: [String: Any]) {
+        guard let entries = json["sessions"] as? [[String: Any]] else { return nil }
+        self.sessions = entries.compactMap(CanvasSessionEntry.init(json:))
+        let named = json["target"] as? String
+        self.target = sessions.contains { $0.id == named } ? named : nil
+    }
+
+    /// At most `sessionsMaxEntries` entries, with the text fields already cut by
+    /// `CanvasSessionEntry.json`, which keeps the payload far inside the 32768
+    /// byte rule (D23). The target is kept even when the list is cut.
+    var json: [String: Any] {
+        var listed = Array(sessions.prefix(CanvasWire.sessionsMaxEntries))
+        if let entry = targetEntry, !listed.contains(where: { $0.id == entry.id }) {
+            listed[listed.count - 1] = entry
+        }
+        var dict: [String: Any] = ["sessions": listed.map { $0.json }]
+        if let target = targetEntry?.id { dict["target"] = target }
+        return dict
+    }
+}
+
+struct SelectSessionMessage: Equatable {
+    var id: String
+    var t: Double
+}
+
+extension SelectSessionMessage {
+    init?(json: [String: Any]) {
+        guard let id = json["id"] as? String, !id.isEmpty, let t = canvasDouble(json["t"]) else { return nil }
+        self.id = id
+        self.t = t
+    }
+
+    var json: [String: Any] { ["id": id, "t": t] }
 }
 
 // MARK: - AgentReplyMessage (Mac to iPad)

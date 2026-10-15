@@ -41,6 +41,17 @@ docs/
 
 # Design Canvas
 DesignCanvas/server/dist/
+# Written by Claude Code beside a mod it loads with --plugin-dir: the type
+# declarations for the installed version, and a tsconfig that points at them.
+DesignCanvas/mod/.claude-plugin/types/
+DesignCanvas/mod/tsconfig.json
 DesignCanvas/Mac/Info.plist
 DesignCanvas/iOS/Info.plist
 .superpowers/
+.gstack/
+
+# Other coding agents' local state
+.codex/
+.cursor/
+.opencode/
+.pi/

@@ -225,3 +225,26 @@ test('notifyAnnotation delivers content equal to the template for a zoomed annot
     await client.close();
   }
 });
+
+test('createInstructionText tells Claude Code a blank-canvas round is a freehand sketch, not a screenshot', async () => {
+  const compositePath = await makeCompositePath();
+  const annotation: ClaimedAnnotation = {
+    meta: baseMeta({ base: 'blank', note: { text: ' three cards in a row ' } }),
+    compositePath,
+    capturedAt: '2026-01-01T00:00:00.500Z',
+  };
+  assert.equal(
+    createInstructionText(annotation),
+    [
+      'New sketch from iPad (blank canvas).',
+      'Annotation ID: ann-1',
+      'Device: iPad Pro',
+      'Sent at: 2026-01-01T00:00:00.000Z',
+      `Composite PNG path: ${compositePath}`,
+      'Note: three cards in a row',
+      '',
+      'This is a freehand sketch drawn on a blank page, not a screenshot of the running app.',
+      'Inspect the composite PNG path to see it, read it together with the note, and act on it in this project, then call design_canvas_reply with the outcome.',
+    ].join('\n'),
+  );
+});

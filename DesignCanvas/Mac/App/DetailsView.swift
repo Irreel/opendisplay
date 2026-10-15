@@ -11,8 +11,11 @@ struct DetailsView: View {
         Form {
             Section("Session") {
                 LabeledContent("State", value: model.sessionState.display.statusText)
-                if model.sessionState.secondSubscriber {
-                    Text("Two channel connections detected").foregroundColor(.orange)
+                ForEach(model.sessions.sessions, id: \.entry.id) { session in
+                    LabeledContent(
+                        session.entry.folder + (session.entry.id == model.sessions.target ? " (target)" : ""),
+                        value: "\(session.entry.state.rawValue) \u{00B7} \(session.cwd)"
+                    )
                 }
                 if model.daemonGaveUp {
                     Text("Daemon stopped retrying \u{2014} port may be in use").foregroundColor(.orange)
@@ -27,8 +30,7 @@ struct DetailsView: View {
                     LabeledContent("Port", value: h.port.map(String.init) ?? "\u{2014}")
                     LabeledContent("Instance", value: h.instanceId ?? "\u{2014}")
                     LabeledContent("Started", value: h.startedAt ?? "\u{2014}")
-                    LabeledContent("Channels", value: String(h.channelCount ?? (h.channelAttached ? 1 : 0)))
-                    LabeledContent("Channel attached", value: h.channelAttachedAt ?? "\u{2014}")
+                    LabeledContent("Sessions", value: String(h.sessionCount ?? 0))
                 case .refused:
                     LabeledContent("Probe", value: "Connection refused (nothing listening)")
                 case .timedOut:
@@ -58,7 +60,7 @@ struct DetailsView: View {
                 }
             }
             Section("Reset") {
-                Text("Stops Design Canvas helper processes. May detach an existing Claude Code channel. Never quits Claude Code or edits your files.")
+                Text("Stops Design Canvas helper processes and restarts the local daemon. Running Claude Code sessions reconnect by themselves within a second or two. Never quits Claude Code or edits your files.")
                     .font(.caption)
                     .foregroundColor(.secondary)
                 HStack {
@@ -82,7 +84,7 @@ struct DetailsView: View {
                 }
             }
             Section("Session end") {
-                Text("Disconnect only stops this app tracking the session. Claude Code keeps running; quit it in its Terminal to end the session.")
+                Text("A session stays connected for as long as Claude Code runs. Quit it in its Terminal to end the session.")
                     .font(.caption)
                     .foregroundColor(.secondary)
             }

@@ -2,10 +2,10 @@
 //
 // The iPad never sends input, so this is pure presentation: the video is
 // aspect-fitted in the view, then scaled about the pinch anchor and offset by
-// the pan. What the Mac needs to know about it is one number set — the part of
-// the video that is on screen, normalised — which rides the `freeze` and
-// `annotation` messages as `zoomRect` so the Mac crops the clean frame to the
-// same region the user drew on.
+// the pan. The Mac is told nothing about it: a round is the whole frame
+// whatever the zoom was (technical_doc section 3), so the zoom only has to be
+// shared with the sketch surface, which is magnified with the video so that
+// ink stays on the part of the frame it was drawn on.
 //
 // Foundation + CoreGraphics only: this file is compiled into the hostless test
 // bundle as well as the app (see project.yml).
@@ -27,16 +27,12 @@ struct ZoomModel: Equatable {
     /// picture right and down, which reveals its top-left.
     private(set) var offset = CGSize.zero
 
-    /// True in Draw Mode: the sketch is pinned to the frame it was started on,
-    /// so gestures are ignored until it ends (technical_doc section 3).
-    var isLocked = false
-
     // MARK: - Gestures
 
     /// Multiply the scale by `factor`, keeping the video pixel under `anchor`
     /// (a point in view coordinates) under it.
     mutating func pinch(by factor: Double, anchor: CGPoint, viewSize: CGSize, videoSize: CGSize) {
-        guard !isLocked, factor > 0, factor.isFinite else { return }
+        guard factor > 0, factor.isFinite else { return }
         let fitted = Self.fittedRect(videoSize: videoSize, in: viewSize)
         guard fitted.width > 0, fitted.height > 0 else { return }
 
@@ -60,15 +56,13 @@ struct ZoomModel: Equatable {
     /// Drag the picture by `delta` points, clamped so it never uncovers part of
     /// the view it could have covered.
     mutating func pan(by delta: CGSize, viewSize: CGSize, videoSize: CGSize) {
-        guard !isLocked else { return }
         let fitted = Self.fittedRect(videoSize: videoSize, in: viewSize)
         guard fitted.width > 0, fitted.height > 0 else { return }
         offset = CGSize(width: offset.width + delta.width, height: offset.height + delta.height)
         clampOffset(fitted: fitted, viewSize: viewSize)
     }
 
-    /// Back to the fitted, centred picture. The lock is not a zoom property and
-    /// is left alone.
+    /// Back to the fitted, centred picture.
     mutating func reset() {
         scale = 1
         offset = .zero
@@ -105,6 +99,24 @@ struct ZoomModel: Equatable {
                               y: Double((shown.minY - drawn.minY) / drawn.height),
                               width: Double(shown.width / drawn.width),
                               height: Double(shown.height / drawn.height))
+    }
+
+    /// The part of the unzoomed view a sketch is sent for: the whole picture,
+    /// or the whole view when there is no picture (the blank page). It is what
+    /// Done exports and what `viewport` reports.
+    static func sketchRect(videoSize: CGSize, in viewSize: CGSize) -> CGRect {
+        let fitted = fittedRect(videoSize: videoSize, in: viewSize)
+        return fitted.isEmpty ? CGRect(origin: .zero, size: viewSize) : fitted
+    }
+
+    /// Where the sketch's scroll view has to be scrolled to. Its content is
+    /// the whole view as it is at scale 1, magnified by `scale`, so a stroke
+    /// stored at an unzoomed point lands on the video pixel it was drawn on.
+    /// Always inside the scroll range: the clamp never lets the picture
+    /// uncover more of the view than the fit already does.
+    func sketchContentOffset(viewSize: CGSize) -> CGPoint {
+        CGPoint(x: viewSize.width / 2 * (scale - 1) - offset.width,
+                y: viewSize.height / 2 * (scale - 1) - offset.height)
     }
 
     // MARK: - Private

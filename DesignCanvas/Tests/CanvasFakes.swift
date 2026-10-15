@@ -125,6 +125,29 @@ final class FakeDaemon: DaemonAPI {
 
     /// Yields `.connected` at once, as `DaemonClient` does when a connection
     /// is established, then whatever `emit`/`emitConnected` push into it.
+    // MARK: - sessions (the Claude Code mod)
+
+    private var storedTargetCalls: [(instance: String, fromIPad: Bool)] = []
+    private var sessionsContinuation: AsyncStream<DaemonSessions>.Continuation?
+
+    /// Every `setTarget` call, in order.
+    var targetCalls: [(instance: String, fromIPad: Bool)] { lock.withLock { storedTargetCalls } }
+
+    func setTarget(instance: String, fromIPad: Bool) async throws {
+        lock.withLock { storedTargetCalls.append((instance, fromIPad)) }
+    }
+
+    func sessionUpdates() -> AsyncStream<DaemonSessions> {
+        AsyncStream { continuation in
+            lock.withLock { sessionsContinuation = continuation }
+        }
+    }
+
+    /// What the daemon's sessions stream would send.
+    func emitSessions(_ sessions: DaemonSessions) {
+        lock.withLock { sessionsContinuation }?.yield(sessions)
+    }
+
     func roundUpdates() -> AsyncStream<RoundStreamEvent> {
         AsyncStream { continuation in
             lock.withLock { updatesContinuation = continuation }

@@ -45,17 +45,18 @@ final class DaemonClientTests: XCTestCase {
         guard case .healthy(let decoded) = result else { return XCTFail("expected .healthy, got \(result)") }
         XCTAssertEqual(decoded.status, "ok")
         XCTAssertEqual(decoded.channelCount, 2)
-        XCTAssertEqual(ChannelState(probe: result), .attached)
     }
 
-    func test_probe_healthyOn200_withNoChannel_isDetached() async {
+    func test_probe_healthyOn200_withNoChannel() async {
         let health = #"{"status":"ok","version":"1.0.0","channelAttached":false,"channelCount":0}"#
         StubURLProtocol.scripts = [.init(body: Data(health.utf8))]
         let client = makeClient()
 
         let result = await client.probe()
 
-        XCTAssertEqual(ChannelState(probe: result), .detached)
+        guard case .healthy(let decoded) = result else { return XCTFail("expected .healthy, got \(result)") }
+        XCTAssertEqual(decoded.channelCount, 0)
+        XCTAssertFalse(decoded.channelAttached)
     }
 
     func test_probe_foreignResponseOn200Garbage() async {
@@ -65,7 +66,6 @@ final class DaemonClientTests: XCTestCase {
         let result = await client.probe()
 
         XCTAssertEqual(result, .foreignResponse)
-        XCTAssertEqual(ChannelState(probe: result), .none)
     }
 
     func test_probe_badStatusOn500() async {
@@ -75,7 +75,6 @@ final class DaemonClientTests: XCTestCase {
         let result = await client.probe()
 
         XCTAssertEqual(result, .badStatus(500))
-        XCTAssertEqual(ChannelState(probe: result), .none)
     }
 
     func test_probe_timedOut() async {
@@ -85,7 +84,6 @@ final class DaemonClientTests: XCTestCase {
         let result = await client.probe()
 
         XCTAssertEqual(result, .timedOut)
-        XCTAssertEqual(ChannelState(probe: result), .none)
     }
 
     func test_probe_refusedOnConnectionRefused() async {
@@ -95,7 +93,6 @@ final class DaemonClientTests: XCTestCase {
         let result = await client.probe()
 
         XCTAssertEqual(result, .refused)
-        XCTAssertEqual(ChannelState(probe: result), .none)
     }
 
     // MARK: - postCapture()
@@ -469,5 +466,33 @@ final class DaemonClientTests: XCTestCase {
         XCTAssertEqual(second.round.status, .sent)
 
         XCTAssertEqual(recorder.first, 0.5)
+    }
+
+
+    // MARK: - postAnnotation: the blank canvas base
+
+    private func recordedMeta() -> [String: Any]? {
+        guard let recorded = StubURLProtocol.recorded.last, let body = recorded.body,
+              let boundary = boundary(from: recorded.request.value(forHTTPHeaderField: "content-type")),
+              let metaData = parseMultipart(body, boundary: boundary)["meta"]?.data else { return nil }
+        return jsonObject(metaData)
+    }
+
+    func test_postAnnotation_saysBaseBlank_onlyForABlankRound() async throws {
+        StubURLProtocol.scripts = [
+            .init(statusCode: 201, body: Data(#"{"annotationId":"ann_1","dispatched":true}"#.utf8)),
+            .init(statusCode: 201, body: Data(#"{"annotationId":"ann_2","dispatched":true}"#.utf8)),
+        ]
+        let client = makeClient()
+
+        _ = try await client.postAnnotation(makeAnnotationUpload())
+        let mirrorMeta = try XCTUnwrap(recordedMeta())
+        XCTAssertNil(mirrorMeta["base"], "a mirror round's meta is what it always was")
+
+        var blank = makeAnnotationUpload()
+        blank.base = .blank
+        _ = try await client.postAnnotation(blank)
+        let blankMeta = try XCTUnwrap(recordedMeta())
+        XCTAssertEqual(blankMeta["base"] as? String, "blank")
     }
 }

@@ -7,13 +7,16 @@ import {
   type AnnotationMeta,
   type AnnotationNote,
   type AnnotationReply,
+  type AnnotationSession,
   CAPTURE_TTL_MS,
   type CaptureMeta,
   CLAIM_LEASE_MS,
+  type ReplyReason,
   type ReplyStatus,
   SCHEMA_VERSION,
   type Viewport,
   type ZoomRect,
+  type AnnotationBase,
 } from '../shared.js';
 import type { Logger } from '../log.js';
 import { createStorePaths, type StorePaths } from './paths.js';
@@ -34,6 +37,8 @@ export interface CreateAnnotationInput {
   device: AnnotationDevice;
   note?: Partial<AnnotationNote>;
   createdAt?: string;
+  base?: AnnotationBase;
+  session?: AnnotationSession;
 }
 
 export interface CaptureWithPath {
@@ -56,6 +61,7 @@ export interface SetReplyInput {
   status: ReplyStatus;
   message: string | null;
   prUrl: string | null;
+  reason?: ReplyReason;
 }
 
 /** createAnnotation was given a sourceCaptureId with no matching capture on disk. */
@@ -182,6 +188,8 @@ export class DesignCanvasStore {
       sourceCaptureId: input.sourceCaptureId,
       device: input.device,
       reply: null,
+      ...(input.base ? { base: input.base } : {}),
+      ...(input.session ? { session: input.session } : {}),
     };
     await writeFile(join(dir, 'composite.png'), input.composite);
     await writeFile(join(dir, 'sketch.png'), input.sketch);
@@ -259,6 +267,9 @@ export class DesignCanvasStore {
       const meta = { ...annotation.meta, reply: recorded };
       await writeJson(join(this.paths.annotations, id, 'meta.json'), meta);
       await this.logger.event('annotation.replied', { annotationId: id, status: reply.status });
+      if (reply.reason) {
+        await this.logger.event('round.failed', { annotationId: id, reason: reply.reason });
+      }
       return meta;
     });
   }
@@ -273,6 +284,8 @@ export class DesignCanvasStore {
       if (!annotation) return null;
       const { servedAt, claimedAt } = annotation.meta;
       if (servedAt !== null) return null; // already served
+      // Bound to a Claude Code session: only that session's poll may deliver it.
+      if (annotation.meta.session) return null;
       if (claimedAt !== null && Date.now() - Date.parse(claimedAt) < leaseMs) return null; // live lease
       const meta = { ...annotation.meta, claimedAt: new Date().toISOString() };
       await writeJson(join(this.paths.annotations, id, 'meta.json'), meta);
@@ -286,6 +299,63 @@ export class DesignCanvasStore {
     });
   }
 
+  /**
+   * Hands a round to a session's poll, binding it if it was not bound. Unlike the
+   * channel's claim there is no lease: the mod submits a prompt that waits for the
+   * session to be idle, which can take as long as the user's own turn does, so the
+   * claim holds for as long as the session is registered. A second call by the same
+   * session returns the round again (the mod was reloaded and lost it). Null when
+   * the round is served, answered, bound to another session, or mid-claim by the
+   * channel.
+   */
+  async claimForSession(
+    id: string,
+    session: AnnotationSession,
+    leaseMs = CLAIM_LEASE_MS,
+  ): Promise<ClaimedAnnotation | null> {
+    requireStoreId(id);
+    return this.withLock(id, async () => {
+      const annotation = await this.getAnnotation(id);
+      if (!annotation) return null;
+      const current = annotation.meta;
+      if (current.servedAt !== null || current.reply !== null) return null;
+      if (current.session && current.session.instance !== session.instance) return null;
+      if (
+        !current.session &&
+        current.claimedAt !== null &&
+        Date.now() - Date.parse(current.claimedAt) < leaseMs
+      ) {
+        return null; // the channel holds a live lease on it
+      }
+      const meta: AnnotationMeta = {
+        ...current,
+        claimedAt: new Date().toISOString(),
+        session,
+      };
+      await writeJson(join(this.paths.annotations, id, 'meta.json'), meta);
+      await this.logger.event('round.claimed', {
+        annotationId: id,
+        instance: session.instance,
+      });
+      const capturedAt = meta.capturedAt ?? meta.createdAt;
+      return { ...annotation, meta, capturedAt };
+    });
+  }
+
+  /** Records the mod's one reminder. Idempotent: the first time stands. */
+  async markReminded(id: string, at = new Date().toISOString()): Promise<AnnotationMeta | null> {
+    requireStoreId(id);
+    return this.withLock(id, async () => {
+      const annotation = await this.getAnnotation(id);
+      if (!annotation) return null;
+      if (annotation.meta.remindedAt) return annotation.meta;
+      const meta: AnnotationMeta = { ...annotation.meta, remindedAt: at };
+      await writeJson(join(this.paths.annotations, id, 'meta.json'), meta);
+      await this.logger.event('round.reminded', { annotationId: id });
+      return meta;
+    });
+  }
+
   async reconcileStaleClaims(leaseMs = CLAIM_LEASE_MS): Promise<number> {
     await this.ensure();
     const ids = await safeIds(this.paths.annotations);
@@ -296,6 +366,8 @@ export class DesignCanvasStore {
       if (!annotation) continue;
       const { servedAt, claimedAt } = annotation.meta;
       if (servedAt !== null || claimedAt === null) continue;
+      // A session's claim has no lease; it ends with the session (see claimForSession).
+      if (annotation.meta.session) continue;
       if (Date.now() - Date.parse(claimedAt) < leaseMs) continue;
       candidates.push(id);
     }
@@ -308,6 +380,7 @@ export class DesignCanvasStore {
         // Re-check staleness now that we hold the lock; a claim may have been
         // granted between the scan and acquiring the lock.
         if (servedAt !== null || claimedAt === null) return false;
+        if (annotation.meta.session) return false;
         if (Date.now() - Date.parse(claimedAt) < leaseMs) return false;
         const meta = { ...annotation.meta, claimedAt: null };
         await writeJson(join(this.paths.annotations, id, 'meta.json'), meta);
@@ -431,6 +504,9 @@ async function readAnnotation(root: string, id: string): Promise<AnnotationWithP
       sourceCaptureId: raw.sourceCaptureId,
       device: raw.device ?? { id: '', name: '' },
       reply: raw.reply ?? null,
+      ...(raw.base === 'blank' ? { base: raw.base } : {}),
+      ...(raw.session ? { session: raw.session } : {}),
+      ...(raw.remindedAt ? { remindedAt: raw.remindedAt } : {}),
     };
     return {
       meta,

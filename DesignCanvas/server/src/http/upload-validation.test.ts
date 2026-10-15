@@ -173,3 +173,74 @@ test('posting an annotation with an unknown sourceCaptureId is 404 capture_not_f
     assert.deepEqual(entries, []);
   });
 });
+
+// The blank canvas surface: `base` is absent (a frozen frame) or "blank".
+
+function annotationBody(sourceCaptureId: string, base?: unknown): string {
+  return JSON.stringify({
+    compositeBase64: Buffer.from('c').toString('base64'),
+    sketchBase64: Buffer.from('s').toString('base64'),
+    sourceCaptureId,
+    viewport: { w: 1, h: 1 },
+    zoomRect: null,
+    device: { id: 'device-1', name: 'iPad' },
+    ...(base === undefined ? {} : { base }),
+  });
+}
+
+test('an annotation with base "blank" is accepted and stored as a blank round', async () => {
+  await withServer(async (store, base) => {
+    const capture = await store.createCapture({ screenshot: Buffer.from('p'), viewport: { w: 1, h: 1 } });
+    const response = await fetch(`${base}/v1/annotations`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: annotationBody(capture.id, 'blank'),
+    });
+    assert.equal(response.status, 201);
+    const { annotationId } = (await response.json()) as { annotationId: string };
+    assert.equal((await store.getAnnotation(annotationId))?.meta.base, 'blank');
+  });
+});
+
+test('a multipart annotation carries base "blank" in its meta part', async () => {
+  await withServer(async (store, base) => {
+    const capture = await store.createCapture({ screenshot: Buffer.from('p'), viewport: { w: 1, h: 1 } });
+    const form = new FormData();
+    form.set(
+      'meta',
+      new Blob(
+        [
+          JSON.stringify({
+            sourceCaptureId: capture.id,
+            viewport: { w: 1, h: 1 },
+            zoomRect: null,
+            device: { id: 'device-1', name: 'iPad' },
+            base: 'blank',
+          }),
+        ],
+        { type: 'application/json' },
+      ),
+    );
+    form.set('composite', new Blob([Buffer.from('c')], { type: 'image/png' }), 'composite.png');
+    form.set('sketch', new Blob([Buffer.from('s')], { type: 'image/png' }), 'sketch.png');
+    const response = await fetch(`${base}/v1/annotations`, { method: 'POST', body: form });
+    assert.equal(response.status, 201);
+    const { annotationId } = (await response.json()) as { annotationId: string };
+    assert.equal((await store.getAnnotation(annotationId))?.meta.base, 'blank');
+  });
+});
+
+test('an annotation with an unknown base is 400 invalid_request and creates nothing', async () => {
+  await withServer(async (store, base) => {
+    const capture = await store.createCapture({ screenshot: Buffer.from('p'), viewport: { w: 1, h: 1 } });
+    for (const bad of ['mirror', 'hologram', 1, null]) {
+      const response = await fetch(`${base}/v1/annotations`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: annotationBody(capture.id, bad),
+      });
+      await assertInvalidRequest(response);
+    }
+    assert.deepEqual(await readdir(store.paths.annotations), []);
+  });
+});

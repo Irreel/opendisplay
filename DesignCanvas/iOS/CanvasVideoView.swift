@@ -82,7 +82,7 @@ struct CanvasVideoView: UIViewRepresentable {
         }
 
         @objc func didDoubleTap(_ recognizer: UITapGestureRecognizer) {
-            guard recognizer.state == .ended, !parent.zoom.isLocked else { return }
+            guard recognizer.state == .ended else { return }
             parent.zoom.reset()
         }
 

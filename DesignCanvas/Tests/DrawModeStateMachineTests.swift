@@ -354,4 +354,49 @@ final class DrawModeStateMachineTests: XCTestCase {
         XCTAssertEqual(sm.state, .live)
         XCTAssertEqual(effects, [])
     }
+
+
+    // MARK: - The blank canvas surface: no freeze on the way in
+
+    func test_live_enterBlankDrawMode_goesStraightToDrawingWithNoEffects() {
+        var sm = DrawModeStateMachine()
+        let effects = sm.handle(.enterBlankDrawMode)
+        XCTAssertEqual(sm.state, .drawing)
+        XCTAssertEqual(effects, [])
+        XCTAssertTrue(sm.isInDrawMode)
+    }
+
+    func test_blankDrawing_doneSendsExactlyLikeAFrozenOne() {
+        var sm = DrawModeStateMachine()
+        _ = sm.handle(.enterBlankDrawMode)
+        XCTAssertFalse(sm.canSend)
+        _ = sm.handle(.strokeCountChanged(2))
+        XCTAssertTrue(sm.canSend)
+        XCTAssertEqual(sm.handle(.done), [.sendAnnotation, .resumeSync])
+        XCTAssertEqual(sm.state, .sending)
+        XCTAssertEqual(sm.handle(.sent), [.clearStrokes])
+        XCTAssertEqual(sm.state, .live)
+    }
+
+    func test_blankDrawing_cancelDiscardAndLinkLossLeaveLikeAFrozenOne() {
+        var sm = DrawModeStateMachine()
+        _ = sm.handle(.enterBlankDrawMode)
+        XCTAssertEqual(sm.handle(.cancel), [.resumeSync])
+        XCTAssertEqual(sm.state, .live)
+
+        _ = sm.handle(.enterBlankDrawMode)
+        XCTAssertEqual(sm.handle(.discard), [.resumeSync, .clearStrokes])
+        XCTAssertEqual(sm.state, .live)
+
+        _ = sm.handle(.enterBlankDrawMode)
+        XCTAssertEqual(sm.handle(.linkLost), [.resumeSync, .show(.interruptedByLinkLoss)])
+        XCTAssertEqual(sm.state, .live)
+    }
+
+    func test_enterBlankDrawMode_isIgnoredOutsideLive() {
+        var sm = DrawModeStateMachine()
+        _ = sm.handle(.enterDrawMode(now: 0))
+        XCTAssertEqual(sm.handle(.enterBlankDrawMode), [])
+        XCTAssertEqual(sm.state, .freezing(deadline: 2))
+    }
 }

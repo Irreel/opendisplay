@@ -86,18 +86,6 @@
 **Priority:** P3
 **Depends on:** None.
 
-### Tool panel covers the bottom band of the frozen frame
-
-**What:** Decide where Draw Mode's tool panel lives so it stops sitting over the frame being annotated — a side rail, a collapsible bar, or a panel that fades while a stroke is in progress.
-
-**Why:** The panel floats over the bottom of the mirror in Draw Mode, so anything in that band cannot be drawn on without moving it out of the way first. The sketch surface is the whole video rect, so the strokes underneath the panel would be fine — the designer just cannot reach them.
-
-**Context:** A design decision, not a bug, so the final fix wave left it alone. `DesignCanvas/iOS/CanvasScreen.swift` (the `chrome` layer) and `DrawModeOverlay.swift`.
-
-**Effort:** S
-**Priority:** P3
-**Depends on:** A design decision.
-
 ### Daemon log rotation
 
 **What:** Rotate `~/Library/Logs/DesignCanvas/server.log` — size-based, keeping a bounded number of previous files.
@@ -122,25 +110,13 @@
 **Priority:** P3
 **Depends on:** None.
 
-### `.mcp.json` carries absolute machine-specific paths
-
-**What:** Stop committing machine-specific paths in the `design-canvas` entry: resolve the node binary and the server entry at spawn time (a wrapper script in the repo, a user-scoped MCP config, or an entry that runs `npx`/a checked-in launcher).
-
-**Why:** The entry is written as `{command: <the node path this Mac resolved>, args: [<this checkout's dist/index.js>, "--channel"]}` and `.mcp.json` is a committed, project-scoped file. A collaborator who pulls it inherits an entry naming paths that do not exist on their machine, and Claude Code will try to spawn it. Since M9 this app at least *recognizes* a foreign entry and offers to rewrite it rather than accepting it, which makes the failure explicit instead of silent — it does not make the committed file portable.
-
-**Context:** Plan ruling 8 chose the ai.cst.2 behaviour deliberately for the MVP; the final review recorded the consequence. `DesignCanvas/Mac/App/McpConfigManager.swift`, and `AppModel.startSession()` which supplies the two paths.
-
-**Effort:** M
-**Priority:** P2
-**Depends on:** None.
-
 ### Kept strokes are not re-anchored when the video rect changes
 
-**What:** Re-anchor (or explicitly drop) the strokes kept in the sketch canvas when the rect the video covers on screen changes between Draw Mode entries — a zoom, a rotation, a resolution change on the Mac.
+**What:** Re-anchor (or explicitly drop) the strokes kept in the sketch canvas when the rect the picture covers at scale 1 changes between Draw Mode entries — a rotation, a resolution change on the Mac. Zoom is no longer a cause: since 2026-10-09 strokes are stored relative to the unzoomed view and zoomed together with the video (technical_doc.md section 3).
 
-**Why:** Strokes survive leaving Draw Mode by cancel, rotation, link loss or a refused freeze (M6, M7, PRD G6), and the canvas is one object that is never rebuilt. If the designer zooms in before entering again, those strokes are still at their old points on a surface that now maps to a different part of the frame, so they land somewhere they were not drawn.
+**Why:** Strokes survive leaving Draw Mode by cancel, rotation, link loss or a refused freeze (M6, M7, PRD G6), and the canvas is one object that is never rebuilt. After a rotation, or a resolution change on the Mac, those strokes are still at their old points on a surface that now maps to a different part of the frame, so they land somewhere they were not drawn.
 
-**Context:** Noticed in the final whole-branch review and deferred: what *should* happen is a design question (scale them, offset them, or warn and clear). `DesignCanvas/iOS/SketchCanvas.swift` (the controller owns the `PKCanvasView` and its `drawing`), `CanvasScreen.videoRect`, and `ZoomModel`.
+**Context:** Noticed in the final whole-branch review and deferred: what *should* happen is a design question (scale them, offset them, or warn and clear). `DesignCanvas/iOS/SketchCanvas.swift` (the controller owns the `PKCanvasView` and its `drawing`; the host view lays it out) and `ZoomModel.sketchRect`.
 
 **Effort:** M
 **Priority:** P3
@@ -148,11 +124,11 @@
 
 ### Oversize-sketch notice is not visible in Draw Mode
 
-**What:** Show the `sketchTooLarge` notice while Draw Mode is open, for example by rendering the notice banner over `DrawModeOverlay`.
+**What:** Show the `sketchTooLarge` notice while Draw Mode is open, for example by rendering the notice banner over the Draw Mode chrome.
 
-**Why:** When a sketch would exceed the 16 MiB canvas frame cap, `CanvasModel.done` correctly refuses to send it, keeps the strokes and sets the notice. But `CanvasScreen` renders the notice banner only outside Draw Mode, and the connection sheet that also shows it sits behind the panel that Draw Mode hides. So Done on an oversize sketch looks like a dead button.
+**Why:** When a sketch would exceed the 16 MiB canvas frame cap, `CanvasModel.done` correctly refuses to send it, keeps the strokes and sets the notice. But `CanvasScreen` renders the notice banner only outside Draw Mode, and the connection sheet that also shows it is out of reach in Draw Mode. So Send on an oversize sketch looks like a dead button.
 
-**Context:** Found by the scoped re-review of the final fix wave (2026-09-17) as the one finding left partially addressed; parked because the process allows no second fix wave, nothing else builds on it, and the trigger (a sketch PNG over 15 MiB) is rare. Start at `DesignCanvas/iOS/CanvasScreen.swift` where `DrawModeOverlay` and `NoticeBanner` are chosen; the model side is already tested (`test_done_withAnOversizeSketch_staysInDrawingAndSaysSo`).
+**Context:** Found by the scoped re-review of the final fix wave (2026-09-17) as the one finding left partially addressed; parked because the process allows no second fix wave, nothing else builds on it, and the trigger (a sketch PNG over 15 MiB) is rare. Start at `DesignCanvas/iOS/CanvasScreen.swift`, where the chrome decides when `NoticeBanner` shows; the model side is already tested (`test_done_withAnOversizeSketch_staysInDrawingAndSaysSo`).
 
 **Effort:** S
 **Priority:** P2
@@ -170,4 +146,66 @@
 **Priority:** P3
 **Depends on:** None.
 
+### Claude Code mod: follow-ups from Claude Code 2.1.290 to 2.1.292
+
+From a read of the Claude Code changelog on 2026-10-06. Backlog only, not prioritized (owner, 2026-10-06). The mod was built and tested on 2.1.289; it passes `claude plugin validate --strict` on 2.1.292 and has not been run live on anything newer than 2.1.289. Context for all of these: `technical_doc-ClaudeMods.md`.
+
+**Re-run the live checks on the current Claude Code.** One session against a scratch daemon: a round end to end, the permission wait, a daemon restart, a session ended mid-round. Three releases changed how hooks behave while the hooks worker restarts and how a mod's prompts are queued. **Effort:** S
+
+**Limit the sketch-read approval to the main session.** `tool.check` carries `agentId` since 2.1.290. X7 approves the read of the current round's composite whoever asks; with `agentId` it can decline to approve for a subagent. Treat the field as optional so the minimum stays 2.1.287. **Effort:** S
+
+**Respect an organisation's approval ceiling in the sketch-read approval.** `tool.check` reports `ceiling` since 2.1.290, the approval an organisation requires for a tool. X7 should return the decision unchanged when a ceiling asks for a prompt. Optional field, as above. **Effort:** S
+
+**Give the mod's gating hooks a `.catch`.** Since 2.1.290 `claude plugin validate --json` lists each hook at a gating site with `hasCatch`; all of the mod's (`tool.call`, `tool.check`, the three `classic.*` hooks) report false. They guard themselves inside the hook body, but a `.catch` is the documented way to say what happens when one throws or times out, and what should happen differs: fail open for the reply tool and the waiting tracker, fail to "ask" for the read approval. **Effort:** S
+
+**Use `claude plugin install --marketplace` for the published mod.** Added in 2.1.292: adds the marketplace if needed and installs from it in one command. It is the mechanism for the marketplace half of the every-session option (XG7), in place of the `CLAUDE_CODE_PLUGIN_DIRS` entry. **Depends on:** the marketplace listing. **Effort:** M
+
+**Channel baseline: expect a slower first connect.** Since 2.1.292 local MCP servers negotiate protocol version 2026-07-28 by default, and a server that ignores the check is connected the older way after one slow attempt. The channel uses an older MCP SDK. When the reply-compliance baseline is run on the channel, allow for that or set `MCP_PROTOCOL_NEGOTIATION=legacy`, and record which. **Effort:** none beyond the run
+
+**Phase 2: approving the call does not answer a question.** Since 2.1.292 a `tool.check` hook that answers "allow" no longer skips the dialog of a tool that needs the user's own answer (a question, a plan approval). X13's answer-from-the-iPad cannot be built by approving the call; it has to supply the answer. Note for the Phase 2 design, nothing to do now.
+
+### The every-session switch rewrites the whole settings file
+
+**What:** Turn the every-session option on and off with a text-level edit of `~/.claude/settings.json` that touches only the one `env` entry and leaves the rest of the file as the user wrote it.
+
+**Why:** Today the content after on-then-off is identical key for key, but `JSONSerialization` re-sorts the top-level keys and reformats the file. For a file people edit by hand that is more than the "one entry" the Settings window promises.
+
+**Context:** Found on the Mac on 2026-10-06 (technical_doc-ClaudeMods.md section 13). The write is in `DesignCanvas/Mac/App/ClaudeSettingsManager.swift`.
+
+**Effort:** S
+**Priority:** Not set
+**Depends on:** None.
+
+### The Mac menu's buttons have no accessibility names
+
+**What:** Give every button in the menu-bar popover, the session rows included, an accessibility label.
+
+**Why:** VoiceOver and UI scripting see only the rows' help text, so the controls cannot be named or found by what they do.
+
+**Context:** Found on the Mac on 2026-10-06 (technical_doc-ClaudeMods.md section 13). Start at `DesignCanvas/Mac/App/MenuBarView.swift`.
+
+**Effort:** S
+**Priority:** Not set
+**Depends on:** None.
+
+### The iPad shows in the Mac menu as "iPhone / iPad"
+
+**What:** Find why the menu names a USB-connected iPad "iPhone / iPad" instead of its device name, as earlier builds did, and fix it.
+
+**Why:** With more than one device the rows cannot be told apart.
+
+**Context:** Seen on the Mac on 2026-10-06, not traced. "iPhone / iPad" is the fallback when usbmuxd gives no name: `Mac/Usbmux.swift` (`label`) and `Mac/SenderController.swift`.
+
+**Effort:** S
+**Priority:** Not set
+**Depends on:** None.
+
 ## Completed
+
+### Tool panel covers the bottom band of the frozen frame
+
+Done 2026-10-13 with the iPad redesign. The panel docks to the top by default, sits in the top bar in Draw Mode where the screen is wide enough, and can be dragged, or moved from a long-press menu, to any screen edge, where it stays (PRD P4).
+
+### `.mcp.json` carries absolute machine-specific paths
+
+Done with the Claude Code mod (2026-10-05, `technical_doc-ClaudeMods.md`). Sketches reach Claude Code through the mod, `McpConfigManager` is gone, and nothing is written to a project's `.mcp.json` any more. An old `design-canvas` entry left there by an earlier build is not touched; since the plugin was renamed `designcanvas` it no longer stops the mod.

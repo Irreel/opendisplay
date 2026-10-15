@@ -416,21 +416,7 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate, CanvasOutboun
 
         switch mode {
         case .mirror:
-            let content = try await SCShareableContent.current
-            guard let display = content.displays.first else {
-                throw NSError(domain: "MacSender", code: 1,
-                              userInfo: [NSLocalizedDescriptionKey: "no displays found"])
-            }
-            // SCDisplay.width/height are POINTS. Capturing at points on a
-            // Retina panel discards half the raster before the encoder ever
-            // sees it, and no quality setting can bring it back — read the
-            // true pixel size from the active display mode.
-            let displayMode = CGDisplayCopyDisplayMode(display.displayID)
-            let pixelsW = displayMode?.pixelWidth ?? display.width
-            let pixelsH = displayMode?.pixelHeight ?? display.height
-            let captureW = (Int(Double(pixelsW) * quality.scale)) & ~1
-            let captureH = (Int(Double(pixelsH) * quality.scale)) & ~1
-            try await startCapture(display: display, pixelsWide: captureW, pixelsHigh: captureH)
+            try await setupMirror()
 
         case .extend:
             // awaitingWake is queue-confined — read it there before surfacing.
@@ -608,6 +594,26 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate, CanvasOutboun
             let id = vd.displayID
             Task { @MainActor in TestPattern.show(on: id) }
         }
+    }
+
+    /// Capture the Mac's own display. Also the mirror's recovery path: there
+    /// is no display of ours to rebuild, only a stream to start again.
+    private func setupMirror() async throws {
+        let content = try await SCShareableContent.current
+        guard let display = content.displays.first else {
+            throw NSError(domain: "MacSender", code: 1,
+                          userInfo: [NSLocalizedDescriptionKey: "no displays found"])
+        }
+        // SCDisplay.width/height are POINTS. Capturing at points on a
+        // Retina panel discards half the raster before the encoder ever
+        // sees it, and no quality setting can bring it back — read the
+        // true pixel size from the active display mode.
+        let displayMode = CGDisplayCopyDisplayMode(display.displayID)
+        let pixelsW = displayMode?.pixelWidth ?? display.width
+        let pixelsH = displayMode?.pixelHeight ?? display.height
+        let captureW = (Int(Double(pixelsW) * quality.scale)) & ~1
+        let captureH = (Int(Double(pixelsH) * quality.scale)) & ~1
+        try await startCapture(display: display, pixelsWide: captureW, pixelsHigh: captureH)
     }
 
     /// Tear down and rebuild when the phone announces new dimensions. Loops
@@ -949,8 +955,10 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate, CanvasOutboun
         }
         Task { await status("Capture stopped: \(error.localizedDescription)") }
         // E.g. display sleep can tear the virtual display down underneath the
-        // stream — rebuild instead of sitting dead until an app restart.
-        guard !stopped, mode == .extend else { return }
+        // stream — rebuild instead of sitting dead until an app restart. A
+        // mirror dies the same way (lock, display sleep) and, left dead, keeps
+        // the receiver on the last frame it was sent for good.
+        guard !stopped else { return }
         invalidateCapturePipeline()
         self.stream = nil
         scheduleCaptureRecovery()
@@ -962,10 +970,23 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate, CanvasOutboun
     /// (destroy+create) is what killed the NEIGHBOR's stream and ping-ponged
     /// the infinite rebuild loop. Only do a full `reconfigure` when the display
     /// is actually gone (e.g. display sleep tore it down).
-    private func scheduleCaptureRecovery() {
-        queue.asyncAfter(deadline: .now() + 3.0) { [weak self] in
-            guard let self, !self.stopped, self.stream == nil,
-                  let hello = self.lastHello else { return }
+    private func scheduleCaptureRecovery(after delay: TimeInterval = 3) {
+        queue.asyncAfter(deadline: .now() + delay) { [weak self] in
+            guard let self, !self.stopped, self.stream == nil else { return }
+            if self.mode == .mirror {
+                Task {
+                    do {
+                        try await self.setupMirror()
+                        self.needsKeyframe = true
+                        Log.info("capture died — mirror capture restarted")
+                    } catch {
+                        Log.info("mirror capture restart failed (\(error.localizedDescription))")
+                    }
+                    self.queue.async { self.recoveryRoundEnded() }
+                }
+                return
+            }
+            guard let hello = self.lastHello else { return }
             // Does our virtual display still exist? CGDisplayBounds returns a
             // zero rect for an unknown id, so a non-empty bounds means it's live.
             // Test isEmpty, not isNull: isNull is only true for the special
@@ -1018,19 +1039,22 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate, CanvasOutboun
     /// still down — up to the cap, then declare the session gone. A capture
     /// dead this many rounds is not coming back by itself, and ending the
     /// session (display torn down, reconnect is the user's call) beats
-    /// hammering WindowServer with create/destroy cycles forever.
+    /// hammering WindowServer with create/destroy cycles forever. A mirror
+    /// has no display to hammer and keeps trying at a slower pace instead
+    /// (`CaptureMode.recoveryStep`).
     private func recoveryRoundEnded() {
         guard stream == nil else {
             captureRecoveryFailures = 0
             return
         }
         captureRecoveryFailures += 1
-        guard captureRecoveryFailures < maxCaptureRecoveryFailures else {
+        switch mode.recoveryStep(afterFailures: captureRecoveryFailures, cap: maxCaptureRecoveryFailures) {
+        case .retry(let delay):
+            scheduleCaptureRecovery(after: delay)
+        case .endSession:
             Task { await status("Capture could not be restarted") }
             reportGone("capture recovery failed \(captureRecoveryFailures)x — ending session")
-            return
         }
-        scheduleCaptureRecovery()
     }
 
     // MARK: - Connection (with retry)
@@ -1938,7 +1962,7 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate, CanvasOutboun
             // without the silence grace and without waiting for a wake.
             Log.info("receiver app closed — ending session")
             Task { @MainActor in self.onPeerClosed?() }
-        case WireMessage.freeze, WireMessage.annotation:
+        case WireMessage.freeze, WireMessage.annotation, WireMessage.selectSession:
             // Canvas messages, gated on the capability this sender announced:
             // without an engine to hand them to they are as unknown as any
             // other type this build has no use for.

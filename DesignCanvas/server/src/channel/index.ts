@@ -69,6 +69,8 @@ export function createMcpChannel(
         'Design Canvas pushes iPad sketch annotations into this session.',
         'Events arrive as <channel source="design-canvas" ...> notifications.',
         "Read the composite PNG at the given path, then apply the change to this project's source.",
+        'An event that says "blank canvas" is a freehand sketch on a blank page rather than a',
+        'marked-up screenshot of the running app: read it together with its note.',
         'Call design_canvas_reply exactly once per annotation, with status applied, failed, or',
         'needs_input, a short message, and pr_url when a pull request was opened.',
       ].join(' '),
@@ -182,6 +184,21 @@ export function createInstructionText(annotation: ClaimedAnnotation): string {
   const meta = annotation.meta;
   const device = meta.device.name.length > 0 ? meta.device.name : 'unknown iPad';
   const note = meta.note.text?.trim() ? meta.note.text.trim() : '(none)';
+  // Drawn on the iPad's blank canvas: there is no frame, so no capture time and no zoom
+  // region, and the model must not read the white page as the app's own screen.
+  if (meta.base === 'blank') {
+    return [
+      'New sketch from iPad (blank canvas).',
+      `Annotation ID: ${meta.id}`,
+      `Device: ${device}`,
+      `Sent at: ${meta.createdAt}`,
+      `Composite PNG path: ${annotation.compositePath}`,
+      `Note: ${note}`,
+      '',
+      'This is a freehand sketch drawn on a blank page, not a screenshot of the running app.',
+      'Inspect the composite PNG path to see it, read it together with the note, and act on it in this project, then call design_canvas_reply with the outcome.',
+    ].join('\n');
+  }
   const zoom =
     meta.zoomRect === null
       ? 'full frame'
