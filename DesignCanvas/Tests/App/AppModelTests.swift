@@ -24,14 +24,12 @@ final class FakeSenderEngine: SenderEngine {
 
     private(set) var startCount = 0
     private(set) var stopCount = 0
-    private(set) var projectNames: [String?] = []
     private(set) var channelStates: [ChannelState] = []
     private(set) var connected: [String] = []
     private(set) var disconnected: [String] = []
 
     func start() { startCount += 1 }
     func stop() { stopCount += 1 }
-    func setProjectName(_ name: String?) { projectNames.append(name) }
     func setChannelState(_ state: ChannelState) { channelStates.append(state) }
     func connect(id: String) { connected.append(id) }
     func disconnect(id: String) { disconnected.append(id) }
@@ -777,15 +775,45 @@ final class AppModelTests: XCTestCase {
         )
     }
 
-    func testPushesTheProjectFolderNameOnSelectAndNilWhenCleared() {
-        let (model, _, engine) = makeEngineModel()
-        XCTAssertEqual(engine.projectNames, [], "nothing is pushed before a project is chosen")
+    // MARK: - Start asks where (XG8)
 
-        model.selectRecent(URL(fileURLWithPath: "/Users/me/work/my-app"))
-        XCTAssertEqual(engine.projectNames, ["my-app"], "the folder name, not the path")
+    func testStartingInAFolderLaunchesThereAndMakesItTheMostRecent() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("dc-recents-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let folders = try ["one", "two", "three", "four"].map { name -> URL in
+            let url = root.appendingPathComponent(name)
+            try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+            return url
+        }
+        var launches: [ClaudeLaunch] = []
+        let model = AppModel(probe: { .refused }, now: Date.init, childPidProvider: { 100 },
+                             launchInTerminal: { launches.append($0); return nil }, defaults: scratchDefaults())
+        XCTAssertEqual(model.recentFolders, [], "nothing to offer but Choose Folder… on a first run")
 
-        model.selectedProject = nil
-        XCTAssertEqual(engine.projectNames, ["my-app", nil], "clearing the project clears the iPad's project row")
+        for folder in folders {
+            model.startSession(in: folder)
+            model.disconnect() // give up on the launch, so the next Start is allowed
+        }
+        XCTAssertEqual(launches.map(\.repoRoot), folders)
+        XCTAssertEqual(model.selectedProject, folders[3], "Retry launches where the last Start did")
+        // Paths, not URLs: a URL read back for a folder that exists gains a trailing slash.
+        XCTAssertEqual(model.recentFolders.map(\.path), [3, 2, 1].map { folders[$0].path }, "the three most recent, newest first")
+
+        model.startSession(in: folders[0])
+        XCTAssertEqual(model.recentFolders.map(\.path), [0, 3, 2].map { folders[$0].path }, "starting in a recent folder moves it to the top")
+
+        try FileManager.default.removeItem(at: folders[3])
+        XCTAssertEqual(model.recentFolders.map(\.path), [0, 2, 1].map { folders[$0].path }, "a folder that is gone is not offered")
+    }
+
+    func testStartingInAFolderWhileALaunchIsPendingDoesNothing() {
+        var launches = 0
+        let model = AppModel(probe: { .refused }, now: Date.init, childPidProvider: { 100 },
+                             launchInTerminal: { _ in launches += 1; return nil }, defaults: scratchDefaults())
+        model.startSession(in: URL(fileURLWithPath: "/work/acme"))
+        model.startSession(in: URL(fileURLWithPath: "/work/other"))
+        XCTAssertEqual(launches, 1)
+        XCTAssertEqual(model.selectedProject?.path, "/work/acme", "the pending launch's folder is kept")
     }
 
     /// I3: a sketch the engine is still holding for a daemon that is down was

@@ -3,18 +3,25 @@ import CoreVideo
 import Dispatch
 import Foundation
 
-/// The two additive `ping` fields (spec section 2, P1), shared by every
-/// session and written by the app as the daemon health poll and the project
-/// picker change, plus the one fact that flows the other way: when the last
+/// The additive `ping` fields (spec section 2, P1), shared by every session
+/// and written by the app as the daemon health poll and the session list
+/// change, plus the one fact that flows the other way: when the last
 /// captured frame arrived, which is how the app knows capture is running
 /// (`isCapturing`). Thread-safe because sessions read and stamp it from the
 /// sender's queue while the app writes and reads it from the main one.
 final class CanvasStatus {
+    /// This Mac's name, sent so the iPad can say which Mac it mirrors. Fixed
+    /// for the app's life: renaming the Mac mid-session is not worth a lock.
+    private let macName: String?
     private let lock = NSLock()
     private var storedChannelState: ChannelState = .none
-    private var storedProjectName: String?
     private var storedLastFrameAt: Date?
     private var storedSessions: SessionsMessage = .empty
+
+    init(macName: String? = nil) {
+        let trimmed = macName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        self.macName = trimmed.isEmpty ? nil : String(trimmed.prefix(CanvasWire.macNameMaxCharacters))
+    }
 
     var channelState: ChannelState {
         get {
@@ -25,19 +32,6 @@ final class CanvasStatus {
         set {
             lock.lock()
             storedChannelState = newValue
-            lock.unlock()
-        }
-    }
-
-    var projectName: String? {
-        get {
-            lock.lock()
-            defer { lock.unlock() }
-            return storedProjectName
-        }
-        set {
-            lock.lock()
-            storedProjectName = newValue
             lock.unlock()
         }
     }
@@ -57,7 +51,7 @@ final class CanvasStatus {
         }
     }
 
-    /// `channel` always; `project` only when a project is selected — an
+    /// `channel` always; `project` only when a session is the target — an
     /// absent key is how the iPad is told there is none (spec section 2).
     var pingFields: [String: String] {
         lock.lock()
@@ -70,9 +64,12 @@ final class CanvasStatus {
             CanvasWire.pingBlankKey: "1",
         ]
         // The project the iPad names is where the next sketch goes: the target
-        // session's folder. With no session it is the folder Start would open.
-        if let project = storedSessions.targetEntry?.folder ?? storedProjectName {
+        // session's folder. The folder Start last used is not named (XG8).
+        if let project = storedSessions.targetEntry?.folder {
             fields[CanvasWire.pingProjectKey] = project
+        }
+        if let macName {
+            fields[CanvasWire.pingMacNameKey] = macName
         }
         return fields
     }

@@ -1,6 +1,6 @@
 # PRD: Design Canvas
 
-**Status:** Draft v0.10, 2026-10-13 (v0.9 was 2026-10-09; v0.8 was 2026-10-03; v0.7 was 2026-09-22; v0.6 was 2026-09-18, after the first hardware sessions; v0.5 was 2026-09-16, after the engineering review). v0.10 records the redesign of the iPad interface (owner, 2026-10-13, in the Figma file below): a project pill and its session list replace the connection status panel, one floating panel that can be docked to any screen edge holds the controls, Send replaces Done, and a notification replaces the list of agent replies (section 6; P1 to P4, M2, M5, M8; G18 decided). v0.9 lets the designer zoom and pan inside Draw Mode and makes every mirror round the whole frame (owner, 2026-10-09, after device testing; C2, M5, section 9). v0.8 scopes the mirror requirements to the mirror surface, now that the iPad also has a blank canvas surface; that surface is specified in its own document, `PRD-BlankCanvas.md`, and nothing about it is repeated here. v0.7 added the Mac-app information architecture from the board after the second dogfooding round. v0.6 recorded the decision on G1: the iPad mirrors the Mac's own screen, and there is no extended display. Product requirements only; the technical specification is in `technical_doc.md`.
+**Status:** Draft v0.12, 2026-11-03 (v0.11 was 2026-10-28; v0.10 was 2026-10-13; v0.9 was 2026-10-09; v0.8 was 2026-10-03; v0.7 was 2026-09-22; v0.6 was 2026-09-18, after the first hardware sessions; v0.5 was 2026-09-16, after the engineering review). v0.12 records the v3.1 interface (owner, 2026-11-02 and 2026-11-03, in the Figma file below): the session pill and a window button at the top left, the held picture shown as a print on paper that fills the screen and zooms as one with it, with no label, the note and Send in one pill at the top right, a round drawing button at the bottom left that starts and ends drawing, and a tool panel that is out only while drawing, with Clear all; ending without sending gives the sketch up, after asking (section 6; M1, M6, P1, P3 to P5; G6 decided). v0.11 keeps the project pill in the Draw Mode top bar and adds the "Frozen" label beside Cancel (owner, 2026-10-28; section 6). v0.10 records the redesign of the iPad interface (owner, 2026-10-13, in the Figma file below): a project pill and its session list replace the connection status panel, one floating panel that can be docked to any screen edge holds the controls, Send replaces Done, and a notification replaces the list of agent replies (section 6; P1 to P4, M2, M5, M8; G18 decided). v0.9 lets the designer zoom and pan inside Draw Mode and makes every mirror round the whole frame (owner, 2026-10-09, after device testing; C2, M5, section 9). v0.8 scopes the mirror requirements to the mirror surface, now that the iPad also has a blank canvas surface; that surface is specified in its own document, `PRD-BlankCanvas.md`, and nothing about it is repeated here. v0.7 added the Mac-app information architecture from the board after the second dogfooding round. v0.6 recorded the decision on G1: the iPad mirrors the Mac's own screen, and there is no extended display. Product requirements only; the technical specification is in `technical_doc.md`.
 **Owner:** AntheaZ
 **Sources:** [FigJam board "Design Canvas"](https://www.figma.com/board/eMxEcxvPAeNtaoWbsKaa6S/Design-Canvas?node-id=0-1); [Figma file "Design Canvas Design"](https://www.figma.com/design/N7DN83jg1SrZV9Gx4SIMlq/Design-Canvas-Design) (the iPad design system and screens, 2026-10-13); the ai.cst.2 repo (the earlier build we dogfooded and pivoted from); OpenDisplay.
 
@@ -63,24 +63,32 @@ Design Canvas removes capture by mirroring the Mac live, keeps ai.cst.2's agent 
 
 ## 6. Information architecture
 
-The Mac-app tree is from the board (re-read 2026-09-22), new there since the second dogfooding round. The iPad tree was redesigned on 2026-10-13 in the style of Apple Freeform; the screens and the design system are in the [Figma file](https://www.figma.com/design/N7DN83jg1SrZV9Gx4SIMlq/Design-Canvas-Design). Stack is drawn on the board but deprioritized for the MVP.
+The Mac-app tree is from the board (re-read 2026-09-22), new there since the second dogfooding round. The iPad tree was redesigned on 2026-10-13 in the style of Apple Freeform and again as v3.1 on 2026-11-02 and 2026-11-03; the screens and the design system are in the [Figma file](https://www.figma.com/design/N7DN83jg1SrZV9Gx4SIMlq/Design-Canvas-Design), and the same interface runs on an iPhone, where what no longer fits in one row takes the next. Stack is drawn on the board but deprioritized for the MVP.
 
 **iPad**
 
 ```
-Waiting screen: fills the iPad while no Mac is connected
-Canvas: the live mirror or the blank page (two fingers zoom and pan)
-Top bar
- ├─ Project pill: the Claude Code session the next sketch goes to, or "No session" / "Choose a session"
- │    └─ tap ──▶ session list
+Waiting screen: fills the iPad while no Mac is connected, with the setup guide
+Canvas: the live mirror or the whiteboard (two fingers zoom and pan); while drawing on the mirror,
+        the held picture is a print on paper that fills the screen
+Top left
+ ├─ Session pill: the Claude Code session the next sketch goes to, or "Choose a session"
+ │    └─ tap ──▶ session menu
  │         ├─ each session: folder, Ready / Busy / Waiting for reply at desktop, a tick on the target
+ │         ├─ with no session: how to start one
  │         └─ "Connection details…" ──▶ connection parameters, errors and the log
- ├─ Send chip, between sketches: "Sending sketch…", or "Sketch kept — will resend" with a way to give it up
- └─ Reply notification, top right: applied, failed or needs input, with a PR link when present
-Panel: floats; drag it to any screen edge
- ├─ Between sketches: Mirror, Blank, Draw
- └─ In Draw Mode: undo, redo, pen, eraser, five inks, throw the sketch away
-Draw Mode top bar: Cancel (keeps the strokes), "Add a note" (optional), Send
+ └─ Window button, under the pill
+      └─ tap ──▶ window menu: the Mac, by its own name, or the whiteboard
+Top right
+ ├─ While drawing: the prompt pill, an optional note and Send
+ ├─ Between sketches: "Sketch kept — will resend", with a way to give it up
+ └─ Reply notification: applied, failed or needs input, with a PR link when present
+Bottom left, on the mirror: the drawing button, round, with no words
+ ├─ Pencil: start drawing; the picture is held as a print
+ └─ Cross: end drawing; with ink on the page it asks "End without sending?" first
+Tool panel: out only while drawing, at the bottom centre unless dragged to another edge
+ └─ undo, redo, pen, eraser, five inks (one swatch on an iPhone, which opens the Ink Picker), Clear all
+Notice, at the bottom: why Draw Mode ended or a sketch was not sent
 Stack (deprioritized)
  ├─ Thumbnails of saved sketches; failed sends marked with a badge
  └─ "Send"
@@ -123,18 +131,19 @@ IDs are referenced from the technical doc. C1, C2, M1, M7 and D9 describe the mi
 |---|---|
 | C1 | Live mirror (OpenDisplay). The iPad's other surface, the blank canvas, is in `PRD-BlankCanvas.md` |
 | C2 | Finger pinch-zoom and pan, view-only. It works in Draw Mode too (2026-10-09): there two fingers always zoom and pan, one finger or the Pencil draws, and every stroke stays on the part of the frame it was drawn on |
-| M1 | On the mirror surface, entering Draw Mode freezes the frame and pauses sync at once |
+| M1 | On the mirror surface, entering Draw Mode freezes the frame and pauses sync at once. The held picture becomes a print: it shrinks a little into paper that fills the screen, so nothing on it is covered, and picture, ink and paper zoom and pan as one. No label says it; VoiceOver is told (2026-11-03; on 2026-11-02 a border laid over the picture and a "Mirroring paused" label) |
 | M2 | Pen, eraser, undo, redo, five ink colours (redo added 2026-10-13) |
 | M3 | In Draw Mode nothing is forwarded to the Mac |
 | M4 | Optional text note |
 | M5 | Send sends immediately and resumes sync. A mirror round is always the whole frame with the sketch over it, whatever the zoom (2026-10-09) |
-| M6 | A way to leave Draw Mode without sending: Cancel keeps the strokes for the next entry, the panel's trash throws them away |
+| M6 | A way to leave Draw Mode without sending: End drawing. The sketch is not kept, so with ink on the page it asks first. Clear all in the tool panel erases every stroke and can be undone (2026-11-02; was: Cancel kept the strokes for the next entry) |
 | M7 | If the Mac reports no frame for the freeze, leave Draw Mode with a message and keep the strokes |
 | M8 | When a round reaches an outcome (applied, failed, or needs input) the iPad announces it in a notification, with a PR link when present. An applied round's notification leaves on its own; the others stay until dismissed. There is no list of rounds (2026-10-13): the record of a session is the Claude Code session |
-| P1 | The project pill names the Claude Code session the next sketch goes to, and says when there is none or one must be picked; tapping it lists every connected session with its state. The iPad-to-Mac hop has no indicator of its own: while it is down, a waiting screen fills the iPad (2026-10-13) |
+| P1 | The session pill names the Claude Code session the next sketch goes to, and reads "Choose a session" when there is none or one must be picked; tapping it lists every connected session with its state. The iPad-to-Mac hop has no indicator of its own: while it is down, a waiting screen fills the iPad (2026-10-13) |
 | P2 | "Connection details…" at the end of the session list opens the connection parameters, errors and the connection log |
-| P3 | Entry to Draw Mode from the panel, disabled while there is no Claude Code session to send to |
-| P4 | The panel can be moved to any screen edge by dragging it, and stays there across modes and launches. Its grabber shows only while it is being dragged, on the side that faces its edge (2026-10-13) |
+| P3 | Entry to Draw Mode from the drawing button, a round button with no words at the bottom left that also ends it, disabled while there is no Claude Code session to send to (2026-11-03; was: from the panel). The whiteboard has no such button: it is always ready to draw (`PRD-BlankCanvas.md`, B9) |
+| P4 | The tool panel is out only while drawing (2026-11-02). It can be moved to any screen edge by dragging it, and stays there across modes and launches. Its grabber shows only while it is being dragged, inside the panel on the side that faces into the screen, and the panel does not grow for it (2026-10-13; changed 2026-11-03) |
+| P5 | The window button under the session pill switches between the Mac's screen, named as the Mac names itself, and the whiteboard. With ink on the page it asks first, since the sketch is not kept (2026-11-02) |
 
 ## 8. What is reused and what is new
 
@@ -158,7 +167,7 @@ Decided since v0.9: **G18, visual design** (owner, 2026-10-13). The iPad follows
 Decided since v0.8: **zoom in Draw Mode** (owner, 2026-10-09, after device testing, where a designer in Draw Mode could not zoom in to place a stroke). Zoom is no longer locked while drawing. Two fingers always zoom and pan; one finger or the Pencil draws. A mirror round is always the whole frame with the sketch over it, so zooming in, before or during Draw Mode, no longer crops what is sent. Consequences are in the technical doc, section 3, and under G13 below.
 
 - **G5. Queued rounds.** Without Stack, should the iPad at least show a count of rounds waiting for Claude Code?
-- **G6. Draw Mode edges.** Mostly settled in the technical spec's state machine: cancel keeps strokes, Send is disabled with no strokes, rotation and disconnect keep strokes for resend. Redo is in the panel since 2026-10-13. Still open: clear-all.
+- **G6. Draw Mode edges.** Decided (owner, 2026-11-02): End drawing gives the sketch up, asking first when there is ink; Send is disabled with no strokes; rotation and disconnect keep strokes for resend. Redo is in the panel since 2026-10-13 and Clear all since 2026-11-02.
 - **G9. Preview refresh.** The loop assumes the dev server hot-reloads. With no input forwarding, a preview that needs a manual reload means walking to the Mac.
 - **G11. Note entry.** The keyboard covers the canvas. Consider a compact field or entering the note after the sketch.
 - **G12. Tool set.** Arrows, rectangles, and text labels are common in design review and not in the MVP list.

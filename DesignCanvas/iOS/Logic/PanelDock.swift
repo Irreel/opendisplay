@@ -13,6 +13,17 @@ enum PanelEdge: String, CaseIterable {
     /// On a side edge the panel's controls run top to bottom.
     var isVertical: Bool { self == .leading || self == .trailing }
 
+    /// The panel's side that faces into the screen, away from this edge:
+    /// where its grabber shows.
+    var opposite: PanelEdge {
+        switch self {
+        case .top: return .bottom
+        case .bottom: return .top
+        case .leading: return .trailing
+        case .trailing: return .leading
+        }
+    }
+
     /// Where the panel's centre rests on this edge, `inset` in from it.
     func restingCenter(in size: CGSize, inset: CGFloat) -> CGPoint {
         switch self {

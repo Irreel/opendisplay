@@ -42,4 +42,14 @@ final class PanelDockTests: XCTestCase {
     func test_isVertical_onlyOnTheSides() {
         XCTAssertEqual(PanelEdge.allCases.filter(\.isVertical), [.leading, .trailing])
     }
+
+    func test_opposite_facesIntoTheScreen() {
+        XCTAssertEqual(PanelEdge.bottom.opposite, .top)
+        XCTAssertEqual(PanelEdge.top.opposite, .bottom)
+        XCTAssertEqual(PanelEdge.leading.opposite, .trailing)
+        XCTAssertEqual(PanelEdge.trailing.opposite, .leading)
+        for edge in PanelEdge.allCases {
+            XCTAssertEqual(edge.opposite.opposite, edge)
+        }
+    }
 }

@@ -59,11 +59,18 @@ DesignCanvas/
   iOS/
     DesignCanvasApp.swift, CanvasScreen.swift (the screen and its chrome),
     CanvasVideoView.swift, SketchCanvas.swift, ControlPanel.swift (the
-    floating panel), ProjectPill.swift (the session pill and list),
-    ReplyNotificationCard.swift, ConnectionStatusView.swift (connection
-    details), CanvasColors.swift (the colour tokens), ReceiverAdapter.swift
+    tool panel), DrawingButton.swift (start and end drawing),
+    ProjectPill.swift (the session pill and menu), WindowSwitcher.swift
+    (the window button and menu), GlassMorph.swift (how a control grows
+    into its menu), FrozenFrameIndicator.swift (the held picture's print),
+    SentSketchCard.swift (the sketch seen leaving), ReplyNotificationCard.swift,
+    ConnectionStatusView.swift (connection details), SetupGuideView.swift
+    (the waiting screen's setup steps), CanvasColors.swift (the colour
+    tokens), ReceiverAdapter.swift, Assets.xcassets (the whiteboard icon)
     Logic/                     CanvasModel.swift, ZoomModel.swift,
-                                PanelDock.swift, ReplyNotification.swift —
+                                PanelDock.swift, TopBarLayout.swift,
+                                BottomBarLayout.swift, ReplyNotification.swift,
+                                SetupGuide.swift (the prompt it copies) —
                                 the pure, testable logic behind the views
                                 above.
     DesignCanvasiOS.entitlements
@@ -158,7 +165,9 @@ real device or simulator, and run.
    appears under **iPads** in the Mac app's menu — click **Connect** next
    to it. That first click is also what makes the Mac auto-reconnect that
    iPad on later launches; **Disconnect** stops both the session and the
-   auto-reconnect.
+   auto-reconnect. Until a Mac connects, the iPad's waiting screen lists
+   these steps: install the Mac app, install the Claude Code mod (step 6),
+   connect the iPad.
 3. **The iPad now mirrors your Mac's screen.** Whatever is in front on the
    Mac is what the iPad shows and what a sketch is composited onto — no
    extra display appears, and there is nothing to drag anywhere (owner
@@ -191,6 +200,15 @@ real device or simulator, and run.
    that session, and opens the Mac app if it is not running. With several
    sessions connected, the Mac menu and the iPad list them and show which
    one gets the next sketch; click or tap another to switch.
+
+   The iPad's waiting screen offers the same thing as a prompt: tap
+   **Copy** there and paste it into Claude Code on the Mac (Handoff carries
+   the clipboard across). Claude Code then adds the mod inside the
+   installed app to `CLAUDE_CODE_PLUGIN_DIRS` in `~/.claude/settings.json`,
+   which is exactly the entry the switch writes, so Settings shows it on
+   and turning it off there undoes it. The same step also says the mod can
+   be installed from the marketplace; there is no listing yet (see
+   [`spec/TODOS.md`](spec/TODOS.md)), so for now that route leads nowhere.
 7. **Keep that Terminal window on the mirrored screen** (owner decision
    D20) — the one from step 3, which is where it opens unless you move it
    to another monitor. Claude Code's own permission prompts (tool-use
@@ -201,30 +219,33 @@ real device or simulator, and run.
    the terminal is on the mirrored screen, it is inside every sketch's
    captured frame and composite. A round is always the whole screen, so
    zooming in does not keep it out.
-8. On the iPad: tap Draw in the panel, sketch, optionally add a note, and
-   tap Send. Two fingers zoom and pan at any time, in Draw Mode too, so you can
+8. On the iPad: tap the round pencil button at the bottom left, sketch,
+   optionally add a note in the field at the top right, and tap Send. Two fingers zoom and pan at any time, in Draw Mode too, so you can
    zoom into a detail to draw on it; one finger or the Pencil draws. The composite
    (your sketch flattened over the clean frame) is pushed to Claude Code as
-   soon as it's ready. A chip in the top right says "Sending sketch…" until
-   the Mac has it, and when Claude Code reports the outcome a notification
-   takes its place: applied, failed or needs input, with a PR link when
-   there is one. Sketches are worked on one per turn, in order; one sent
-   while Claude Code is busy waits on the Mac until its turn. The project
+   soon as it's ready; on the iPad the sketch is seen flying into the
+   session pill. When Claude Code reports the outcome a notification
+   appears at the top right: applied, failed or needs input, with a PR
+   link when there is one. To stop drawing without sending, tap the cross
+   where the pencil was; with ink on the page it asks first, since the
+   sketch is not kept. Sketches are worked on one per turn, in order; one sent
+   while Claude Code is busy waits on the Mac until its turn. The session
    pill in the top left names the session the next sketch goes to; tap it
    to see every session and what each is doing, or to switch.
-9. **To sketch an idea with nothing on screen to point at**, tap **Blank**
-   in the iPad's panel instead of **Mirror** (added 2026-10-03). The mirror
-   is replaced by a white page with Draw Mode already open; sketch, add a note saying what the
-   sketch is for, and tap Send. The round goes to Claude Code the same way,
-   described to it as a freehand sketch and not a screenshot, and the page
-   is cleared. There is nothing to set on the Mac. The switch is greyed out
-   when the Mac app is older than this feature. See
+9. **To sketch an idea with nothing on screen to point at**, tap the
+   window button under the session pill and pick **Whiteboard** (added
+   2026-10-03). The mirror is replaced by a white page that is always ready
+   to draw; sketch, add a note saying what the sketch is for, and tap Send.
+   The round goes to Claude Code the same way, described to it as a
+   freehand sketch and not a screenshot, and the page is cleared. Pick your
+   Mac in the same menu to go back. There is nothing to set on the Mac.
+   Whiteboard is greyed out when the Mac app is older than this feature. See
    [`spec/PRD-BlankCanvas.md`](spec/PRD-BlankCanvas.md).
-10. **The panel can go to any edge.** Drag it from anywhere on it to the
-    edge you want; it stays there across launches.
+10. **The tool panel can go to any edge.** While drawing, drag it from
+    anywhere on it to the edge you want; it stays there across launches.
     The interface is designed in the
     [Figma file](https://www.figma.com/design/N7DN83jg1SrZV9Gx4SIMlq/Design-Canvas-Design)
-    (screens and design system, 2026-10-13).
+    (screens and design system, 2026-10-13; v3.1, 2026-11-02).
 
 ## Security note
 
@@ -313,8 +334,6 @@ plan's ruling 9:
 - A release/signing/notarization pipeline for the Mac app.
 - Metal rendering on the iPad (the current layer-based path already makes
   freeze/Draw Mode fast enough; revisit only if that changes).
-- Clear-all in Draw Mode (open design question, G6). Redo is built; the
-  panel's trash leaves Draw Mode and throws the sketch away.
 - Automated device-level end-to-end testing — it needs real hardware.
   [`spec/device-checklist.md`](spec/device-checklist.md) is the manual
   checklist that stands in for it.

@@ -61,7 +61,8 @@ final class SketchCanvasController: NSObject, ObservableObject, PKCanvasViewDele
         // Zoomed and scrolled from code only (`SketchCanvasHostView`): its own
         // pan and pinch would move the ink without moving the video.
         canvas.isScrollEnabled = false
-        canvas.minimumZoomScale = CGFloat(ZoomModel.minScale)
+        // Below 1 while the held picture rests smaller, in its print.
+        canvas.minimumZoomScale = 0.5
         canvas.maximumZoomScale = CGFloat(ZoomModel.maxScale)
         canvas.pinchGestureRecognizer?.isEnabled = false
         // The mirror layer ignores the safe area; an inset here would shift
@@ -112,6 +113,24 @@ final class SketchCanvasController: NSObject, ObservableObject, PKCanvasViewDele
         canvasView.undoManager?.removeAllActions()
         strokeCount = 0
         canRedo = false
+    }
+
+    /// Clear all (the tool panel's trash): the page is emptied but the sketch
+    /// stays open, and Undo brings the strokes back.
+    func eraseAll() {
+        guard !canvasView.drawing.strokes.isEmpty else { return }
+        replaceDrawing(with: PKDrawing())
+    }
+
+    private func replaceDrawing(with drawing: PKDrawing) {
+        let previous = canvasView.drawing
+        canvasView.undoManager?.registerUndo(withTarget: self) { controller in
+            controller.replaceDrawing(with: previous)
+        }
+        canvasView.drawing = drawing
+        let count = drawing.strokes.count
+        if count != strokeCount { strokeCount = count }
+        refreshRedo()
     }
 
     /// The sketch as a transparent PNG at the screen's native scale — the
@@ -255,7 +274,8 @@ final class SketchCanvasHostView: UIView {
 
     private let controller: SketchCanvasController
     /// Top, bottom, left, right. Opaque, so a stroke that runs off the picture
-    /// is hidden, and plain views, so a touch on one starts no stroke.
+    /// is hidden, and plain views, so a touch on one starts no stroke. The
+    /// print's paper on the mirror, black on the way into it.
     private let bars = (0..<4).map { _ in UIView() }
     /// The view size the canvas's content was last set to, at scale 1.
     private var contentBase = CGSize.zero
@@ -305,6 +325,8 @@ final class SketchCanvasHostView: UIView {
             ? bounds
             : zoom.transformedRect(viewSize: size, videoSize: videoSize).intersection(bounds)
         layoutBars(around: picture.isNull ? bounds : picture)
+        let surround = UIColor.canvasSurround(paper: zoom.paper)
+        for bar in bars where bar.backgroundColor != surround { bar.backgroundColor = surround }
     }
 
     private func layoutBars(around picture: CGRect) {

@@ -12,8 +12,9 @@ enum MenuTint: Equatable { case secondary, green, orange, red }
 /// The trailing button on a row. The view maps each to an `AppModel` call.
 enum RowAction: Equatable { case start, newSession, retry, disconnect, connect, grant, details }
 
-/// Why Start is disabled even though the classifier would allow it.
-enum StartBlocker: Equatable { case noProject, noServerBuild }
+/// Why Start is disabled even though the classifier would allow it. There is no "no project":
+/// Start asks for the folder itself (XG8).
+enum StartBlocker: Equatable { case noServerBuild }
 
 struct RowPresentation: Equatable {
     let word: String
@@ -45,7 +46,7 @@ enum MenuPresentation {
             if row.action == .start {
                 row = RowPresentation(word: row.word, tint: row.tint, subline: blockerText(blocker), action: .start, actionEnabled: false)
             } else if row.action == .newSession {
-                // Connected sessions keep their sub-line; only the button waits on a project.
+                // Connected sessions keep their sub-line; only the button is disabled.
                 row.actionEnabled = false
             }
         }
@@ -56,8 +57,8 @@ enum MenuPresentation {
         return row
     }
 
-    /// One or more sessions are connected (X21 to X26). The sub-line says where the next sketch
-    /// goes, which is the one thing the user cannot see from the Terminal windows themselves.
+    /// One or more sessions are connected (X21 to X26). The session list below the row ticks
+    /// where the next sketch goes, so the row only speaks up when something needs the user.
     private static func connected(_ sessions: SessionsMessage) -> RowPresentation {
         guard let target = sessions.targetEntry else {
             if sessions.needsPick {
@@ -71,9 +72,7 @@ enum MenuPresentation {
             return RowPresentation(word: "Connected", tint: .green,
                                    subline: "Claude Code is waiting for you in the Terminal", action: .newSession)
         }
-        let destination = "Sketches go to \(target.folder)"
-        let subline = sessions.sessions.count > 1 ? "\(sessions.sessions.count) sessions \u{00B7} \(destination.prefix(1).lowercased() + destination.dropFirst())" : destination
-        return RowPresentation(word: "Connected", tint: .green, subline: subline, action: .newSession)
+        return RowPresentation(word: "Connected", tint: .green, subline: nil, action: .newSession)
     }
 
     /// What tells two sessions apart in the list (X25): the title when the user gave one, else
@@ -126,7 +125,6 @@ enum MenuPresentation {
 
     private static func blockerText(_ blocker: StartBlocker) -> String {
         switch blocker {
-        case .noProject: return "Choose a project first"
         case .noServerBuild: return "Set the server build in Settings"
         }
     }
@@ -144,7 +142,7 @@ enum MenuPresentation {
                                    subline: "Design Canvas mirrors the screen. Takes effect after relaunch", action: .grant)
         }
         return RowPresentation(word: "Not connected", tint: .secondary,
-                               subline: "Open Design Canvas on the iPad", action: nil)
+                               subline: "Open Design Canvas on the iPad or iPhone", action: nil)
     }
 
     /// The sender's statuses are sentences ("Mirroring to device (2048×1536)", "Device found —
@@ -157,7 +155,7 @@ enum MenuPresentation {
         var subline: String?
         if status.hasPrefix("Device found") {
             word = "Found"
-            subline = "Open Design Canvas on the iPad"
+            subline = "Open Design Canvas on the iPad or iPhone"
         } else if status.hasPrefix("Waiting") {
             word = "Waiting\u{2026}"
         } else if status.hasPrefix("Mirroring") {
@@ -181,7 +179,7 @@ enum MenuPresentation {
     static func summary(screenRecordingGranted: Bool, iPadConnected: Bool, claude: RowPresentation) -> String {
         if !screenRecordingGranted { return "Screen Recording needed" }
         if claude.tint == .red { return claude.subline ?? claude.word }
-        if !iPadConnected { return "Waiting for an iPad" }
+        if !iPadConnected { return "Waiting for an iPad or iPhone" }
         if claude.word == "Connected" { return "Ready \u{2014} sketches go to Claude Code" }
         return "Claude Code \u{2014} \(claude.word)"
     }

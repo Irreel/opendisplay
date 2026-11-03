@@ -544,6 +544,7 @@ final class CanvasModelTests: XCTestCase {
 
         XCTAssertEqual(model.replyNotification?.status, .applied)
         XCTAssertEqual(model.replyNotification?.detail, "align it")
+        XCTAssertEqual(model.replyNotification?.detailIsNote, true, "the designer's own words, quoted")
         XCTAssertEqual(model.replyNotification?.prURL, URL(string: "https://example.com/pr/1"))
         XCTAssertEqual(model.replyNotification?.staysUntilDismissed, false)
     }
@@ -555,6 +556,7 @@ final class CanvasModelTests: XCTestCase {
         reply(model, "a", .failed, message: "no such component")
 
         XCTAssertEqual(model.replyNotification?.detail, "no such component")
+        XCTAssertEqual(model.replyNotification?.detailIsNote, false)
         XCTAssertEqual(model.replyNotification?.staysUntilDismissed, true)
     }
 
@@ -649,6 +651,17 @@ final class CanvasModelTests: XCTestCase {
 
         model.pingReceived(channel: "nonsense", project: nil)
         XCTAssertEqual(model.channel, ChannelState.none)
+    }
+
+    func test_ping_namesTheMac_andALinkLossForgetsIt() {
+        let model = makeModel()
+        XCTAssertNil(model.macName)
+        model.pingReceived(channel: "attached", project: nil, macName: "Studio Mac")
+        XCTAssertEqual(model.macName, "Studio Mac")
+
+        receiver.isConnected = false
+        model.connectionChanged(connected: false)
+        XCTAssertNil(model.macName)
     }
 
     /// The Mac's channel and project only mean anything while the Mac is on

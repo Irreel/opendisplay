@@ -780,7 +780,7 @@ Field types, exactly as implemented (`DesignCanvas/Shared/CanvasMessages.swift`)
 
 ### 11.3 `ping` additions
 
-`ping` (sender to receiver, section 6.2) gains three additive string fields,
+`ping` (sender to receiver, section 6.2) gains four additive string fields,
 sent only on a canvas session:
 
 * `channel` — one of `attached`, `detached`, `existing`, `none`: the
@@ -800,6 +800,11 @@ sent only on a canvas session:
 * `blank` — `"1"` when the sender accepts `annotation.base: "blank"`
   (section 11.2); absent when it does not. A receiver treats absence as
   "not supported" and does not offer its blank surface.
+* `macName` — the sender's own name as its Sharing settings give it, at
+  most 60 characters, so the receiver can say which Mac it mirrors.
+  Absent when the sender has none to give; a receiver keeps the last one
+  it was told for the rest of the connection and otherwise names the Mac
+  generically.
 
 `channel` and `project` are informational, exactly like the sender's other
 `ping` health fields, and follow the same rule as everything else on the wire: an
@@ -916,3 +921,4 @@ This file is versioned by git; the authoritative change log is
 | 2026-08-26 | Additive: `hello.cursorPort` and the UDP cursor side channel (section 6.3) |
 | 2026-09-17 | Additive: Design Canvas extension (section 11) — `freeze`/`frozen`/`annotation`/`agentReply`/`rounds`, `ping.channel`/`ping.project`, the 16 MiB canvas frame cap |
 | 2026-10-03 | Additive: Design Canvas blank canvas surface — `annotation.base`, `ping.blank` (section 11.2, 11.3) |
+| 2026-11-03 | Additive: `ping.macName`, the Design Canvas sender's own name (section 11.3) |

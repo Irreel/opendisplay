@@ -1,5 +1,6 @@
 // The popover, laid out per `DesignCanvas/spec/mac-app-ia.md` section 3: a summary line, the
-// two connection rows (iPad, Claude Code) in the board's order, the project, and a footer.
+// two connection rows (iPad, Claude Code) in the board's order, and a footer. There is no
+// project row: Start and New Session ask for the folder themselves (XG8).
 // Every word, tint and action comes from `MenuPresentation`, which is tested; this file only
 // draws rows and maps each `RowAction` to an `AppModel` call. Developer settings and the raw
 // daemon state live in `SettingsView` and `DetailsView`, opened as windows because a
@@ -20,8 +21,6 @@ struct MenuBarView: View {
                 .fixedSize(horizontal: false, vertical: true)
             connectionSection
             Divider()
-            projectSection
-            Divider()
             footer
         }
         .padding(12)
@@ -33,9 +32,7 @@ struct MenuBarView: View {
     private var iPadConnected: Bool { !model.devices.isEmpty }
 
     private var startBlocker: StartBlocker? {
-        if model.selectedProject == nil { return .noProject }
-        if model.serverEntry == nil { return .noServerBuild }
-        return nil
+        model.serverEntry == nil ? .noServerBuild : nil
     }
 
     private var claudeRow: RowPresentation {
@@ -55,7 +52,7 @@ struct MenuBarView: View {
         VStack(alignment: .leading, spacing: 8) {
             if !model.screenRecordingGranted || (model.devices.isEmpty && model.discoveredDevices.isEmpty) {
                 let row = MenuPresentation.iPadPlaceholder(screenRecordingGranted: model.screenRecordingGranted)
-                connectionRow(title: "iPad", detail: nil, row: row) { perform(row.action, deviceId: nil) }
+                connectionRow(title: "iPad or iPhone", detail: nil, row: row) { perform(row.action, deviceId: nil) }
             } else {
                 ForEach(model.devices) { device in
                     let row = MenuPresentation.deviceRow(device)
@@ -171,9 +168,14 @@ struct MenuBarView: View {
                     .foregroundColor(color(row.tint))
                     .lineLimit(1)
                 if let rowAction = row.action {
-                    Button(label(rowAction), action: action)
-                        .controlSize(.small)
-                        .disabled(!row.actionEnabled || ((rowAction == .start || rowAction == .newSession) && model.startDisabled))
+                    if rowAction == .start || rowAction == .newSession {
+                        startMenu(label(rowAction))
+                            .disabled(!row.actionEnabled || model.startDisabled)
+                    } else {
+                        Button(label(rowAction), action: action)
+                            .controlSize(.small)
+                            .disabled(!row.actionEnabled)
+                    }
                 }
             }
             if let subline = row.subline {
@@ -189,7 +191,8 @@ struct MenuBarView: View {
     private func perform(_ action: RowAction?, deviceId: String?) {
         switch action {
         case .start, .newSession:
-            model.startSession()
+            // Drawn as `startMenu`, which starts in the folder picked from it.
+            break
         case .retry:
             // Two dead ends share the button: a launch that timed out (start over) and a
             // supervisor that gave up (a reset restarts it, see `AppModel.resetProcesses`).
@@ -212,40 +215,20 @@ struct MenuBarView: View {
         }
     }
 
-    // MARK: - Project
+    // MARK: - Start
 
-    @ViewBuilder
-    private var projectSection: some View {
-        HStack(alignment: .top) {
-            VStack(alignment: .leading, spacing: 1) {
-                if let project = model.selectedProject {
-                    Text(project.lastPathComponent)
-                        .font(.body)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                    // The full folder path. When it doesn't fit, drop the head: the tail
-                    // (the project folder itself) is what disambiguates.
-                    Text(project.path)
-                        .font(.caption2)
-                        .foregroundColor(.secondary)
-                        .lineLimit(1)
-                        .truncationMode(.head)
-                } else {
-                    Text("No project selected")
-                        .foregroundColor(.secondary)
-                }
+    /// Start and New Session ask where (XG8): the recent project folders, then any folder.
+    /// Picking one launches right away.
+    private func startMenu(_ title: String) -> some View {
+        Menu(title) {
+            ForEach(model.recentFolders, id: \.self) { url in
+                Button(url.lastPathComponent) { model.startSession(in: url) }
             }
-            Spacer()
-            Menu("Change\u{2026}") {
-                ForEach(model.recentProjects.prefix(3), id: \.self) { url in
-                    Button(url.lastPathComponent) { model.selectRecent(url) }
-                }
-                if !model.recentProjects.isEmpty { Divider() }
-                Button("Open Folder\u{2026}") { model.pickProject() }
-            }
-            .controlSize(.small)
-            .fixedSize()
+            if !model.recentFolders.isEmpty { Divider() }
+            Button("Choose Folder\u{2026}") { model.chooseFolderAndStart() }
         }
+        .controlSize(.small)
+        .fixedSize()
     }
 
     // MARK: - Footer

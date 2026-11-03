@@ -258,4 +258,90 @@ final class ZoomModelTests: XCTestCase {
         XCTAssertEqual(model.offset, .zero)
         assertRect(model.visibleRect(viewSize: squareView, videoSize: squareVideo), .full)
     }
+
+    // MARK: - The print (Figma v3.2)
+
+    // An iPad in landscape and a 16:10 Mac: the picture fits the width,
+    // between letterbox bars.
+    private let iPad = CGSize(width: 1194, height: 834)
+    private let mac = CGSize(width: 1600, height: 1000)
+
+    private func picture(_ model: ZoomModel) -> CGRect {
+        model.transformedRect(viewSize: iPad, videoSize: mac)
+    }
+
+    func test_printRest_fitsThePictureAndItsMarginInsideTheView() {
+        var model = ZoomModel()
+        model.hold(viewSize: iPad, videoSize: mac)
+        let print = ZoomModel.printRect(around: picture(model))
+        // Width binds: 24 points of paper either side, the print centred.
+        XCTAssertEqual(print.minX, 24, accuracy: 1e-6)
+        XCTAssertEqual(print.maxX, 1170, accuracy: 1e-6)
+        XCTAssertEqual(print.midY, 417, accuracy: 1e-6)
+        XCTAssertGreaterThanOrEqual(print.minY, 24)
+        // The margin is a share of the picture's width, deeper at the bottom.
+        let shown = picture(model)
+        XCTAssertEqual(shown.minX - print.minX, shown.width * 0.02, accuracy: 1e-6)
+        XCTAssertEqual(print.maxY - shown.maxY, shown.width * 0.0667, accuracy: 1e-6)
+        XCTAssertEqual(model.paper, 1)
+    }
+
+    func test_held_pinchingOut_stopsAtTheRest() {
+        var model = ZoomModel()
+        model.hold(viewSize: iPad, videoSize: mac)
+        let rest = model
+        model.pinch(by: 0.5, anchor: CGPoint(x: 597, y: 417), viewSize: iPad, videoSize: mac)
+        XCTAssertEqual(model.scale, rest.scale, accuracy: 1e-9)
+        XCTAssertEqual(model.offset.height, rest.offset.height, accuracy: 1e-9)
+    }
+
+    func test_held_zoomedIn_theMarginZoomsWithThePicture_andPanningStopsAtThePaperEdge() {
+        var model = ZoomModel()
+        model.hold(viewSize: iPad, videoSize: mac)
+        model.pinch(by: 3, anchor: CGPoint(x: 597, y: 417), viewSize: iPad, videoSize: mac)
+        model.pan(by: CGSize(width: 5000, height: 5000), viewSize: iPad, videoSize: mac)
+        let shown = picture(model)
+        let print = ZoomModel.printRect(around: shown)
+        // The print's top-left corner is at the view's: the margin shows, as
+        // wide as the zoomed picture makes it, and no further.
+        XCTAssertEqual(print.minX, 0, accuracy: 1e-6)
+        XCTAssertEqual(print.minY, 0, accuracy: 1e-6)
+        XCTAssertEqual(shown.minX, shown.width * 0.02, accuracy: 1e-6)
+        XCTAssertGreaterThan(shown.minX, 24 * 2)
+    }
+
+    func test_held_reset_goesBackToTheRest() {
+        var model = ZoomModel()
+        model.hold(viewSize: iPad, videoSize: mac)
+        let rest = model
+        model.pinch(by: 2, anchor: .zero, viewSize: iPad, videoSize: mac)
+        model.reset()
+        XCTAssertEqual(model, rest)
+    }
+
+    func test_hold_whileZoomedIn_keepsTheZoom_inThePrintsTerms() {
+        var model = ZoomModel()
+        model.pinch(by: 2, anchor: CGPoint(x: 597, y: 417), viewSize: iPad, videoSize: mac)
+        model.hold(viewSize: iPad, videoSize: mac)
+        let rest = ZoomModel.printRest(videoSize: mac, in: iPad)
+        XCTAssertEqual(model.scale, 2 * rest.scale, accuracy: 1e-9)
+    }
+
+    func test_release_fromTheRest_isTheLiveFit() {
+        var model = ZoomModel()
+        model.hold(viewSize: iPad, videoSize: mac)
+        model.release(viewSize: iPad, videoSize: mac)
+        XCTAssertEqual(model, ZoomModel())
+    }
+
+    func test_blend_halfwayIntoThePrint() {
+        let live = ZoomModel()
+        var held = live
+        held.hold(viewSize: iPad, videoSize: mac)
+        let half = ZoomModel.blend(live, held, progress: 0.5)
+        XCTAssertEqual(half.scale, (1 + held.scale) / 2, accuracy: 1e-9)
+        XCTAssertEqual(half.offset.height, held.offset.height / 2, accuracy: 1e-9)
+        XCTAssertEqual(half.paper, 0.5, accuracy: 1e-9)
+        XCTAssertEqual(half.rest, held.rest)
+    }
 }

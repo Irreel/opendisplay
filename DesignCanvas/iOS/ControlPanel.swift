@@ -1,10 +1,9 @@
-// The one floating panel: Mirror, Blank and Draw between sketches, the drawing
-// tools in Draw Mode. It is the same view in both, so entering Draw Mode
-// stretches it into the tool palette where it stands, and leaving shrinks it
-// back. The designer can drag it to any edge (`PanelEdge`); on a side edge its
-// controls run top to bottom. It drags from anywhere; its grabber shows only
-// while it is being moved, and for a moment when the panel first appears, on
-// the side of the panel that faces its screen edge.
+// The tool panel (Figma v3.1): the drawing tools, out only while drawing, at
+// the bottom centre until the designer drags it to another edge
+// (`PanelEdge`); on a side edge its controls run top to bottom. It drags from
+// anywhere; its grabber shows only while it is being moved, and for a moment
+// when the panel first appears, inside the panel on the side that faces into
+// the screen.
 //
 // The surface is Liquid Glass where the system has it and the frosted material
 // everywhere else, behind `canvasGlass(in:)`.
@@ -80,7 +79,7 @@ struct PanelDivider: View {
     var body: some View {
         Rectangle()
             .fill(Color(.separator))
-            .frame(width: vertical ? 22 : 1, height: vertical ? 1 : 22)
+            .frame(width: vertical ? 24 : 1, height: vertical ? 1 : 24)
             .accessibilityHidden(true)
     }
 }
@@ -98,7 +97,7 @@ struct ControlPanel<Content: View>: View {
     @State private var hinting = false
 
     private static var shape: RoundedRectangle {
-        RoundedRectangle(cornerRadius: 22, style: .continuous)
+        RoundedRectangle(cornerRadius: 28, style: .continuous)
     }
 
     /// The grabber is feedback, not a precondition: the panel drags from
@@ -108,29 +107,21 @@ struct ControlPanel<Content: View>: View {
     var body: some View {
         let vertical = edge.isVertical
         let controls = vertical
-            ? AnyLayout(VStackLayout(spacing: 4))
-            : AnyLayout(HStackLayout(spacing: 4))
-        // The grabber runs along the panel, on the side that faces the screen
-        // edge it is docked to: above a row at the top, below it at the
-        // bottom, left of a column on the left, right of it on the right.
-        let frame = vertical
-            ? AnyLayout(HStackLayout(spacing: 4))
-            : AnyLayout(VStackLayout(spacing: 4))
-        let handleFirst = edge == .top || edge == .leading
-
-        frame {
-            if showsHandle && handleFirst {
+            ? AnyLayout(VStackLayout(spacing: 2))
+            : AnyLayout(HStackLayout(spacing: 2))
+        controls { content(vertical) }
+        .padding(6)
+        .canvasGlass(in: Self.shape)
+        // The grabber sits inside the panel, in its margin, on the side that
+        // faces into the screen: along the top of a row docked at the bottom,
+        // the right of a column on the left. The panel does not grow for it.
+        .overlay(alignment: edge.opposite.alignment) {
+            if showsHandle {
                 handle(vertical: vertical)
-                    .transition(.opacity)
-            }
-            controls { content(vertical) }
-            if showsHandle && !handleFirst {
-                handle(vertical: vertical)
+                    .padding(Edge.Set(edge.opposite.transitionEdge), Self.handleInset)
                     .transition(.opacity)
             }
         }
-        .padding(4)
-        .canvasGlass(in: Self.shape)
         .contentShape(Self.shape)
         .overlay(alignment: .top) { positionControl }
         .offset(drag)
@@ -157,10 +148,15 @@ struct ControlPanel<Content: View>: View {
         }
     }
 
+    /// How far the grabber sits in from the panel's side, inside its 6-point
+    /// margin.
+    private static var handleInset: CGFloat { 3 }
+
     private func handle(vertical: Bool) -> some View {
         Capsule()
             .fill(Color.canvasSecondary)
-            .frame(width: vertical ? 5 : 36, height: vertical ? 36 : 5)
+            .frame(width: vertical ? 4 : 30, height: vertical ? 30 : 4)
+            .allowsHitTesting(false)
             .accessibilityHidden(true)
     }
 
@@ -190,6 +186,16 @@ extension PanelEdge {
         }
     }
 
+    /// The screen edge the panel comes in from and goes out by.
+    var transitionEdge: Edge {
+        switch self {
+        case .top: return .top
+        case .bottom: return .bottom
+        case .leading: return .leading
+        case .trailing: return .trailing
+        }
+    }
+
     fileprivate var spokenName: String {
         switch self {
         case .top: return "Top"
@@ -202,70 +208,41 @@ extension PanelEdge {
 
 // MARK: - What the panel holds
 
-/// Between sketches: the surface (B1) and the way into Draw Mode (P3).
-struct LiveControls: View {
-    @ObservedObject var model: CanvasModel
-    @Binding var storedSurface: String
-    let vertical: Bool
-    let onDraw: () -> Void
-
-    private var isBlank: Bool { storedSurface == CanvasSurface.blank.rawValue }
-
-    /// The surface can change only on a Mac that can take a blank sketch (B3)
-    /// and only between sketches (B6).
-    private var canSwitch: Bool { model.macSupportsBlank && model.drawState == .live }
-
-    var body: some View {
-        PanelIconButton(systemImage: "display", emphasis: isBlank ? .plain : .selected) {
-            storedSurface = CanvasSurface.mirror.rawValue
-        }
-        .disabled(!canSwitch)
-        .accessibilityLabel("Mirror the Mac")
-        .accessibilityAddTraits(isBlank ? [] : [.isSelected])
-
-        // Picking Blank goes straight into Draw Mode, so it needs somewhere
-        // for the sketch to go, exactly as Draw does.
-        PanelIconButton(systemImage: "doc", emphasis: isBlank ? .selected : .plain) {
-            storedSurface = CanvasSurface.blank.rawValue
-        }
-        .disabled(!canSwitch || !model.hasClaudeSession)
-        .accessibilityLabel("Blank canvas")
-        .accessibilityAddTraits(isBlank ? [.isSelected] : [])
-
-        PanelDivider(vertical: vertical)
-
-        // Disabled while there is no connection, on a Mac that is not running
-        // Design Canvas, and while no Claude Code session is there to take the
-        // sketch — the session list says which.
-        PanelIconButton(systemImage: "pencil.and.outline", emphasis: .prominent, action: onDraw)
-            .disabled(!model.canEnterDrawMode || !model.hasClaudeSession)
-            .accessibilityLabel("Enter Draw Mode")
-    }
-}
-
-/// In Draw Mode: undo and redo, pen and eraser, five inks, and the way to
-/// throw the sketch away (M2, M6).
+/// While drawing: undo and redo, pen and eraser, five inks, and Clear all.
+/// Where the screen is too short along the panel for all five inks, as on an
+/// iPhone, one swatch stands for them and offers the five when tapped.
 struct DrawTools: View {
-    @ObservedObject var model: CanvasModel
     @ObservedObject var sketch: SketchCanvasController
     let vertical: Bool
+    var compact = false
+    /// The Ink Picker is open, on a compact panel.
+    var inkPickerOpen: Binding<Bool> = .constant(false)
+
+    /// The panel's length along its row: five 44-point buttons, five 38-point
+    /// swatches and three dividers, with 2-point gaps and 6-point padding —
+    /// or one swatch in place of five.
+    static func length(compact: Bool) -> CGFloat { compact ? 289 : 449 }
+    /// The panel across its row.
+    static let thickness: CGFloat = 56
 
     var body: some View {
-        PanelIconButton(systemImage: "arrow.uturn.backward") { sketch.undo() }
+        PanelIconButton(systemImage: "arrow.uturn.backward", size: 44) { sketch.undo() }
             .disabled(sketch.strokeCount == 0)
             .accessibilityLabel("Undo the last stroke")
-        PanelIconButton(systemImage: "arrow.uturn.forward") { sketch.redo() }
+        PanelIconButton(systemImage: "arrow.uturn.forward", size: 44) { sketch.redo() }
             .disabled(!sketch.canRedo)
             .accessibilityLabel("Redo")
 
         PanelDivider(vertical: vertical)
 
-        PanelIconButton(systemImage: "pencil.tip", emphasis: sketch.tool == .pen ? .selected : .plain) {
+        PanelIconButton(systemImage: "pencil.tip", emphasis: sketch.tool == .pen ? .selected : .plain,
+                        size: 44) {
             sketch.tool = .pen
         }
         .accessibilityLabel("Pen")
         .accessibilityAddTraits(sketch.tool == .pen ? [.isSelected] : [])
-        PanelIconButton(systemImage: "eraser", emphasis: sketch.tool == .eraser ? .selected : .plain) {
+        PanelIconButton(systemImage: "eraser", emphasis: sketch.tool == .eraser ? .selected : .plain,
+                        size: 44) {
             sketch.tool = .eraser
         }
         .accessibilityLabel("Eraser")
@@ -273,28 +250,108 @@ struct DrawTools: View {
 
         PanelDivider(vertical: vertical)
 
+        if compact {
+            InkPicker(sketch: sketch, isOpen: inkPickerOpen)
+        } else {
+            InkSwatches(sketch: sketch)
+        }
+
+        PanelDivider(vertical: vertical)
+
+        // The page, not the sketch: drawing goes on, and Undo brings the
+        // strokes back. Ending without sending is End drawing's.
+        PanelIconButton(systemImage: "trash", tint: .canvasDangerText, size: 44) { sketch.eraseAll() }
+            .disabled(sketch.strokeCount == 0)
+            .accessibilityLabel("Clear all")
+    }
+}
+
+/// The five inks, the current one ringed. Picking one also picks the pen.
+private struct InkSwatches: View {
+    @ObservedObject var sketch: SketchCanvasController
+    var onPick: () -> Void = {}
+
+    var body: some View {
         ForEach(SketchColor.allCases) { swatch in
             Button {
                 sketch.color = swatch
                 sketch.tool = .pen
+                onPick()
             } label: {
-                Circle()
-                    .fill(swatch.color)
-                    .frame(width: 26, height: 26)
-                    .padding(4)
-                    .overlay(
-                        Circle().strokeBorder(.primary, lineWidth: sketch.color == swatch ? 2 : 0)
-                    )
-                    .contentShape(Circle())
+                InkDot(color: swatch.color, ringed: sketch.color == swatch)
             }
             .buttonStyle(.plain)
             .accessibilityLabel("\(swatch.rawValue.capitalized) ink")
             .accessibilityAddTraits(sketch.color == swatch ? [.isSelected] : [])
         }
+    }
+}
 
-        PanelDivider(vertical: vertical)
+/// One swatch for the five, on a screen too short for them all. It opens the
+/// Ink Picker (`InkPickerCapsule`), which the screen lays over everything
+/// beside the panel; this reports where the swatch is so it can.
+private struct InkPicker: View {
+    @ObservedObject var sketch: SketchCanvasController
+    @Binding var isOpen: Bool
 
-        PanelIconButton(systemImage: "trash", tint: .canvasDangerText) { model.discard() }
-            .accessibilityLabel("Leave Draw Mode and throw the sketch away")
+    var body: some View {
+        Button { isOpen.toggle() } label: {
+            InkDot(color: sketch.color.color, ringed: isOpen)
+        }
+        .buttonStyle(.plain)
+        .background(GeometryReader { geo in
+            Color.clear.preference(key: InkSwatchFrameKey.self, value: geo.frame(in: .named("chrome")))
+        })
+        .accessibilityLabel("Ink")
+        .accessibilityValue(sketch.color.rawValue.capitalized)
+        .accessibilityHint("Shows the five inks")
+    }
+}
+
+/// Where the compact panel's swatch is, in the chrome's space.
+struct InkSwatchFrameKey: PreferenceKey {
+    static var defaultValue: CGRect?
+    static func reduce(value: inout CGRect?, nextValue: () -> CGRect?) {
+        value = nextValue() ?? value
+    }
+}
+
+/// The Ink Picker (Figma v3.1, iPhone 02d): the five inks on their own glass,
+/// next to the compact panel's swatch, the current one ringed. Picking one
+/// also picks the pen and closes it.
+struct InkPickerCapsule: View {
+    @ObservedObject var sketch: SketchCanvasController
+    let vertical: Bool
+    let onPick: () -> Void
+
+    /// Its length: five 38-point swatches, 2-point gaps, 6-point padding.
+    static let length: CGFloat = 5 * 38 + 4 * 2 + 12
+
+    var body: some View {
+        let row = vertical
+            ? AnyLayout(VStackLayout(spacing: 2))
+            : AnyLayout(HStackLayout(spacing: 2))
+        row {
+            InkSwatches(sketch: sketch, onPick: onPick)
+        }
+        .padding(6)
+        .canvasGlass(in: RoundedRectangle(cornerRadius: 28, style: .continuous))
+        .accessibilityElement(children: .contain)
+        .accessibilityAddTraits(.isModal)
+    }
+}
+
+private struct InkDot: View {
+    let color: Color
+    let ringed: Bool
+
+    var body: some View {
+        Circle()
+            .fill(color)
+            .frame(width: 26, height: 26)
+            .padding(3)
+            .overlay(Circle().strokeBorder(.primary, lineWidth: ringed ? 2 : 0))
+            .frame(width: 38, height: 44)
+            .contentShape(Rectangle())
     }
 }

@@ -809,21 +809,23 @@ final class CanvasSessionTests: XCTestCase {
 
     // MARK: - ping fields
 
-    func test_canvasPingFields_mirrorCanvasStatus_withNoProjectKeyWhenUnselected() {
+    func test_canvasPingFields_mirrorCanvasStatus_withNoProjectKeyWithoutATarget() {
         let status = CanvasStatus()
         let session = makeSession(daemon: FakeDaemon(), status: status)
 
         XCTAssertEqual(session.canvasPingFields(), [CanvasWire.pingChannelKey: "none", CanvasWire.pingBlankKey: "1"])
 
         status.channelState = .attached
-        status.projectName = "site"
+        let site = CanvasSessionEntry(id: "dc-a", folder: "site", title: nil, branch: nil,
+                                      startedAt: "2026-10-05T10:00:00.000Z", lastReplyAt: nil, state: .idle)
+        status.sessions = SessionsMessage(sessions: [site], target: "dc-a")
         XCTAssertEqual(
             session.canvasPingFields(),
             [CanvasWire.pingChannelKey: "attached", CanvasWire.pingProjectKey: "site", CanvasWire.pingBlankKey: "1"]
         )
 
         status.channelState = .detached
-        status.projectName = nil
+        status.sessions = .empty
         XCTAssertEqual(session.canvasPingFields(), [CanvasWire.pingChannelKey: "detached", CanvasWire.pingBlankKey: "1"])
     }
 
@@ -928,6 +930,18 @@ final class CanvasSessionTests: XCTestCase {
 
     func test_pingFields_sayThisMacTakesBlankSketches() {
         XCTAssertEqual(CanvasStatus().pingFields[CanvasWire.pingBlankKey], "1")
+    }
+
+    func test_pingFields_nameTheMac_whenItHasAName() {
+        XCTAssertEqual(CanvasStatus(macName: "Studio Mac").pingFields[CanvasWire.pingMacNameKey], "Studio Mac")
+        XCTAssertNil(CanvasStatus().pingFields[CanvasWire.pingMacNameKey])
+        XCTAssertNil(CanvasStatus(macName: "  ").pingFields[CanvasWire.pingMacNameKey], "a blank name is no name")
+    }
+
+    func test_pingFields_capTheMacsName() {
+        let long = String(repeating: "M", count: 200)
+        XCTAssertEqual(CanvasStatus(macName: long).pingFields[CanvasWire.pingMacNameKey]?.count,
+                       CanvasWire.macNameMaxCharacters)
     }
 
     func test_blankAnnotation_withNoFreeze_uploadsAWhitePageOfTheViewportsPixelSize() {

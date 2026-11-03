@@ -35,7 +35,7 @@ export interface PollInput {
   lastReplyAt?: string;
 }
 
-export type TargetChangedBy = 'default' | 'restored' | 'mac' | 'ipad';
+export type TargetChangedBy = 'default' | 'restored' | 'launched' | 'mac' | 'ipad';
 
 export interface RegistryEvents {
   /** The list or the target changed in a way a viewer would see. */
@@ -120,6 +120,13 @@ export class SessionRegistry {
       // and outranks "pick one", which was only ever asked because it was absent.
       this.setTargetInternal(input.instance, 'restored');
       this.targetIsDefault = false;
+      this.pickRequired = false;
+    } else if (!existing && input.launch !== undefined && this.targetInstance === null) {
+      // The Mac app just started this session and nobody is chosen: it is the one the
+      // person is about to sketch for, so it answers "pick one" too. Still a default,
+      // so a session coming back with wasTarget after a restart takes precedence.
+      this.setTargetInternal(input.instance, 'launched');
+      this.targetIsDefault = true;
       this.pickRequired = false;
     } else {
       this.applyDefault(now);

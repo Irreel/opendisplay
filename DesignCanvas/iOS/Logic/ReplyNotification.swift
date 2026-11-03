@@ -12,6 +12,9 @@ struct ReplyNotification: Equatable, Identifiable {
     /// One line that tells the designer which sketch this is about, or what
     /// went wrong with it.
     var detail: String?
+    /// The detail is the designer's own note, which the card quotes, rather
+    /// than something Claude Code said.
+    var detailIsNote = false
     /// http(s) only, like every link that came from the model (M4).
     var prURL: URL?
 
@@ -33,6 +36,7 @@ struct ReplyNotification: Equatable, Identifiable {
         // A failure is explained by what Claude Code said; anything else is
         // best named by the designer's own note.
         detail = round.status == .failed ? (message ?? note) : (note ?? message)
+        detailIsNote = detail != nil && detail == note
         prURL = round.openablePRURL
     }
 }

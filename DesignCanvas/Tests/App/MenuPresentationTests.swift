@@ -71,14 +71,14 @@ final class MenuPresentationTests: XCTestCase {
         XCTAssertEqual(row.action, .newSession, "a session ends in its Terminal; the app can only start another")
     }
 
-    func testConnectedSaysWhereTheNextSketchGoes() {
+    func testConnectedWithATargetHasNoSubline() {
         let one = SessionsMessage(sessions: [entry("a", folder: "acme-web")], target: "a")
-        XCTAssertEqual(claude(.ownedAttached, sessions: one).subline, "Sketches go to acme-web")
+        XCTAssertNil(claude(.ownedAttached, sessions: one).subline)
 
         let two = SessionsMessage(sessions: [entry("a", folder: "acme-web"), entry("b", folder: "docs")], target: "b")
         let row = claude(.ownedAttached, sessions: two)
         XCTAssertEqual(row.word, "Connected")
-        XCTAssertEqual(row.subline, "2 sessions \u{00B7} sketches go to docs")
+        XCTAssertNil(row.subline, "the session list ticks the target; the row doesn't repeat it")
     }
 
     func testSeveralSessionsAndNoTargetAsksForAPick() {
@@ -94,12 +94,12 @@ final class MenuPresentationTests: XCTestCase {
         XCTAssertEqual(claude(.ownedAttached, sessions: waiting).subline, "Claude Code is waiting for you in the Terminal")
     }
 
-    func testANewSessionButtonWaitsForAProjectButKeepsItsSubline() {
-        let one = SessionsMessage(sessions: [entry("a", folder: "acme-web")], target: "a")
-        let row = claude(.ownedAttached, sessions: one, startBlocker: .noProject)
+    func testANewSessionButtonWaitsForAServerBuildButKeepsItsSubline() {
+        let waiting = SessionsMessage(sessions: [entry("a", folder: "acme-web", state: .waiting)], target: "a")
+        let row = claude(.ownedAttached, sessions: waiting, startBlocker: .noServerBuild)
         XCTAssertEqual(row.action, .newSession)
         XCTAssertFalse(row.actionEnabled)
-        XCTAssertEqual(row.subline, "Sketches go to acme-web")
+        XCTAssertEqual(row.subline, "Claude Code is waiting for you in the Terminal")
     }
 
     func testSessionDetailTellsTwoSessionsInOneFolderApart() {
@@ -151,19 +151,26 @@ final class MenuPresentationTests: XCTestCase {
         XCTAssertEqual(row.action, .retry)
     }
 
-    func testWhereSketchesGoOutranksThePendingCount() {
+    func testAConnectedTargetShowsThePendingCount() {
         let one = SessionsMessage(sessions: [entry("a", folder: "acme-web")], target: "a")
         let row = claude(.ownedAttached, sessions: one, pendingUploads: 2)
         XCTAssertEqual(row.word, "Connected")
-        XCTAssertEqual(row.subline, "Sketches go to acme-web")
+        XCTAssertEqual(row.subline, "2 sketches waiting to send")
     }
 
     func testStartBlockerDisablesStartAndSaysWhy() {
-        let noProject = claude(.daemonOnly, startBlocker: .noProject)
-        XCTAssertEqual(noProject.action, .start)
-        XCTAssertFalse(noProject.actionEnabled)
-        XCTAssertEqual(noProject.subline, "Choose a project first")
-        XCTAssertEqual(claude(.daemonOnly, startBlocker: .noServerBuild).subline, "Set the server build in Settings")
+        let noServer = claude(.daemonOnly, startBlocker: .noServerBuild)
+        XCTAssertEqual(noServer.action, .start)
+        XCTAssertFalse(noServer.actionEnabled)
+        XCTAssertEqual(noServer.subline, "Set the server build in Settings")
+    }
+
+    /// XG8: Start asks for the folder itself, so not having picked one blocks nothing.
+    func testStartIsOfferedWithNoBlocker() {
+        let row = claude(.daemonOnly)
+        XCTAssertEqual(row.action, .start)
+        XCTAssertTrue(row.actionEnabled)
+        XCTAssertNil(row.subline)
     }
 
     func testEveryDisplayStateStaysDistinguishable() {
@@ -187,7 +194,7 @@ final class MenuPresentationTests: XCTestCase {
         let row = MenuPresentation.iPadPlaceholder(screenRecordingGranted: true)
         XCTAssertEqual(row.word, "Not connected")
         XCTAssertEqual(row.tint, .secondary)
-        XCTAssertEqual(row.subline, "Open Design Canvas on the iPad")
+        XCTAssertEqual(row.subline, "Open Design Canvas on the iPad or iPhone")
         XCTAssertNil(row.action)
     }
 
@@ -206,7 +213,7 @@ final class MenuPresentationTests: XCTestCase {
             id: "d1", name: "iPhone / iPad",
             status: "Device found \u{2014} open the OpenDisplay app on it\u{2026}", onUSB: true))
         XCTAssertEqual(row.word, "Found")
-        XCTAssertEqual(row.subline, "Open Design Canvas on the iPad")
+        XCTAssertEqual(row.subline, "Open Design Canvas on the iPad or iPhone")
         XCTAssertEqual(row.action, .disconnect)
     }
 
@@ -251,11 +258,11 @@ final class MenuPresentationTests: XCTestCase {
     func testSummaryWaitsForAnIPad() {
         XCTAssertEqual(
             MenuPresentation.summary(screenRecordingGranted: true, iPadConnected: false, claude: claude(.ownedAttached)),
-            "Waiting for an iPad"
+            "Waiting for an iPad or iPhone"
         )
         XCTAssertEqual(
             MenuPresentation.summary(screenRecordingGranted: true, iPadConnected: false, claude: claude(.noDaemon)),
-            "Waiting for an iPad"
+            "Waiting for an iPad or iPhone"
         )
     }
 

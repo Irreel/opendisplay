@@ -49,6 +49,9 @@ final class CanvasModel: ObservableObject {
     /// `.none` until a ping says otherwise (P1).
     @Published private(set) var channel: ChannelState = .none
     @Published private(set) var project: String?
+    /// The connected Mac's own name, for the window menu. Nil from a Mac that
+    /// does not send one.
+    @Published private(set) var macName: String?
     /// The surface the designer chose (B1). Persisted by the screen.
     @Published var preferredSurface: CanvasSurface = .mirror
     /// The connected Mac's ping said it accepts a blank-page sketch (B3).
@@ -279,6 +282,7 @@ final class CanvasModel: ObservableObject {
         // which can be much later.
         channel = .none
         project = nil
+        macName = nil
         macSupportsBlank = false
         sessions = .empty
         apply(.linkLost)
@@ -294,9 +298,10 @@ final class CanvasModel: ObservableObject {
 
     /// The Mac's ping carries its channel state and selected project (P1), and
     /// whether it accepts a blank-page sketch (B3).
-    func pingReceived(channel: String?, project: String?, blank: Bool = false) {
+    func pingReceived(channel: String?, project: String?, blank: Bool = false, macName: String? = nil) {
         self.channel = channel.flatMap(ChannelState.init(rawValue:)) ?? .none
         self.project = project
+        if self.macName != macName { self.macName = macName }
         if macSupportsBlank != blank { macSupportsBlank = blank }
     }
 

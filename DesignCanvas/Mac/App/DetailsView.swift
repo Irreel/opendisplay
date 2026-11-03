@@ -42,7 +42,7 @@ struct DetailsView: View {
                 }
                 LabeledContent("Owned by this app", value: model.sessionState.daemon == .owned ? "Yes" : "No")
             }
-            Section("iPads") {
+            Section("Devices") {
                 if model.devices.isEmpty {
                     Text("None connected").foregroundColor(.secondary)
                 }

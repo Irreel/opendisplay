@@ -185,4 +185,33 @@ final class CanvasReceiverStateTests: XCTestCase {
         state.connectionReset()
         XCTAssertFalse(state.macSupportsBlank)
     }
+
+    // MARK: - ping: the Mac's name
+
+    func test_pingWithMacName_namesTheMac() throws {
+        var state = CanvasReceiverState()
+        XCTAssertNil(state.macName)
+        state.handlePing(try wire(#"{"type":"ping","channel":"attached","macName":"Studio Mac"}"#))
+        XCTAssertEqual(state.macName, "Studio Mac")
+    }
+
+    func test_pingWithoutMacName_keepsTheLastName() throws {
+        var state = CanvasReceiverState()
+        state.handlePing(try wire(#"{"type":"ping","channel":"attached","macName":"Studio Mac"}"#))
+        state.handlePing(try wire(#"{"type":"ping","drops":0}"#))
+        XCTAssertEqual(state.macName, "Studio Mac")
+    }
+
+    func test_anEmptyMacName_isNoName() throws {
+        var state = CanvasReceiverState()
+        state.handlePing(try wire(#"{"type":"ping","channel":"attached","macName":""}"#))
+        XCTAssertNil(state.macName)
+    }
+
+    func test_connectionResetForgetsTheMacsName() throws {
+        var state = CanvasReceiverState()
+        state.handlePing(try wire(#"{"type":"ping","channel":"attached","macName":"Studio Mac"}"#))
+        state.connectionReset()
+        XCTAssertNil(state.macName)
+    }
 }

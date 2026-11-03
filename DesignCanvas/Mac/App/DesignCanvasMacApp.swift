@@ -35,7 +35,7 @@ struct DesignCanvasMacApp: App {
     }
 
     private var iconState: MenuIcon {
-        let startBlocker: StartBlocker? = model.selectedProject == nil ? .noProject : (model.serverEntry == nil ? .noServerBuild : nil)
+        let startBlocker: StartBlocker? = model.serverEntry == nil ? .noServerBuild : nil
         let claude = MenuPresentation.claudeCodeRow(
             display: model.sessionState.display,
             daemonGaveUp: model.daemonGaveUp,

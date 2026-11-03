@@ -92,6 +92,24 @@ test('target ends: one session left takes over; several left means a pick (X26)'
   assert.equal(registry.target, 'ffffffff', 'one left takes over');
 });
 
+test('a session the Mac launches while nobody is chosen becomes the target', () => {
+  const { registry, logs } = make();
+  registry.register(session('aaaaaaaa', '2026-10-05T10:00:00Z'), LATE);
+  registry.register(session('bbbbbbbb', '2026-10-05T11:00:00Z'), LATE);
+  registry.register(session('cccccccc', '2026-10-05T12:00:00Z'), LATE);
+  registry.remove('aaaaaaaa', 'deregistered', LATE);
+  assert.equal(registry.target, null);
+
+  const result = registry.register(session('dddddddd', '2026-10-05T13:00:00Z', { launch: 'n1' }), LATE);
+  assert.deepEqual(result, { target: true });
+  assert.equal(registry.target, 'dddddddd');
+  assert.deepEqual(logs.at(-1), { type: 'target.changed', fields: { target: 'dddddddd', by: 'launched' } });
+
+  // Once someone is chosen, a launch does not take over (X22).
+  registry.register(session('eeeeeeee', '2026-10-05T14:00:00Z', { launch: 'n2' }), LATE);
+  assert.equal(registry.target, 'dddddddd');
+});
+
 test('poll updates state and fields, reports changes once, and is null for an unknown instance', () => {
   const { registry, changes, logs } = make();
   assert.equal(registry.poll('aaaaaaaa', { state: 'idle' }, LATE), null);

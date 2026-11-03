@@ -20,6 +20,10 @@ enum CanvasWire {
     static let pingProjectKey = "project"
     /// `"1"` when the Mac accepts `annotation.base: "blank"` (PROTOCOL.md 11.3).
     static let pingBlankKey = "blank"
+    /// The Mac's own name, as its Sharing settings give it, for the iPad's
+    /// window menu (PROTOCOL.md 11.3).
+    static let pingMacNameKey = "macName"
+    static let macNameMaxCharacters = 60
     static let annotationBaseKey = "base"
     /// The target session the iPad was showing when Done was tapped (X23).
     static let annotationSessionKey = "session"

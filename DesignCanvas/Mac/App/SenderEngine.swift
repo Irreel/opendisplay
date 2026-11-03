@@ -58,9 +58,6 @@ protocol SenderEngine: AnyObject {
     /// Stop serving one `devices` entry (its `id`), and stop auto-connecting it.
     func disconnect(id: String)
 
-    /// The selected project's folder name, or nil when there is none. Relayed to every iPad in
-    /// the `ping` status fields; an absent name is how "no project" is expressed on the wire.
-    func setProjectName(_ name: String?)
     /// The menu's verdict on the Claude Code hop, as of the last health poll (`ChannelState`).
     func setChannelState(_ state: ChannelState)
 }

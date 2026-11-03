@@ -15,9 +15,12 @@ struct CanvasVideoView: UIViewRepresentable {
     let displayLayer: AVSampleBufferDisplayLayer
     let videoSize: CGSize
     @Binding var zoom: ZoomModel
+    /// Told about the view, so Send can take a picture of it.
+    var mirrorViews: MirrorViews?
 
     func makeUIView(context: Context) -> CanvasVideoHostView {
         let view = CanvasVideoHostView()
+        mirrorViews?.video = view
         view.backgroundColor = .black
         view.clipsToBounds = true
         view.isMultipleTouchEnabled = true
@@ -106,6 +109,8 @@ final class CanvasVideoHostView: UIView {
         // rotation must not slide the layer across the screen.
         CATransaction.begin()
         CATransaction.setDisableActions(true)
+        // Around the picture: black while it is live, paper while it is held.
+        backgroundColor = .canvasSurround(paper: zoom.paper)
         // The transformed rect already carries the video's aspect ratio, so
         // the layer's own `resizeAspect` fills it exactly; if the video size
         // is not known yet, the full bounds keep the letterboxing sane.

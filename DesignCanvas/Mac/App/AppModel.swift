@@ -24,11 +24,10 @@ final class AppModel: ObservableObject {
     @Published var sessionState: SessionState = SessionStateClassifier.classify(
         .init(probe: .refused, supervisedChildPid: nil, pinnedInstanceId: nil, sessionStarted: false, launchTimedOut: false)
     )
-    /// Set by the picker, the recents list, or a test. The engine learns the folder name on every
-    /// change — that name is what the iPad shows, and its absence is how "no project" is said.
-    @Published var selectedProject: URL? {
-        didSet { engine?.setProjectName(selectedProject?.lastPathComponent) }
-    }
+    /// The folder the last Start launched in, restored from the recents at launch. Retry and Start
+    /// New After Reset launch there again. Only Start uses it (XG8): the iPad names the target
+    /// session's folder, never this one.
+    @Published var selectedProject: URL?
     /// A launch from Start is on its way: set on the click, cleared when the session it started
     /// registers (or the launch is given up on). Not "a session is connected": sessions are
     /// usable whoever started them, and the daemon's list says which are there.
@@ -70,7 +69,7 @@ final class AppModel: ObservableObject {
 
     let nodePath: String
 
-    private let recents = ProjectRecents()
+    private let recents: ProjectRecents
     private let engine: SenderEngine?
     private var supervisor: DaemonSupervisor?
     private var pollTask: Task<Void, Never>?
@@ -180,6 +179,7 @@ final class AppModel: ObservableObject {
         self.modDirectory = modDirectory ?? (isTest ? "/test/Design Canvas.app/Contents/Resources/mod" : Self.defaultModDirectory())
         self.claudeSettings = claudeSettings ?? ClaudeSettingsManager()
         self.defaults = defaults
+        recents = ProjectRecents(defaults: defaults)
         launchNonce = defaults.string(forKey: Self.launchNonceKey)
 
         devices = engine?.devices ?? []
@@ -196,9 +196,9 @@ final class AppModel: ObservableObject {
         checkClaudeInBackground()
         // After the scene is up: a menu-bar app has no window to hang the question on.
         DispatchQueue.main.async { [weak self] in self?.askAboutEverySessionIfNeeded() }
-        // Restore the most recent project so a relaunch doesn't start from a blank menu.
+        // Restore the most recent project, so Start New After Reset has somewhere to launch.
         if let last = recents.all.first, FileManager.default.fileExists(atPath: last.path) {
-            selectRecent(last)
+            selectedProject = last
         }
         restartSupervisor()
         startHealthPolling()
@@ -219,7 +219,11 @@ final class AppModel: ObservableObject {
 
     // MARK: - Recents
 
-    var recentProjects: [URL] { recents.all }
+    /// What Start and New Session offer above "Choose Folder…": the three most recent project
+    /// folders that still exist. A deleted folder would only open a Terminal that fails to cd.
+    var recentFolders: [URL] {
+        Array(recents.all.filter { FileManager.default.fileExists(atPath: $0.path) }.prefix(3))
+    }
 
     // MARK: - Node resolution
 
@@ -540,27 +544,31 @@ final class AppModel: ObservableObject {
 
     // MARK: - Project selection
 
-    func pickProject() {
+    /// "Choose Folder…" under Start and New Session: pick a folder, then start there.
+    func chooseFolderAndStart() {
         let panel = NSOpenPanel()
         panel.canChooseDirectories = true
         panel.canChooseFiles = false
         panel.allowsMultipleSelection = false
-        panel.prompt = "Choose"
+        panel.prompt = "Start"
         panel.message = "Choose the project folder Claude Code should work in."
         // A menu-bar app is never the active app on its own. Without this the panel opens
         // unfocused and behind whatever is in front, where it can look like it won't take a
         // selection (seen 2026-10-06).
         NSApp.activate(ignoringOtherApps: true)
         if panel.runModal() == .OK, let url = panel.url {
-            configWarning = nil
-            selectedProject = url
-            recents.add(url)
+            startSession(in: url)
         }
     }
 
-    func selectRecent(_ url: URL) {
+    /// Start and New Session ask where (XG8): `folder` becomes the most recent project and the
+    /// session is launched there.
+    func startSession(in folder: URL) {
+        guard !sessionStarted else { return }
         configWarning = nil
-        selectedProject = url
+        selectedProject = folder
+        recents.add(folder)
+        startSession()
     }
 
     // MARK: - Server build selection

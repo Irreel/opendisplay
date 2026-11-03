@@ -8,6 +8,7 @@
 
 import Combine
 import Foundation
+import SystemConfiguration
 
 @MainActor
 final class OpenDisplaySenderEngine: SenderEngine {
@@ -18,9 +19,10 @@ final class OpenDisplaySenderEngine: SenderEngine {
     var pendingUploads: Int { hub.pendingUploads }
     var isCapturing: Bool { status.isCapturing(now: Date()) }
 
-    /// The two `ping` fields every session relays to its iPad. The app writes them; the sessions
-    /// read them from the sender's queue.
-    private let status = CanvasStatus()
+    /// The `ping` fields every session relays to its iPad. The app writes them; the sessions
+    /// read them from the sender's queue. The Mac's name is the one Sharing settings give it,
+    /// read from the dynamic store rather than `Host.current()`, which can block on DNS.
+    private let status = CanvasStatus(macName: SCDynamicStoreCopyComputerName(nil, nil) as String?)
     private let hub: CanvasHub
     private var controller: SenderController?
     private var sessionListObserver: AnyCancellable?
@@ -91,10 +93,6 @@ final class OpenDisplaySenderEngine: SenderEngine {
     func disconnect(id: String) {
         guard let controller, let session = controller.session(for: id) else { return }
         controller.disconnect(session)
-    }
-
-    func setProjectName(_ name: String?) {
-        status.projectName = name
     }
 
     func setChannelState(_ state: ChannelState) {

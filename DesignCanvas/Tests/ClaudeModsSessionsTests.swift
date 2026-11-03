@@ -158,14 +158,13 @@ final class SessionsEngineTests: XCTestCase {
         XCTAssertEqual(SessionsMessage(json: sent), .empty, "an iPad that had a list must be told it is gone")
     }
 
-    func testThePingNamesTheTargetsFolderAndFallsBackToTheSelectedProject() {
+    func testThePingNamesTheTargetsFolderAndNothingWithoutATarget() {
         let status = CanvasStatus()
-        status.projectName = "picked-in-the-menu"
-        XCTAssertEqual(status.pingFields[CanvasWire.pingProjectKey], "picked-in-the-menu")
+        XCTAssertNil(status.pingFields[CanvasWire.pingProjectKey])
         status.sessions = two
         XCTAssertEqual(status.pingFields[CanvasWire.pingProjectKey], "docs", "where the next sketch actually goes")
         status.sessions = SessionsMessage(sessions: two.sessions, target: nil)
-        XCTAssertEqual(status.pingFields[CanvasWire.pingProjectKey], "picked-in-the-menu")
+        XCTAssertNil(status.pingFields[CanvasWire.pingProjectKey], "nobody chosen: no folder to name (XG8)")
     }
 
     func testSelectSessionAsksTheDaemonAsTheIPad() {

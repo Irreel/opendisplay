@@ -9,10 +9,12 @@ import UIKit
 struct ReplyNotificationCard: View {
 
     let notification: ReplyNotification
+    /// Narrower than this only on a screen that is.
+    var width: CGFloat = 360
     let onDismiss: () -> Void
 
     private static var shape: RoundedRectangle {
-        RoundedRectangle(cornerRadius: 20, style: .continuous)
+        RoundedRectangle(cornerRadius: 28, style: .continuous)
     }
 
     var body: some View {
@@ -29,26 +31,30 @@ struct ReplyNotificationCard: View {
                     .font(.subheadline.weight(.semibold))
                     .fixedSize(horizontal: false, vertical: true)
                 if let detail = notification.detail {
-                    Text(detail)
+                    // The designer's note in quotes, so it reads as theirs.
+                    Text(notification.detailIsNote ? "\u{201C}\(detail)\u{201D}" : detail)
                         .font(.footnote)
                         .foregroundStyle(Color.canvasSecondary)
                         .lineLimit(2)
                 }
                 if let url = notification.prURL {
                     Link(destination: url) {
-                        Label("Open pull request", systemImage: "arrow.up.forward.square")
-                            .font(.footnote.weight(.semibold))
-                            .labelStyle(.titleAndIcon)
-                            .foregroundStyle(Color.canvasAccentText)
+                        HStack(spacing: 4) {
+                            Text("Open pull request")
+                            Image(systemName: "arrow.up.forward.square")
+                                .accessibilityHidden(true)
+                        }
+                        .font(.footnote.weight(.semibold))
+                        .foregroundStyle(Color.canvasAccentText)
                     }
-                    .padding(.top, 4)
+                    .padding(.top, 6)
                 }
             }
             Spacer(minLength: 0)
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 12)
-        .frame(width: 340)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 14)
+        .frame(width: width)
         .canvasGlass(in: Self.shape)
         .contentShape(Self.shape)
         .onTapGesture(perform: onDismiss)

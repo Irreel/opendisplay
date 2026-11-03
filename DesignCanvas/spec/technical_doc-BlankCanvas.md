@@ -1,6 +1,6 @@
 # Design Canvas, blank canvas surface: Technical Specification
 
-**Status:** Draft v0.2, 2026-10-04 (v0.1 was 2026-10-03). Companion to `PRD-BlankCanvas.md` v0.2. Requirement IDs (B) and gap numbers (BG) are shared with that PRD.
+**Status:** Draft v0.3, 2026-11-03 (v0.2 was 2026-10-04; v0.1 was 2026-10-03). v0.3 follows the v3.1 interface: the window menu, the always-ready page and the question before a switch with ink (B6, B9). Companion to `PRD-BlankCanvas.md` v0.3. Requirement IDs (B) and gap numbers (BG) are shared with that PRD.
 **Extends:** `technical_doc.md` v0.4. That document owns the architecture, the store, the channel, and the mirror round. This one specifies only what the blank surface adds. The wire fields are normative in `PROTOCOL.md` section 11 and are described here, not redefined.
 
 ## 1. Shape of the change
@@ -44,13 +44,13 @@ Two additive fields, no `pv` bump. See `PROTOCOL.md` 11.2 and 11.3.
 
 **Surface (B1, B3).** `CanvasSurface` (`mirror`, `blank`) in `DesignCanvas/Shared/CanvasMessages.swift`. `CanvasModel` holds the designer's `preferredSurface` and the Mac's `macSupportsBlank`; the surface actually shown is Blank only when the preference is Blank, a Mac is connected, and it supports it. The preference is persisted by the screen (`@AppStorage`); the capability arrives through `CanvasReceiverState.handlePing` and is cleared on a new connection and on a link drop.
 
-**Draw Mode (B4, B5).** One new event on `DrawModeStateMachine`, `enterBlankDrawMode`: `LIVE → DRAWING` with no effects. No `pauseSync`, no `sendFreeze`, no deadline, so FREEZING is never entered. Every later transition is the existing machine, which is what keeps B5 true by construction: Done, Cancel, Discard, SENDING, RETRY and the resend after `hello` are the same code. The exits still emit `resumeSync`, which is a no-op when nothing was frozen.
+**Draw Mode (B4, B5).** One new event on `DrawModeStateMachine`, `enterBlankDrawMode`: `LIVE → DRAWING` with no effects. No `pauseSync`, no `sendFreeze`, no deadline, so FREEZING is never entered. Every later transition is the existing machine, which is what keeps B5 true by construction: Done (Send), Discard, SENDING, RETRY and the resend after `hello` are the same code. The exits still emit `resumeSync`, which is a no-op when nothing was frozen.
 
 `CanvasModel.enterDrawMode` on the Blank surface does not require a displayed frame, and records the entry as `base: blank` with a full zoom rect. `done` stamps that into the pending annotation, so the bytes resent after a link loss are identical to the first attempt.
 
 **Screen.** On the Blank surface the mirror layer shows a white page that fills the view, in place of the video (or of the waiting screen, when connected with no picture yet). The sketch surface and the reported `viewport` both use that same rect, so the sketch and the page the Mac builds have one aspect. Zoom does not apply to the page.
 
-**Switching (B6, B9).** `CanvasModel.chooseSurface(_:pageViewport:)` records the choice and, when it is Blank and the page can be shown, enters Draw Mode at once. It is called only from the control below, so nothing but the designer's tap opens Draw Mode. A two-segment control in the status panel. The panel is not shown in Draw Mode, and the control is disabled outside LIVE, so the surface cannot change under a sketch.
+**Switching (B6, B9).** The window menu (`WindowSwitcher.swift`) picks the surface; it is disabled while a round is freezing, being sent or kept to resend. A pick with ink on the page asks "End without sending?" first; ending discards the sketch, and the choice is stored (`@AppStorage`) and passed to `CanvasModel.chooseSurface(_:pageViewport:)`. The page is always ready to draw: `CanvasScreen.keepWhiteboardReady()` runs whenever the surface or the Draw Mode state changes and enters Draw Mode when the page is up, the state is LIVE and a Design Canvas Mac is connected, so the switch, a remembered choice returning with the connection and the end of a send all open it (B9, changed 2026-11-02). There is no button to start or end drawing on the page.
 
 ## 4. Mac engine
 
