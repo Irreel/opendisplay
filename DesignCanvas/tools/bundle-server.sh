@@ -40,14 +40,19 @@ if [[ ! -f $server/dist/index.js ]] || [[ -n $(find "$server/src" -newer "$serve
 fi
 
 # 2. Production dependencies, hoisted into a plain node_modules. Cached on the lockfile
-#    so a rebuild that did not touch dependencies costs one hash comparison.
+#    so a rebuild that did not touch dependencies costs one hash comparison and a file
+#    count. The count matters: macOS purges old files under $TMPDIR but keeps the folders,
+#    and a hash alone once let a Release bundle 91 empty package folders, so the daemon
+#    could not start.
 lock_hash=$(shasum "$server/pnpm-lock.yaml" | cut -c1-40)
-if [[ ! -f $stage/.lock-hash ]] || [[ $(<"$stage/.lock-hash") != "$lock_hash" ]]; then
+stamp() { echo "$lock_hash $(find "$1/node_modules" -type f | wc -l | tr -d ' ')"; }
+intact() { [[ -f $1/.lock-hash && -d $1/node_modules && $(<"$1/.lock-hash") == "$(stamp "$1")" ]]; }
+if ! intact "$stage"; then
   rm -rf "$stage" && mkdir -p "$stage"
   cp "$server/package.json" "$server/pnpm-lock.yaml" "$stage/"
   (cd "$stage" && pnpm install --prod --frozen-lockfile --ignore-scripts --silent --config.node-linker=hoisted)
   rm -rf "$stage/node_modules/.bin" "$stage/node_modules/.modules.yaml" "$stage/node_modules/.pnpm-workspace-state-v1.json"
-  echo "$lock_hash" > "$stage/.lock-hash"
+  stamp "$stage" > "$stage/.lock-hash"
 fi
 
 # 3. Assemble. dist is copied fresh each time; node_modules only when it changed.
@@ -55,8 +60,8 @@ mkdir -p "$dest"
 cp "$server/package.json" "$dest/"
 rm -rf "$dest/dist" && cp -R "$server/dist" "$dest/dist"
 find "$dest/dist" \( -name '*.map' -o -name '*.d.ts' \) -delete
-if [[ ! -f $dest/.lock-hash ]] || [[ $(<"$dest/.lock-hash") != "$lock_hash" ]]; then
+if ! intact "$dest"; then
   rm -rf "$dest/node_modules" && cp -R "$stage/node_modules" "$dest/node_modules"
-  echo "$lock_hash" > "$dest/.lock-hash"
+  stamp "$dest" > "$dest/.lock-hash"
 fi
 echo "bundled designtool into $dest"
