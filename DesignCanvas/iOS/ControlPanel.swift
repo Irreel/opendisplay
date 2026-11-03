@@ -133,21 +133,6 @@ struct ControlPanel<Content: View>: View {
         .canvasGlass(in: Self.shape)
         .contentShape(Self.shape)
         .overlay(alignment: .top) { positionControl }
-        // Moving the panel must not need a drag: a long press offers the
-        // four edges.
-        .contextMenu {
-            ForEach(PanelEdge.menuOrder, id: \.self) { target in
-                Button {
-                    withAnimation(.spring(response: 0.35, dampingFraction: 0.82)) { edge = target }
-                } label: {
-                    if target == edge {
-                        Label("Move to \(target.spokenName.lowercased())", systemImage: "checkmark")
-                    } else {
-                        Text("Move to \(target.spokenName.lowercased())")
-                    }
-                }
-            }
-        }
         .offset(drag)
         // High priority with a minimum distance: a tap still reaches the
         // button under it, a drag that starts on a button moves the panel.
@@ -204,8 +189,6 @@ extension PanelEdge {
         case .trailing: return .trailing
         }
     }
-
-    fileprivate static let menuOrder: [PanelEdge] = [.top, .bottom, .leading, .trailing]
 
     fileprivate var spokenName: String {
         switch self {

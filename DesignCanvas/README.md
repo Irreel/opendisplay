@@ -220,8 +220,8 @@ real device or simulator, and run.
    is cleared. There is nothing to set on the Mac. The switch is greyed out
    when the Mac app is older than this feature. See
    [`spec/PRD-BlankCanvas.md`](spec/PRD-BlankCanvas.md).
-10. **The panel can go to any edge.** Drag it from anywhere on it, or
-    long-press it and choose an edge; it stays there across launches.
+10. **The panel can go to any edge.** Drag it from anywhere on it to the
+    edge you want; it stays there across launches.
     The interface is designed in the
     [Figma file](https://www.figma.com/design/N7DN83jg1SrZV9Gx4SIMlq/Design-Canvas-Design)
     (screens and design system, 2026-10-13).

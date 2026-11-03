@@ -77,7 +77,7 @@ Top bar
  │         └─ "Connection details…" ──▶ connection parameters, errors and the log
  ├─ Send chip, between sketches: "Sending sketch…", or "Sketch kept — will resend" with a way to give it up
  └─ Reply notification, top right: applied, failed or needs input, with a PR link when present
-Panel: floats; drag it to any screen edge, or long-press it for Move to top, bottom, left, right
+Panel: floats; drag it to any screen edge
  ├─ Between sketches: Mirror, Blank, Draw
  └─ In Draw Mode: undo, redo, pen, eraser, five inks, throw the sketch away
 Draw Mode top bar: Cancel (keeps the strokes), "Add a note" (optional), Send
@@ -134,7 +134,7 @@ IDs are referenced from the technical doc. C1, C2, M1, M7 and D9 describe the mi
 | P1 | The project pill names the Claude Code session the next sketch goes to, and says when there is none or one must be picked; tapping it lists every connected session with its state. The iPad-to-Mac hop has no indicator of its own: while it is down, a waiting screen fills the iPad (2026-10-13) |
 | P2 | "Connection details…" at the end of the session list opens the connection parameters, errors and the connection log |
 | P3 | Entry to Draw Mode from the panel, disabled while there is no Claude Code session to send to |
-| P4 | The panel can be moved to any screen edge, by dragging it or from the menu a long press opens, and stays there across modes and launches. Its grabber shows only while it is being dragged, on the side that faces its edge (2026-10-13) |
+| P4 | The panel can be moved to any screen edge by dragging it, and stays there across modes and launches. Its grabber shows only while it is being dragged, on the side that faces its edge (2026-10-13) |
 
 ## 8. What is reused and what is new
 
