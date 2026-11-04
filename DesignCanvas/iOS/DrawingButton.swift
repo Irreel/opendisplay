@@ -13,18 +13,26 @@ struct DrawingButton: View {
     enum Action { case start, end }
 
     let action: Action
+    /// Off while the tool panel divides from it (`DividingCell`), whose
+    /// outline is its glass then.
+    var glass = true
     let onTap: () -> Void
 
     @Environment(\.isEnabled) private var isEnabled
 
     var body: some View {
         Button(action: onTap) {
-            Image(systemName: action == .start ? "pencil.tip" : "xmark")
-                .font(.system(size: action == .start ? 24 : 20, weight: .medium))
-                .foregroundStyle(Color.primary)
-                .frame(width: Self.size, height: Self.size)
-                .canvasGlass(in: Circle())
-                .contentShape(Circle())
+            ZStack {
+                // One glass for both: only the symbol changes.
+                Image(systemName: action == .start ? "pencil.tip" : "xmark")
+                    .font(.system(size: action == .start ? 24 : 20, weight: .medium))
+                    .id(action)
+                    .transition(.opacity)
+            }
+            .foregroundStyle(Color.primary)
+            .frame(width: Self.size, height: Self.size)
+            .glass(glass)
+            .contentShape(Circle())
         }
         // It gives a little under the finger (M1).
         .buttonStyle(GivesUnderFinger())
@@ -37,6 +45,12 @@ struct DrawingButton: View {
 
     /// Its width and height: a 56-point circle, the tool panel's thickness.
     static let size: CGFloat = 56
+}
+
+private extension View {
+    @ViewBuilder func glass(_ on: Bool) -> some View {
+        if on { canvasGlass(in: Circle()) } else { self }
+    }
 }
 
 /// Presses in to 96% while held.

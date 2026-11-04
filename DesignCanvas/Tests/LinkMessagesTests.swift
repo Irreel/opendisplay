@@ -63,6 +63,22 @@ final class LinkMessagesTests: XCTestCase {
         XCTAssertEqual(admit("WiFi", a, "USB", b), .adopt, "plugging a cable in takes over")
     }
 
+    /// The cable's Mac back over WiFi soon after is told apart from any other
+    /// arrival, for the iPad's notice.
+    func test_theCablesMacCarryingOnOverWiFiIsNoticed() {
+        let a = Data(repeating: 1, count: 32), b = Data(repeating: 2, count: 32)
+        let ended = Date(timeIntervalSince1970: 1_000)
+        func carriesOn(_ transport: String, _ key: Data?, cable: Data?, after seconds: TimeInterval) -> Bool {
+            CanvasReceiver.carriesOnFromCable(newcomerTransport: transport, newcomerMacKey: key, cableMacKey: cable,
+                                              cableEndedAt: ended, now: ended.addingTimeInterval(seconds))
+        }
+        XCTAssertTrue(carriesOn("WiFi", a, cable: a, after: 2), "unplugged, and the same Mac is back over WiFi")
+        XCTAssertFalse(carriesOn("WiFi", b, cable: a, after: 2), "another Mac")
+        XCTAssertFalse(carriesOn("USB", a, cable: a, after: 2), "plugged back in")
+        XCTAssertFalse(carriesOn("WiFi", a, cable: nil, after: 2), "no session was on the cable")
+        XCTAssertFalse(carriesOn("WiFi", a, cable: a, after: CanvasReceiver.cableFallbackWindow + 1), "too long after")
+    }
+
     func test_aHelloCarriesItsKeysAndRefusesTheWrongLengths() {
         let key = Data(repeating: 7, count: 32), eph = Data(repeating: 8, count: 32), sig = Data(repeating: 9, count: 64)
         let hello = HelloMessage(version: 2, role: .ipad, name: "iPad", installID: "ID", device: "iPad",

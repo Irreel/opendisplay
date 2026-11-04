@@ -94,6 +94,10 @@ final class CanvasReceiver: ObservableObject {
     @Published private(set) var pairingRequest: PairingRequest?
     /// The Macs this iPad is paired with, for the connection screen.
     @Published private(set) var pairedMacs: [PairedPeer] = []
+    /// One more each time the Mac that was on the cable carries on over
+    /// WiFi, for the screen's notice: it comes back unasked, so the switch
+    /// would otherwise go unseen.
+    @Published private(set) var cableToWiFiMoves = 0
 
     /// The Mac's hello, once per adopted connection. Main queue.
     var onMacHello: ((HelloMessage) -> Void)?
@@ -122,6 +126,8 @@ final class CanvasReceiver: ObservableObject {
     /// it timed out, or the asking Mac left before the answer. Any of them
     /// starts the cooldown, so dropping the connection is no way around it.
     private var lastDeclinedAt = Date.distantPast
+    /// The Mac whose session on the cable ended last, and when.
+    private var lastCableEnd: (macKey: Data, at: Date)?
     private var framesThisWindow = 0
     private var bytesThisWindow = 0
     private var windowStart = Date()
@@ -776,9 +782,27 @@ final class CanvasReceiver: ObservableObject {
         return .ask
     }
 
+    /// Whether a session just adopted is the Mac that was on the cable,
+    /// carrying on over WiFi: the cable session is being replaced, or ended
+    /// no longer ago than `cableFallbackWindow`.
+    static func carriesOnFromCable(newcomerTransport: String, newcomerMacKey: Data?,
+                                   cableMacKey: Data?, cableEndedAt: Date?, now: Date) -> Bool {
+        guard newcomerTransport != "USB", let newcomerMacKey, newcomerMacKey == cableMacKey,
+              let cableEndedAt else { return false }
+        return now.timeIntervalSince(cableEndedAt) <= cableFallbackWindow
+    }
+
+    static let cableFallbackWindow: TimeInterval = 30
+
     /// Make `peer` the session, replacing any other.
     private func adopt(_ peer: Peer) {
         candidates.removeAll { $0 === peer }
+        let now = Date()
+        let cable = session.flatMap { $0.transport == "USB" ? $0.macKey.map { ($0, now) } : nil }
+            ?? lastCableEnd.map { ($0.macKey, $0.at) }
+        let fromCable = Self.carriesOnFromCable(newcomerTransport: peer.transport, newcomerMacKey: peer.macKey,
+                                                cableMacKey: cable?.0, cableEndedAt: cable?.1, now: now)
+        lastCableEnd = nil
         if let previous = session {
             Log.info("receiver: a newer connection replaces the session")
             sendLink(CanvasWire.bye, ByeMessage(reason: .replaced).json, to: previous)
@@ -798,6 +822,7 @@ final class CanvasReceiver: ObservableObject {
             self.transport = transport
             self.rttMs = nil
             self.onMacHello?(hello)
+            if fromCable { self.cableToWiFiMoves += 1 }
         }
         setStatus(name.map { "Connected to \($0)" } ?? "Connected")
     }
@@ -860,6 +885,7 @@ final class CanvasReceiver: ObservableObject {
     private func endSession(_ peer: Peer) {
         guard peer === session else { return }
         session = nil
+        if peer.transport == "USB", let key = peer.macKey { lastCableEnd = (key, Date()) }
         // As in `lost`: a bye just sent must get out first.
         let connection = peer.connection
         queue.asyncAfter(deadline: .now() + 0.5) { connection.cancel() }

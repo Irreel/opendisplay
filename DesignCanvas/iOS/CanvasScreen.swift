@@ -50,6 +50,23 @@ struct CanvasScreen: View {
     /// The Ink Picker is open over the compact panel's swatch.
     @State private var showInks = false
     @State private var inkSwatch: CGRect?
+    /// "Cable unplugged — now on WiFi" is up, for a moment (`LinkNotice`).
+    @State private var showsCableNotice = false
+    @State private var cableNoticeTask: Task<Void, Never>?
+    /// The tool panel is out: at once on the whiteboard, and on the mirror
+    /// once the drop that divides off the drawing button has landed where the
+    /// panel rests (`DividingCell`, M10).
+    @State private var panelShown = false
+    /// The drop is out, and is the drawing button's glass meanwhile.
+    @State private var cellShown = false
+    @State private var cellEntering = true
+    @State private var cellProgress: CGFloat = 0
+    @State private var cellRun = CellRun()
+    @State private var divideTask: Task<Void, Never>?
+    /// Where the drawing button and the tool panel rest, for the cell. The
+    /// panel's is kept after it goes, so the cell can start from it.
+    @State private var drawingButtonFrame: CGRect?
+    @State private var toolPanelFrame: CGRect?
     @State private var confirmDiscard = false
     @State private var viewSize = CGSize.zero
     /// Runs only while a freeze is outstanding (2 s at the most).
@@ -229,6 +246,7 @@ struct CanvasScreen: View {
         .onChange(of: sketch.strokeCount) { count in
             canvas.strokesChanged(count: count)
         }
+        .onReceive(receiver.$cableToWiFiMoves.dropFirst()) { _ in showCableNotice() }
         // The designer's own switch (the window menu). The whiteboard goes
         // straight into drawing.
         .onChange(of: storedSurface) { raw in
@@ -435,23 +453,42 @@ struct CanvasScreen: View {
     private func chrome(size: CGSize) -> some View {
         let bottom = bottomLayout(in: size)
         return ZStack {
+            // Under the panel and the button's symbol: it is the button's
+            // glass while it is out, and the panel's until the panel lands.
+            if cellShown, let button = drawingButtonFrame {
+                DividingCell(progress: cellProgress, entering: cellEntering,
+                             button: button, panel: toolPanelFrame)
+            }
+
             if isInDrawMode {
-                ControlPanel(edge: panelEdge, containerSize: size) { vertical in
+                ControlPanel(edge: panelEdge, containerSize: size, shown: panelShown) { vertical in
                     DrawTools(sketch: sketch, vertical: vertical, compact: compactPalette(in: size),
                               inkPickerOpen: $showInks)
                 }
+                .chromeFrame(ToolPanelFrameKey.self)
+                .opacity(panelShown ? 1 : 0)
+                .allowsHitTesting(panelShown)
+                .accessibilityHidden(!panelShown)
                 .offset(x: bottom.panelShift, y: -bottom.panelRaise)
                 .padding(.horizontal, TopBarLayout.margin)
                 .padding(.bottom, TopBarLayout.margin)
                 .padding(.top, 12 + (panelOnTop ? TopBarLayout.offset(topLayout(in: size).panelRow) : 0))
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: panelEdge.wrappedValue.alignment)
-                .transition(.move(edge: panelEdge.wrappedValue.transitionEdge).combined(with: .opacity))
+                // It arrives as the cell (`divide(entering:)`); its tools go
+                // first on the way out.
+                .transition(.asymmetric(insertion: .identity,
+                                        removal: .opacity.animation(.easeOut(duration: 0.1))))
             }
 
             if !isInDrawMode, let notice = canvas.notice {
                 NoticeBanner(text: notice.text) { canvas.dismissNotice() }
                     .padding(.bottom, noticeLift(in: size))
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+            } else if !isInDrawMode, showsCableNotice {
+                LinkNotice(text: Self.cableNoticeText)
+                    .padding(.bottom, linkNoticeLift(in: size))
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+                    .transition(reduceMotion ? .opacity : .offset(y: 8).combined(with: .opacity))
             }
 
             // A tap anywhere else closes the open menu or question, as a tap
@@ -493,6 +530,10 @@ struct CanvasScreen: View {
         .animation(.spring(response: 0.35, dampingFraction: 0.82), value: storedPanelEdge)
         .animation(.spring(response: 0.4, dampingFraction: 0.85), value: canvas.replyNotification)
         .onPreferenceChange(InkSwatchFrameKey.self) { inkSwatch = $0 }
+        .onPreferenceChange(DrawingButtonFrameKey.self) { if let frame = $0 { drawingButtonFrame = frame } }
+        .onPreferenceChange(ToolPanelFrameKey.self) { if let frame = $0 { toolPanelFrame = frame } }
+        .onChange(of: isInDrawMode) { divide(entering: $0) }
+        .onAppear { panelShown = isInDrawMode }
         .animation(.spring(response: 0.35, dampingFraction: 0.8), value: showInks)
     }
 
@@ -527,6 +568,28 @@ struct CanvasScreen: View {
             .transition(.popOut(from: anchor))
     }
 
+    static let cableNoticeText = "Cable unplugged \u{2014} now on WiFi"
+
+    /// The cable's Mac carried on over WiFi: say so for 3 s (Figma v3.2, 01n).
+    private func showCableNotice() {
+        cableNoticeTask?.cancel()
+        UIAccessibility.post(notification: .announcement, argument: Self.cableNoticeText)
+        withAnimation(.easeOut(duration: 0.25)) { showsCableNotice = true }
+        cableNoticeTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 3_000_000_000)
+            guard !Task.isCancelled else { return }
+            withAnimation(.easeIn(duration: 0.2)) { showsCableNotice = false }
+        }
+    }
+
+    /// In the drawing button's row, centred on it, where there is room
+    /// beside the button; in the row above otherwise, as on an iPhone.
+    private func linkNoticeLift(in size: CGSize) -> CGFloat {
+        let beside = (size.width - LinkNotice.width) / 2 >= TopBarLayout.margin + DrawingButton.size + TopBarLayout.gap
+        let row = TopBarLayout.margin + (DrawingButton.size - LinkNotice.height) / 2
+        return showsDrawingButton && !beside ? TopBarLayout.margin + DrawingButton.size + 12 : row
+    }
+
     /// The notice sits in the bottom row beside the drawing button where
     /// there is room, and in the row above it otherwise.
     private func noticeLift(in size: CGSize) -> CGFloat {
@@ -550,31 +613,77 @@ struct CanvasScreen: View {
                 .padding(.bottom, raise)
                 .transition(.popOut(from: .bottomLeading))
             }
-            Group {
+            // One button, so its glass stays where it is and only the symbol
+            // changes. Start is disabled while there is no connection, on a
+            // Mac that is not running Design Canvas, while a sketch is on its
+            // way, and while no Claude Code session is there to take the
+            // sketch: the session menu says which.
+            DrawingButton(action: isInDrawMode ? .end : .start, glass: !cellShown) {
                 if isInDrawMode {
-                    DrawingButton(action: .end) {
-                        if sketch.strokeCount > 0 {
-                            confirmEnd.toggle()
-                        } else {
-                            canvas.discard()
-                        }
+                    if sketch.strokeCount > 0 {
+                        confirmEnd.toggle()
+                    } else {
+                        canvas.discard()
                     }
                 } else {
-                    // Disabled while there is no connection, on a Mac that is
-                    // not running Design Canvas, while a sketch is on its way,
-                    // and while no Claude Code session is there to take the
-                    // sketch: the session menu says which.
-                    DrawingButton(action: .start) {
-                        closeEverything()
-                        canvas.enterDrawMode(viewport: currentViewport())
-                    }
-                    .disabled(!canvas.canEnterDrawMode || !canvas.hasClaudeSession)
+                    closeEverything()
+                    canvas.enterDrawMode(viewport: currentViewport())
                 }
             }
+            .disabled(!isInDrawMode && (!canvas.canEnterDrawMode || !canvas.hasClaudeSession))
+            .chromeFrame(DrawingButtonFrameKey.self)
         }
         // A spring with a little bounce (0.2), as the board times it.
         .animation(.spring(response: 0.35, dampingFraction: 0.8), value: confirmEnd)
         .animation(.easeInOut(duration: 0.2), value: isInDrawMode)
+    }
+
+    /// Start drawing divides (M10): the button turns into End drawing where
+    /// it is, and a drop of its glass buds out of it, snaps off and travels to
+    /// where the panel rests; the panel takes over from it there and its tools
+    /// fade in. End drawing runs it home. Turned back part way, the drop goes
+    /// back the way it came from where it has got to. With no button to
+    /// divide (the whiteboard) or with Reduce Motion, the panel simply fades.
+    private func divide(entering: Bool) {
+        divideTask?.cancel()
+        guard !reduceMotion, showsDrawingButton, drawingButtonFrame != nil else {
+            cellShown = false
+            withAnimation(.easeOut(duration: 0.2)) { panelShown = entering }
+            return
+        }
+        if entering { panelShown = false }
+        let still = Transaction(animation: nil)
+        if cellShown, cellEntering != entering {
+            let at = cellRun.progress(at: Date())
+            withTransaction(still) { cellProgress = at }
+            let whole = cellEntering ? DividingCell.outDuration : DividingCell.homeDuration
+            runCell(to: 0, over: Double(at) * whole, after: 0, entering: entering)
+        } else {
+            withTransaction(still) {
+                cellEntering = entering
+                cellProgress = 0
+                cellShown = true
+            }
+            cellRun = CellRun()
+            // Out once the panel is laid out, so the drop knows where it is
+            // going; home once the tools have faded over it.
+            runCell(to: 1, over: entering ? DividingCell.outDuration : DividingCell.homeDuration,
+                    after: entering ? 0.016 : 0.1, entering: entering)
+        }
+    }
+
+    private func runCell(to target: CGFloat, over duration: Double, after delay: Double, entering: Bool) {
+        divideTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+            guard !Task.isCancelled else { return }
+            cellRun = CellRun(start: Date(), duration: duration, from: cellProgress, to: target)
+            withAnimation(.linear(duration: duration)) { cellProgress = target }
+            try? await Task.sleep(nanoseconds: UInt64(duration * 1_000_000_000))
+            guard !Task.isCancelled else { return }
+            // Glass for glass: the panel, or the button, where the drop is.
+            panelShown = entering
+            cellShown = false
+        }
     }
 
     /// Laid out by `TopBarLayout`: each piece in its own row, at its own end,
@@ -884,6 +993,34 @@ private struct SendChip: View {
     }
 }
 
+/// A word about the link that needs nothing done (Figma v3.2, 01n): one
+/// line on the chrome's glass, gone on its own.
+private struct LinkNotice: View {
+    let text: String
+
+    /// About its size, for where it goes; the text sets the width.
+    static let width: CGFloat = 300
+    static let height: CGFloat = 44
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "wifi")
+                .font(.system(size: 17, weight: .medium))
+                .accessibilityHidden(true)
+            Text(text)
+                .font(.subheadline)
+                .lineLimit(1)
+        }
+        .padding(.leading, 16)
+        .padding(.trailing, 18)
+        .frame(height: Self.height)
+        .canvasGlass(in: Capsule())
+        // Announced when it appears; nothing to find or tap afterwards.
+        .accessibilityHidden(true)
+        .allowsHitTesting(false)
+    }
+}
+
 private struct NoticeBanner: View {
     let text: String
     let onDismiss: () -> Void
@@ -962,5 +1099,19 @@ private struct WaitingForMacView: View {
             Button("Connection details", action: onConnectionDetails)
                 .font(.subheadline.weight(.semibold))
         }
+    }
+}
+
+/// One run of the dividing drop, to tell where it has got to if it is turned
+/// back part way.
+private struct CellRun {
+    var start = Date.distantPast
+    var duration = 0.0
+    var from: CGFloat = 0
+    var to: CGFloat = 0
+
+    func progress(at date: Date) -> CGFloat {
+        let done = duration > 0 ? min(max(date.timeIntervalSince(start) / duration, 0), 1) : 1
+        return from + (to - from) * CGFloat(done)
     }
 }

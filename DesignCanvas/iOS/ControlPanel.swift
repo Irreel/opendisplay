@@ -89,6 +89,8 @@ struct ControlPanel<Content: View>: View {
     @Binding var edge: PanelEdge
     /// The safe area the panel docks inside, in the "chrome" coordinate space.
     let containerSize: CGSize
+    /// The panel's tools are out, rather than still on their way.
+    var shown = true
     @ViewBuilder let content: (_ vertical: Bool) -> Content
 
     @GestureState private var drag = CGSize.zero
@@ -110,6 +112,9 @@ struct ControlPanel<Content: View>: View {
             ? AnyLayout(VStackLayout(spacing: 2))
             : AnyLayout(HStackLayout(spacing: 2))
         controls { content(vertical) }
+        // The glass is there before the tools: they fade in once it lands.
+        .opacity(shown ? 1 : 0)
+        .animation(.easeOut(duration: 0.2), value: shown)
         .padding(6)
         // The grabber sits inside the panel, in its margin, on the side that
         // faces into the screen: along the top of a row docked at the bottom,
@@ -143,8 +148,9 @@ struct ControlPanel<Content: View>: View {
         )
         .animation(.spring(response: 0.3, dampingFraction: 0.85), value: drag == .zero)
         .animation(.easeInOut(duration: 0.25), value: hinting)
-        .task {
+        .task(id: shown) {
             // Once the panel has come in, not while it is still on its way.
+            guard shown else { return }
             try? await Task.sleep(nanoseconds: 450_000_000)
             hinting = true
             try? await Task.sleep(nanoseconds: 1_500_000_000)
