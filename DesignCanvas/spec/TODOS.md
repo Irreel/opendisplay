@@ -8,7 +8,7 @@
 
 **Why:** Nothing on the link is authenticated, which leaves LAN paths open. Anyone who advertises a trusted iPad's cleartext Bonjour id gets dialed, receives the Mac's screen, and can push a sketch into the user's Claude Code session. Any machine can ask the iPad to switch to it, which the user answers on the iPad without being able to tell who is asking. The resume token that lets a Mac back in after a dead link crosses WiFi in the clear. The Claude Code Channels reference also requires an authenticated sender before the permission relay can be declared, so this blocks permission prompts on the iPad.
 
-**Context:** The link is Design Canvas's own since 2026-11-03 (`wire-protocol.md`); OpenDisplay upstream tracks the same need for its own wire as roadmap issue #16. Both apps ship together, so this is a wire version bump with no migration. Start at `wire-protocol.md` sections 1, 5.1 and 5.6, `Mac/Stream/MirrorLink.swift` (dialing) and `iOS/Stream/CanvasReceiver.swift` (listening, adoption). With it, the switch question, the trust-on-first-use rules and the resume token's silence rule can all go. Eng review 2026-09-16, decision 3A.
+**Context:** The link is Design Canvas's own since 2026-11-03 (`wire-protocol.md`); OpenDisplay upstream tracks the same need for its own wire as roadmap issue #16. Both apps ship together, so this is a wire version bump with no migration. Start at `wire-protocol.md` sections 1, 5.1 and 5.6, `Mac/Stream/MirrorLink.swift` (dialing) and `iOS/Stream/CanvasReceiver.swift` (listening, adoption). With it, the switch question, the trust-on-first-use rules and the resume token's silence rule can all go. It also covers what the iPad cannot tell today: it takes any loopback connection as the cable, because usbmuxd delivers cable connections that way, so an app on the iPad itself could pose as a cabled Mac. Eng review 2026-09-16, decision 3A.
 
 **Effort:** XL
 **Priority:** P1
@@ -48,6 +48,18 @@
 
 **Effort:** S
 **Priority:** P3
+**Depends on:** None.
+
+### Authenticate the daemon's loopback API
+
+**What:** A per-launch secret the Mac app gives the daemon and the mod (a 0600 file under the app's support folder, or the launch environment for sessions it starts), sent as a bearer token on every request and checked both ways: the daemon refuses requests without it, and the mod refuses a daemon that cannot show it.
+
+**Why:** The daemon trusts every process on the Mac (README, "Residual risk"). Anything local can register a session, make itself the target (`wasTarget`), and receive the iPad's sketches, or answer on the daemon's port first and hand the mod rounds of its own. Since 2026-11-03 the mod approves a sketch Read only for a composite whose real path is in the store's own layout, so a fake daemon can no longer have it read an arbitrary file unprompted; it can still inject sketches and notes.
+
+**Context:** Raised by the automated security review on 2026-11-03. Start at `server/src/http/server.ts` (the sessions routes) and `mod/hooks/register.js` (`call`, `registerSession`). A session the user started by hand has no launch environment, so the mod needs a file it can read through `$.fs`.
+
+**Effort:** M
+**Priority:** P2
 **Depends on:** None.
 
 ### `annotationAck` so the iPad clears strokes only once the Mac accepted the job

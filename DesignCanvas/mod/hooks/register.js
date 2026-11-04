@@ -181,6 +181,24 @@ export function allowsSketchRead(decision, round, filePath) {
   return decision === 'ask' && round !== null && typeof filePath === 'string' && filePath === round.compositePath
 }
 
+/** The store's own layout below the user's home (server/src/store/paths.ts). */
+export const STORE_ANNOTATIONS = '/.claude/channels/design-canvas/annotations/'
+
+/**
+ * X7, where the file really is. The round's path comes from the daemon, and
+ * anything that answers on its loopback port could name any file, or a link to
+ * one. So the approval also needs the path the Read would really open (`$.fs.stat`
+ * resolved) to be that round's composite in the store's own layout. A store moved
+ * elsewhere (`DESIGN_CANVAS_STORE_DIR`), or reached through a symlinked
+ * `~/.claude`, falls back to Claude Code's own prompt, as before X7.
+ */
+export function isStoreComposite(realPath, round) {
+  if (typeof realPath !== 'string' || round === null || typeof round.id !== 'string') return false
+  if (!/^[0-9A-Za-z-]{1,64}$/.test(round.id)) return false
+  if (realPath.split('/').some((part) => part === '..' || part === '.')) return false
+  return realPath.endsWith(`${STORE_ANNOTATIONS}${round.id}/composite.png`)
+}
+
 /**
  * X8. Which tool calls are standing at a permission decision. `tool.check`
  * resolving to "ask" marks a call; the permission request (which carries no call
@@ -557,7 +575,10 @@ export function register(on) {
       if (decided && decided.decision === 'ask') {
         const path = e.input && typeof e.input === 'object' ? e.input.file_path : undefined
         if (e.tool === 'Read' && allowsSketchRead(decided.decision, S.round, path)) {
-          return { decision: 'allow', reason: 'Design Canvas: the sketch for the round in progress' }
+          const stat = await $.fs.stat(path, { resolve: true }).catch(() => undefined)
+          if (stat && isStoreComposite(stat.realPath, S.round)) {
+            return { decision: 'allow', reason: 'Design Canvas: the sketch for the round in progress' }
+          }
         }
         waitAsked(S.wait, e.tool_use_id)
       }

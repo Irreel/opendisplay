@@ -159,6 +159,7 @@ function harness({ daemonUp = true, env = {}, openExit = 0 } = {}) {
     toasts: [],
     ran: [],
     store: new Map(),
+    links: new Map(),
     registered: null,
     tickFn: null,
     toolFailures: 0,
@@ -173,6 +174,8 @@ function harness({ daemonUp = true, env = {}, openExit = 0 } = {}) {
     tool: { register: async (spec) => { if (h.toolFailures > 0) { h.toolFailures -= 1; throw new Error('refused') } h.tool = spec; return { tool: `mcp__designcanvas__${spec.name}` } } },
     store: { get: async (k) => h.store.get(k), set: async (k, v) => { h.store.set(k, v) } },
     ui: { toast: (text) => h.toasts.push(text) },
+    // Where each path really leads; a path not listed leads to itself.
+    fs: { stat: async (path) => ({ kind: 'file', size: 1, mtimeMs: 0, isLink: h.links.has(path), realPath: h.links.get(path) ?? path }) },
     // As Claude Code's own: a timer object with cancel(), not a bare function.
     clock: { every: (ms, fn) => { h.tickFn = fn; return { cancel: () => { h.tickFn = null } } } },
     process: { run: async (argv) => { h.ran.push(argv); return argv[0] === 'open' ? { exitCode: openExit, stdout: '', stderr: '' } : { exitCode: 0, stdout: 'main\n', stderr: '' } } },
@@ -319,13 +322,43 @@ test('the reply tool: invalid arguments come back as words; a queued outcome sur
   assert.deepEqual(h.replies, [{ id: round().meta.id, body: { status: 'applied' } }])
 })
 
+const STORE_COMPOSITE = `/Users/amy/.claude/channels/design-canvas/annotations/${round().meta.id}/composite.png`
+
+test('isStoreComposite: the round\'s composite in the store\'s layout, nothing else (X7)', () => {
+  const r = mod.newRound({ ...round(), compositePath: STORE_COMPOSITE })
+  assert.equal(mod.isStoreComposite(STORE_COMPOSITE, r), true)
+  assert.equal(mod.isStoreComposite('/Users/amy/.ssh/id_rsa', r), false)
+  assert.equal(mod.isStoreComposite('/Users/amy/.claude/channels/design-canvas/annotations/other/composite.png', r), false)
+  assert.equal(mod.isStoreComposite(`/x/../Users/amy/.claude/channels/design-canvas/annotations/${r.id}/composite.png`, r), false)
+  assert.equal(mod.isStoreComposite(STORE_COMPOSITE.replace('composite.png', 'meta.json'), r), false)
+  assert.equal(mod.isStoreComposite(undefined, r), false)
+  assert.equal(mod.isStoreComposite(STORE_COMPOSITE, null), false)
+  assert.equal(mod.isStoreComposite(STORE_COMPOSITE, { ...r, id: '../x' }), false)
+})
+
+test('X7: a path the daemon names outside the store, or a link out of it, is not approved', async () => {
+  const h = harness()
+  await h.fire('session.start', {})
+  h.core = (event) => (event === 'tool.check' ? { decision: 'ask' } : {})
+  h.queue.push({ ...round(), compositePath: '/Users/amy/.ssh/id_rsa' })
+  await h.tick()
+  assert.equal((await h.fire('tool.check', { tool: 'Read', tool_use_id: 'x1', input: { file_path: '/Users/amy/.ssh/id_rsa' } })).decision, 'ask')
+  const g = harness()
+  await g.fire('session.start', {})
+  g.core = (event) => (event === 'tool.check' ? { decision: 'ask' } : {})
+  g.links.set(STORE_COMPOSITE, '/Users/amy/.ssh/id_rsa')
+  g.queue.push({ ...round(), compositePath: STORE_COMPOSITE })
+  await g.tick()
+  assert.equal((await g.fire('tool.check', { tool: 'Read', tool_use_id: 'x2', input: { file_path: STORE_COMPOSITE } })).decision, 'ask')
+})
+
 test('X7: only the composite of the round in flight is approved', async () => {
   const h = harness()
   await h.fire('session.start', {})
   h.core = (event) => (event === 'tool.check' ? { decision: 'ask' } : {})
-  const path = round().compositePath
+  const path = STORE_COMPOSITE
   assert.deepEqual(await h.fire('tool.check', { tool: 'Read', tool_use_id: 'r0', input: { file_path: path } }), { decision: 'ask' })
-  h.queue.push(round())
+  h.queue.push({ ...round(), compositePath: STORE_COMPOSITE })
   await h.tick()
   assert.equal((await h.fire('tool.check', { tool: 'Read', tool_use_id: 'r1', input: { file_path: path } })).decision, 'allow')
   assert.equal((await h.fire('tool.check', { tool: 'Read', tool_use_id: 'r2', input: { file_path: '/etc/passwd' } })).decision, 'ask')
