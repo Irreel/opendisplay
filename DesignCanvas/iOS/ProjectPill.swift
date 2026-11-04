@@ -9,7 +9,6 @@
 // session. The sketch Send takes away lands here too (`SentSketchCard`).
 
 import SwiftUI
-import UIKit
 
 struct ProjectPill: View {
 
@@ -65,7 +64,7 @@ struct ProjectPill: View {
                         .accessibilityHidden(true)
                 }
                 Text(title)
-                    .font(.headline)
+                    .font(.subheadline)
                     .foregroundStyle(needsAttention ? Color.canvasWarningText : .primary)
                     .lineLimit(1)
                     .morphFrame(Part.pillName)
@@ -83,23 +82,18 @@ struct ProjectPill: View {
     private func travellers(_ frames: [String: CGRect]) -> some View {
         if travels, let fromName = frames[Part.pillName], let toName = frames[Part.rowName] {
             let name = isOpen ? toName : fromName
-            // The pill's weight on the way, the row's for the landing. Each
-            // is scaled to the other's size on the way, so at the swap the
-            // two only differ in weight.
-            let ratio = UIFont.preferredFont(forTextStyle: .subheadline).pointSize
-                / UIFont.preferredFont(forTextStyle: .headline).pointSize
+            // The pill's weight on the way, the row's for the landing. Both
+            // are the same size, so at the swap they only differ in weight.
             ZStack(alignment: .leading) {
                 Text(title)
-                    .font(.headline)
+                    .font(.subheadline)
                     .lineLimit(1)
                     .frame(width: fromName.width, alignment: .leading)
-                    .scaleEffect(isOpen ? ratio : 1, anchor: .leading)
                     .opacity(landed ? 0 : 1)
                 Text(title)
                     .font(.subheadline.weight(.medium))
                     .lineLimit(1)
                     .frame(width: toName.width, alignment: .leading)
-                    .scaleEffect(isOpen ? 1 : 1 / ratio, anchor: .leading)
                     .opacity(landed ? 1 : 0)
             }
             .travelling(to: CGPoint(x: name.minX, y: name.midY))
@@ -202,7 +196,7 @@ private struct SessionList: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            Text("CLAUDE CODE SESSIONS")
+            Text("Sessions")
                 .font(.footnote.weight(.semibold))
                 .foregroundStyle(Color.canvasSecondary)
                 .padding(.horizontal, 16)

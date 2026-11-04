@@ -10,7 +10,7 @@ import UIKit
 struct SetupGuideCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            // Same section header as the session list's, inset to the step numbers.
+            // The session list header's font and colour, uppercased, inset to the step numbers.
             Text("How to connect")
                 .textCase(.uppercase)
                 .font(.footnote.weight(.semibold))
