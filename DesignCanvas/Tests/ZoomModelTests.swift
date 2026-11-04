@@ -270,20 +270,26 @@ final class ZoomModelTests: XCTestCase {
         model.transformedRect(viewSize: iPad, videoSize: mac)
     }
 
-    func test_printRest_fitsThePictureAndItsMarginInsideTheView() {
+    func test_hold_restsThePictureAt96Percent_centred() {
+        // Figma v3.2, H1: 96% of the fit, with 24 points of paper at the
+        // sides and 59 at the top and bottom.
         var model = ZoomModel()
         model.hold(viewSize: iPad, videoSize: mac)
-        let print = ZoomModel.printRect(around: picture(model))
-        // Width binds: 24 points of paper either side, the print centred.
-        XCTAssertEqual(print.minX, 24, accuracy: 1e-6)
-        XCTAssertEqual(print.maxX, 1170, accuracy: 1e-6)
-        XCTAssertEqual(print.midY, 417, accuracy: 1e-6)
-        XCTAssertGreaterThanOrEqual(print.minY, 24)
-        // The margin is a share of the picture's width, deeper at the bottom.
         let shown = picture(model)
-        XCTAssertEqual(shown.minX - print.minX, shown.width * 0.02, accuracy: 1e-6)
-        XCTAssertEqual(print.maxY - shown.maxY, shown.width * 0.0667, accuracy: 1e-6)
+        XCTAssertEqual(shown.width, 1194 * 0.96, accuracy: 1e-6)
+        XCTAssertEqual(shown.minX, 23.88, accuracy: 1e-6)
+        XCTAssertEqual(shown.minY, 58.8, accuracy: 1e-6)
+        XCTAssertEqual(shown.midX, 597, accuracy: 1e-6)
+        XCTAssertEqual(shown.midY, 417, accuracy: 1e-6)
         XCTAssertEqual(model.paper, 1)
+    }
+
+    func test_held_atRest_doesNotPan() {
+        // The paper is the view at rest: there is nowhere to pan it to.
+        var model = ZoomModel()
+        model.hold(viewSize: iPad, videoSize: mac)
+        model.pan(by: CGSize(width: 300, height: -300), viewSize: iPad, videoSize: mac)
+        XCTAssertEqual(model.offset, .zero)
     }
 
     func test_held_pinchingOut_stopsAtTheRest() {
@@ -292,22 +298,19 @@ final class ZoomModelTests: XCTestCase {
         let rest = model
         model.pinch(by: 0.5, anchor: CGPoint(x: 597, y: 417), viewSize: iPad, videoSize: mac)
         XCTAssertEqual(model.scale, rest.scale, accuracy: 1e-9)
-        XCTAssertEqual(model.offset.height, rest.offset.height, accuracy: 1e-9)
+        XCTAssertEqual(model.offset, .zero)
     }
 
     func test_held_zoomedIn_theMarginZoomsWithThePicture_andPanningStopsAtThePaperEdge() {
+        // Figma v3.2, H2: zoomed 1.6× toward the bottom left, the margin is
+        // 1.6× the rest's, and the paper's corner is at the view's.
         var model = ZoomModel()
         model.hold(viewSize: iPad, videoSize: mac)
-        model.pinch(by: 3, anchor: CGPoint(x: 597, y: 417), viewSize: iPad, videoSize: mac)
-        model.pan(by: CGSize(width: 5000, height: 5000), viewSize: iPad, videoSize: mac)
+        model.pinch(by: 1.6, anchor: CGPoint(x: 597, y: 417), viewSize: iPad, videoSize: mac)
+        model.pan(by: CGSize(width: 5000, height: -5000), viewSize: iPad, videoSize: mac)
         let shown = picture(model)
-        let print = ZoomModel.printRect(around: shown)
-        // The print's top-left corner is at the view's: the margin shows, as
-        // wide as the zoomed picture makes it, and no further.
-        XCTAssertEqual(print.minX, 0, accuracy: 1e-6)
-        XCTAssertEqual(print.minY, 0, accuracy: 1e-6)
-        XCTAssertEqual(shown.minX, shown.width * 0.02, accuracy: 1e-6)
-        XCTAssertGreaterThan(shown.minX, 24 * 2)
+        XCTAssertEqual(shown.minX, 23.88 * 1.6, accuracy: 1e-6)
+        XCTAssertEqual(834 - shown.maxY, 58.8 * 1.6, accuracy: 1e-6)
     }
 
     func test_held_reset_goesBackToTheRest() {
@@ -323,8 +326,7 @@ final class ZoomModelTests: XCTestCase {
         var model = ZoomModel()
         model.pinch(by: 2, anchor: CGPoint(x: 597, y: 417), viewSize: iPad, videoSize: mac)
         model.hold(viewSize: iPad, videoSize: mac)
-        let rest = ZoomModel.printRest(videoSize: mac, in: iPad)
-        XCTAssertEqual(model.scale, 2 * rest.scale, accuracy: 1e-9)
+        XCTAssertEqual(model.scale, 2 * ZoomModel.printScale, accuracy: 1e-9)
     }
 
     func test_release_fromTheRest_isTheLiveFit() {
@@ -340,7 +342,6 @@ final class ZoomModelTests: XCTestCase {
         held.hold(viewSize: iPad, videoSize: mac)
         let half = ZoomModel.blend(live, held, progress: 0.5)
         XCTAssertEqual(half.scale, (1 + held.scale) / 2, accuracy: 1e-9)
-        XCTAssertEqual(half.offset.height, held.offset.height / 2, accuracy: 1e-9)
         XCTAssertEqual(half.paper, 0.5, accuracy: 1e-9)
         XCTAssertEqual(half.rest, held.rest)
     }
