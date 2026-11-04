@@ -19,13 +19,16 @@ struct HelloMessage: Equatable {
     /// The sender's own name: the Mac's from Sharing settings, the iPad's as
     /// its user set it. Shown by the other side; at most 60 characters.
     var name: String?
-    /// The sender's install id. The iPad's keys everything the Mac remembers
-    /// about it (its rounds, a frame it froze, whether it is trusted); the
-    /// Mac's tells the iPad that a new connection is the same Mac coming back,
-    /// which it adopts without asking (section 5.6).
+    /// iPad only: its install id, which keys everything the Mac remembers
+    /// about it (its rounds, a frame it froze, whether it is trusted).
     var installID: String?
     /// iPad only: "iPad" or "iPhone", for copy that names the device.
     var device: String?
+    /// iPad: a fresh random token for this session, sent only on its own
+    /// connection. Mac: the token from the iPad's last hello, when it dials
+    /// that iPad again, so the iPad knows the newcomer is the Mac it was
+    /// mirroring and lets it back in without asking (section 5.6).
+    var resume: String? = nil
 }
 
 extension HelloMessage {
@@ -37,6 +40,13 @@ extension HelloMessage {
         self.name = (json["name"] as? String).flatMap(Self.displayName)
         self.installID = (json["id"] as? String).flatMap { $0.isEmpty ? nil : $0 }
         self.device = (json["device"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+        self.resume = (json["resume"] as? String).flatMap { $0.isEmpty ? nil : String($0.prefix(64)) }
+    }
+
+    /// 128 random bits, hex.
+    static func makeResumeToken() -> String {
+        var generator = SystemRandomNumberGenerator()
+        return (0..<4).map { _ in String(format: "%08x", UInt32.random(in: .min ... .max, using: &generator)) }.joined()
     }
 
     /// The peer's name as something safe to show: control and formatting
@@ -68,6 +78,7 @@ extension HelloMessage {
         if let name { dict["name"] = String(name.prefix(CanvasWire.macNameMaxCharacters)) }
         if let installID { dict["id"] = installID }
         if let device { dict["device"] = device }
+        if let resume { dict["resume"] = resume }
         return dict
     }
 }

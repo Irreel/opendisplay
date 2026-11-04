@@ -107,6 +107,9 @@ final class MirrorLink: CanvasOutbound, @unchecked Sendable {
         didSet { if phase != oldValue { delegate?.link(self, didChangePhase: phase) } }
     }
     private(set) var peer: HelloMessage?
+    /// The token the iPad's last hello issued, presented on the next dial so
+    /// a reconnect is not taken for another Mac (stream queue).
+    private var resumeToken: String?
     private var connection: NWConnection?
     private var transport: LinkTransport?
     /// Bumped per connection: anything still in flight for an older one (a
@@ -139,11 +142,11 @@ final class MirrorLink: CanvasOutbound, @unchecked Sendable {
     private var needsKeyframe = true
     private var encodeFailures = LogThrottle(interval: 5)
 
-    init(id: String = UUID().uuidString, queue: DispatchQueue, macName: String?, macID: String? = nil,
+    init(id: String = UUID().uuidString, queue: DispatchQueue, macName: String?,
          frames: CleanFrameStore, quality: StreamQuality = .stored, port: UInt16 = CanvasWire.port) {
         self.id = id
         self.queue = queue
-        self.hello = HelloMessage(version: CanvasWire.version, role: .mac, name: macName, installID: macID)
+        self.hello = HelloMessage(version: CanvasWire.version, role: .mac, name: macName)
         self.frames = frames
         self.quality = quality
         self.port = port
@@ -394,6 +397,8 @@ final class MirrorLink: CanvasOutbound, @unchecked Sendable {
                 break
             }
         }
+        var hello = self.hello
+        hello.resume = resumeToken
         if let frame = WireCodec.message(CanvasWire.hello, hello.json) {
             connection.send(content: frame, completion: .contentProcessed { _ in })
         }
@@ -565,6 +570,7 @@ final class MirrorLink: CanvasOutbound, @unchecked Sendable {
             return
         }
         peer = hello
+        resumeToken = hello.resume
         attempts = 0
         peerAsleep = false
         phase = .streaming(transport)

@@ -50,17 +50,25 @@ final class LinkMessagesTests: XCTestCase {
     /// waits for the user whatever the session runs on. Plugging a cable in
     /// takes over, and the Mac being mirrored comes back without a question.
     func test_whoTakesTheSessionAtOnceAndWhoIsAskedAbout() {
-        func admit(_ current: String, _ currentID: String?, _ newcomer: String, _ newcomerID: String?) -> CanvasReceiver.Admission {
-            CanvasReceiver.admission(currentTransport: current, currentMacID: currentID,
-                                     newcomerTransport: newcomer, newcomerMacID: newcomerID)
+        func admit(_ current: String, _ currentToken: String?, _ newcomer: String, _ newcomerToken: String?) -> CanvasReceiver.Admission {
+            CanvasReceiver.admission(currentTransport: current, currentResumeToken: currentToken,
+                                     newcomerTransport: newcomer, newcomerResumeToken: newcomerToken)
         }
-        XCTAssertEqual(admit("USB", "MAC-A", "WiFi", "MAC-B"), .ask)
-        XCTAssertEqual(admit("WiFi", "MAC-A", "WiFi", "MAC-B"), .ask)
-        XCTAssertEqual(admit("WiFi", "MAC-A", "WiFi", nil), .ask)
+        XCTAssertEqual(admit("WiFi", "T1", "WiFi", "T1"), .adopt, "the session's own Mac, reconnecting")
+        XCTAssertEqual(admit("WiFi", "T1", "WiFi", "T2"), .ask)
+        XCTAssertEqual(admit("WiFi", "T1", "WiFi", nil), .ask)
         XCTAssertEqual(admit("WiFi", nil, "WiFi", nil), .ask)
-        XCTAssertEqual(admit("WiFi", "MAC-A", "WiFi", "MAC-A"), .adopt)
-        XCTAssertEqual(admit("USB", "MAC-A", "WiFi", "MAC-A"), .adopt)
-        XCTAssertEqual(admit("WiFi", "MAC-A", "USB", "MAC-B"), .adopt)
+        XCTAssertEqual(admit("USB", "T1", "WiFi", "T1"), .ask, "a cabled session is never taken from WiFi unasked")
+        XCTAssertEqual(admit("USB", "T1", "WiFi", nil), .ask)
+        XCTAssertEqual(admit("WiFi", "T1", "USB", nil), .adopt, "plugging a cable in takes over")
+    }
+
+    func test_resumeTokensAreFreshAndRoundTrip() {
+        let first = HelloMessage.makeResumeToken()
+        XCTAssertEqual(first.count, 32)
+        XCTAssertNotEqual(first, HelloMessage.makeResumeToken())
+        let hello = HelloMessage(version: 1, role: .ipad, name: nil, installID: "ID", device: "iPad", resume: first)
+        XCTAssertEqual(HelloMessage(json: hello.json)?.resume, first)
     }
 
     func test_byeRoundTripsAndAnUnknownReasonIsQuit() {

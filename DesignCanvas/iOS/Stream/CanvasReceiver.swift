@@ -119,6 +119,9 @@ final class CanvasReceiver: ObservableObject {
         var sawLegacyFrame = false
         /// The hello this peer was adopted with, once it is the session.
         var hello: HelloMessage?
+        /// The token this session's hello issued; a newcomer presenting it is
+        /// this Mac reconnecting.
+        var resumeToken: String?
         /// A WiFi hello held while the user is asked whether to switch to it,
         /// and the request the answer must name.
         var heldHello: HelloMessage?
@@ -423,8 +426,8 @@ final class CanvasReceiver: ObservableObject {
             return
         }
         if let current = session,
-           Self.admission(currentTransport: current.transport, currentMacID: current.hello?.installID,
-                          newcomerTransport: peer.transport, newcomerMacID: hello.installID) == .ask {
+           Self.admission(currentTransport: current.transport, currentResumeToken: current.resumeToken,
+                          newcomerTransport: peer.transport, newcomerResumeToken: hello.resume) == .ask {
             // One question at a time: a second Mac asking meanwhile is told
             // the iPad is in use. So is one asking soon after the user said
             // no: an unauthenticated peer must not be able to repeat the
@@ -498,14 +501,17 @@ final class CanvasReceiver: ObservableObject {
     /// Whether a newcomer takes the session at once or the user is asked.
     /// Nothing on the link is authenticated yet, and anything on the LAN can
     /// dial the iPad and say hello as a Mac. A cable is physical, so plugging
-    /// one in takes over; the Mac already being mirrored, coming back on a
-    /// new connection, is let straight back in; any other Mac over WiFi waits
-    /// for the user. The real fix is a pairing step (spec/TODOS.md, encrypted
-    /// WiFi transport).
-    static func admission(currentTransport: String, currentMacID: String?,
-                          newcomerTransport: String, newcomerMacID: String?) -> Admission {
+    /// one in takes over. A WiFi session's own Mac, reconnecting with the
+    /// one-time token this iPad gave it on that connection, is let straight
+    /// back in; nothing a Mac merely says about itself is. Everything else
+    /// over WiFi waits for the user, a cabled session always. The real fix is
+    /// a pairing step (spec/TODOS.md, encrypted WiFi transport).
+    static func admission(currentTransport: String, currentResumeToken: String?,
+                          newcomerTransport: String, newcomerResumeToken: String?) -> Admission {
         if newcomerTransport == "USB" { return .adopt }
-        if let newcomerMacID, newcomerMacID == currentMacID { return .adopt }
+        if currentTransport != "USB", let token = newcomerResumeToken, token == currentResumeToken {
+            return .adopt
+        }
         return .ask
     }
 
@@ -520,9 +526,11 @@ final class CanvasReceiver: ObservableObject {
         }
         session = peer
         peer.hello = hello
+        peer.resumeToken = HelloMessage.makeResumeToken()
         resetStream()
         let me = HelloMessage(version: CanvasWire.version, role: .ipad, name: configuration.name,
-                              installID: configuration.installID, device: configuration.deviceKind)
+                              installID: configuration.installID, device: configuration.deviceKind,
+                              resume: peer.resumeToken)
         sendLinkMessage(CanvasWire.hello, me.json, on: peer.connection)
         Log.info("receiver: adopted \(hello.name ?? "a Mac") over \(peer.transport)")
         let transport = peer.transport

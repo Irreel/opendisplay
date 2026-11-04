@@ -93,8 +93,9 @@ its user first (section 5.6).
 | `v` | number | the sender's wire version |
 | `role` | `"mac"` or `"ipad"` | |
 | `name` | string, optional, ≤ 60 characters | the sender's name, for display only: a claim, never proof |
-| `id` | string | the sender's install id |
+| `id` | string | iPad only: its install id |
 | `device` | `"iPad"` or `"iPhone"` | iPad only |
+| `resume` | string, optional | iPad: a fresh random token for this session (128 bits, hex). Mac: the token from that iPad's last `hello`, when it dials it again |
 
 If `v` differs from its own, the receiving side sends `bye` with reason
 `version` and closes. Over WiFi the Mac streams only to an iPad whose `id`
@@ -142,10 +143,14 @@ iPad and say `hello` as a Mac. So while the iPad mirrors a Mac, a newcomer's
 `hello` is handled like this:
 
 - over USB: adopted at once (a cable is physical; plugging one in is intent);
-- with the same `id` as the Mac being mirrored: adopted at once (that Mac
-  coming back on a new connection);
-- otherwise (another Mac, over WiFi): held, and the iPad asks its user
-  whether to switch, saying whether the current Mac is on the cable.
+- over WiFi, while the session also runs over WiFi, presenting the `resume`
+  token the iPad gave that session: adopted at once (the session's own Mac
+  coming back on a new connection). The token goes only to that connection
+  and is replaced at every adoption, so a copied one is spent; nothing a Mac
+  merely says about itself (`name`) counts;
+- otherwise (another Mac over WiFi, or any WiFi newcomer while the session
+  runs over the cable): held, and the iPad asks its user whether to switch,
+  saying whether the current Mac is on the cable.
 
 `asking` has no fields and tells the held Mac it is waiting on that
 question. Until the answer, the iPad keeps the connection as a candidate and

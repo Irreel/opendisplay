@@ -78,11 +78,9 @@ final class LinkLoopbackTests: XCTestCase {
         return (receiver, port)
     }
 
-    private func startLink(to port: UInt16, macName: String = "Test Mac", macID: String? = nil,
-                           advertisedID: String? = nil,
+    private func startLink(to port: UInt16, macName: String = "Test Mac", advertisedID: String? = nil,
                            delegate: RecordingDelegate, frames: CleanFrameStore = CleanFrameStore()) -> MirrorLink {
-        let link = MirrorLink(queue: queue, macName: macName, macID: macID ?? "ID-\(macName)",
-                              frames: frames, quality: .fast)
+        let link = MirrorLink(queue: queue, macName: macName, frames: frames, quality: .fast)
         link.delegate = delegate
         links.append(link)
         let endpoint = NWEndpoint.hostPort(host: "127.0.0.1", port: NWEndpoint.Port(rawValue: port)!)
@@ -369,19 +367,69 @@ final class LinkLoopbackTests: XCTestCase {
         waitUntil("the first Mac to stand aside") { first.phase == .yielded }
     }
 
-    /// The Mac being mirrored, back on a new connection (a WiFi blip, its
-    /// watchdog), is let straight in: it is not another Mac.
-    func test_theSameMacReconnectingOverWiFiIsNotAskedAbout() throws {
-        let (receiver, port) = try startReceiver(transportOf: { _ in "WiFi" })
-        let before = RecordingDelegate()
-        _ = startLink(to: port, macName: "Zhao's Mac", macID: "MAC-1", delegate: before)
-        guard waitUntil("the Mac", { isStreaming(before.phase) && receiver.connected }) else { return }
+    /// A Mac spoken by hand, so a test can hold one connection open while
+    /// another arrives — which a real link never does to itself.
+    private final class RawMac {
+        let connection: NWConnection
+        private let lock = NSLock()
+        private var reader = FrameReader()
+        private var stored: [WireMessage] = []
 
-        let again = RecordingDelegate()
-        _ = startLink(to: port, macName: "Zhao's Mac", macID: "MAC-1", delegate: again)
-        waitUntil("the reconnect to stream") { isStreaming(again.phase) }
-        XCTAssertFalse(again.phases.contains(.awaitingApproval(.wifi)))
+        init(port: UInt16, queue: DispatchQueue) {
+            connection = NWConnection(host: "127.0.0.1", port: NWEndpoint.Port(rawValue: port)!, using: .tcp)
+            connection.start(queue: queue)
+            read()
+        }
+
+        var messages: [WireMessage] { lock.withLock { stored } }
+
+        func first(_ type: String) -> WireMessage? { messages.first { $0.type == type } }
+
+        func sayHello(name: String, resume: String?) {
+            let hello = HelloMessage(version: CanvasWire.version, role: .mac, name: name, resume: resume)
+            connection.send(content: WireCodec.message(CanvasWire.hello, hello.json), completion: .contentProcessed { _ in })
+        }
+
+        private func read() {
+            connection.receive(minimumIncompleteLength: 1, maximumLength: 65536) { [weak self] data, _, isComplete, error in
+                guard let self else { return }
+                self.lock.withLock {
+                    if let data { self.reader.append(data) }
+                    while let frame = try? self.reader.next() {
+                        if frame.kind == FrameKind.message.rawValue, let message = try? WireCodec.message(from: frame.body) {
+                            self.stored.append(message)
+                        }
+                    }
+                }
+                if error == nil, !isComplete { self.read() }
+            }
+        }
+    }
+
+    /// A WiFi session's own Mac, back on a new connection (a WiFi blip, its
+    /// watchdog) with the token the iPad gave it, is let straight in — and
+    /// the token works once: what a sniffer copies is spent.
+    func test_theSessionsOwnMacComesBackWithItsTokenUnasked_andTheTokenWorksOnce() throws {
+        let (receiver, port) = try startReceiver(transportOf: { _ in "WiFi" })
+        let first = RawMac(port: port, queue: queue)
+        defer { first.connection.cancel() }
+        first.sayHello(name: "Zhao's Mac", resume: nil)
+        guard waitUntil("the first hello back", { first.first(CanvasWire.hello) != nil }) else { return }
+        let token = try XCTUnwrap(first.first(CanvasWire.hello).flatMap { HelloMessage(json: $0.object) }?.resume)
+
+        let back = RawMac(port: port, queue: queue)
+        defer { back.connection.cancel() }
+        back.sayHello(name: "Zhao's Mac", resume: token)
+        waitUntil("the reconnect to be adopted") { back.first(CanvasWire.hello) != nil }
+        XCTAssertNil(back.first(CanvasWire.asking))
         XCTAssertNil(receiver.switchRequest)
+        waitUntil("the old connection to be told") { first.first(CanvasWire.bye) != nil }
+
+        let replay = RawMac(port: port, queue: queue)
+        defer { replay.connection.cancel() }
+        replay.sayHello(name: "Zhao's Mac", resume: token)
+        waitUntil("the spent token to get a question") { replay.first(CanvasWire.asking) != nil }
+        XCTAssertNil(replay.first(CanvasWire.hello))
     }
 
     // MARK: - Leaving
