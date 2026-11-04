@@ -487,6 +487,10 @@ struct CanvasScreen: View {
         // The chrome alone is animated; the sketch surface in the mirror layer
         // is not (see the note on `body`).
         .animation(.spring(response: 0.45, dampingFraction: 0.82), value: isInDrawMode)
+        // A panel docked somewhere new makes room for itself smoothly: the
+        // prompt pill narrows or widens and the rows move with it, rather
+        // than jumping when the stored edge changes.
+        .animation(.spring(response: 0.35, dampingFraction: 0.82), value: storedPanelEdge)
         .animation(.spring(response: 0.4, dampingFraction: 0.85), value: canvas.replyNotification)
         .onPreferenceChange(InkSwatchFrameKey.self) { inkSwatch = $0 }
         .animation(.spring(response: 0.35, dampingFraction: 0.8), value: showInks)

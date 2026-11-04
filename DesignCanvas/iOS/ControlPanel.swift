@@ -111,10 +111,11 @@ struct ControlPanel<Content: View>: View {
             : AnyLayout(HStackLayout(spacing: 2))
         controls { content(vertical) }
         .padding(6)
-        .canvasGlass(in: Self.shape)
         // The grabber sits inside the panel, in its margin, on the side that
         // faces into the screen: along the top of a row docked at the bottom,
         // the right of a column on the left. The panel does not grow for it.
+        // It goes on before the glass so it is part of the panel's surface:
+        // on top of the glass it shows before the glass has formed.
         .overlay(alignment: edge.opposite.alignment) {
             if showsHandle {
                 handle(vertical: vertical)
@@ -122,6 +123,7 @@ struct ControlPanel<Content: View>: View {
                     .transition(.opacity)
             }
         }
+        .canvasGlass(in: Self.shape)
         .contentShape(Self.shape)
         .overlay(alignment: .top) { positionControl }
         .offset(drag)
@@ -142,6 +144,8 @@ struct ControlPanel<Content: View>: View {
         .animation(.spring(response: 0.3, dampingFraction: 0.85), value: drag == .zero)
         .animation(.easeInOut(duration: 0.25), value: hinting)
         .task {
+            // Once the panel has come in, not while it is still on its way.
+            try? await Task.sleep(nanoseconds: 450_000_000)
             hinting = true
             try? await Task.sleep(nanoseconds: 1_500_000_000)
             hinting = false
