@@ -15,12 +15,6 @@ import SwiftUI
 struct DesignCanvasMacApp: App {
     @StateObject private var model = AppModel(engine: MirrorEngine())
 
-    init() {
-        // Light appearance only for now: the dark one isn't maintained. This
-        // covers the menu, the Details and Settings windows and the pairing panel.
-        NSApplication.shared.appearance = NSAppearance(named: .aqua)
-    }
-
     var body: some Scene {
         MenuBarExtra {
             MenuBarView(model: model)
