@@ -249,8 +249,10 @@ final class MirrorEngine: SenderEngine {
     private func publish() {
         let latest = served.map { entry -> EngineDevice in
             let device = visible.first(where: { entry.matches($0) })
+            // The cable's lockdown name first: an iPad's own idea of its name
+            // is a generic "iPad" on iPadOS 16 and later unless its user set one.
             return EngineDevice(id: entry.link.id,
-                                name: entry.peerName ?? device?.name ?? "iPad",
+                                name: device?.usb?.name ?? entry.peerName ?? device?.name ?? "iPad",
                                 state: Self.state(for: entry.phase),
                                 onUSB: Self.onUSB(entry.phase, device: device))
         }
