@@ -220,7 +220,11 @@ final class MirrorEngine: SenderEngine {
                 } else if now.timeIntervalSince(entry.lastSeen) < Self.goneAfter {
                     kept.append(entry)
                 } else {
-                    Log.info("engine: \(entry.peerName ?? device.name) has no path it may be dialed on — dropping its link")
+                    Log.info("engine: \(entry.peerName ?? device.name) has no path it may be dialed on — dropping its link"
+                             + " (matched \(device.id): usb \(device.usb != nil), service \(device.service != nil),"
+                             + " service id \(device.service?.installID ?? "none"), link id \(entry.installID ?? "none"),"
+                             + " paired \(device.installID.map { policy.paired.contains($0) } ?? false),"
+                             + " clicked \(entry.clickedOverWiFi))")
                     entry.link.stop()
                     router.remove(entry.link)
                 }

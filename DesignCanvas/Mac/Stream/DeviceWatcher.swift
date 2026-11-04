@@ -12,6 +12,9 @@ final class DeviceWatcher {
 
     private var usbWatcher: UsbmuxDeviceWatcher?
     private var browser: NWBrowser?
+    /// Each service's install id, by name, while it is advertised
+    /// (`DeviceDirectory.keepingInstallIDs`).
+    private var knownInstallIDs: [String: String] = [:]
 
     func start() {
         guard usbWatcher == nil else { return }
@@ -27,8 +30,11 @@ final class DeviceWatcher {
         browser.browseResultsChangedHandler = { [weak self] results, _ in
             let entries = results.compactMap(Self.entry(from:))
             DispatchQueue.main.async {
-                guard let self, entries != self.services else { return }
-                self.services = entries
+                guard let self else { return }
+                let kept = DeviceDirectory.keepingInstallIDs(entries, known: self.knownInstallIDs)
+                self.knownInstallIDs = kept.known
+                guard kept.services != self.services else { return }
+                self.services = kept.services
                 self.onChange?()
             }
         }
@@ -47,6 +53,7 @@ final class DeviceWatcher {
         usbWatcher = nil
         usb = []
         services = []
+        knownInstallIDs = [:]
     }
 
     private nonisolated static func entry(from result: NWBrowser.Result) -> ServiceEntry? {

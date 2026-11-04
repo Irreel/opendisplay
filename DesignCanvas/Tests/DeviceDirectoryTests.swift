@@ -48,6 +48,27 @@ final class DeviceDirectoryTests: XCTestCase {
         XCTAssertEqual(devices.map(\.id), ["id:ID1", "id:ID2"])
     }
 
+    func test_aServiceKeepsItsInstallIdWhenAnUpdateComesWithoutItsRecord() {
+        let first = DeviceDirectory.keepingInstallIDs([service("Studio iPad", id: "ID1")], known: [:])
+        // The cable is unplugged: the same service, reported again with no record.
+        let second = DeviceDirectory.keepingInstallIDs([service("Studio iPad", id: nil)], known: first.known)
+        XCTAssertEqual(second.services.map(\.installID), ["ID1"])
+    }
+
+    func test_aServiceThatLeavesTakesItsRememberedInstallIdWithIt() {
+        let first = DeviceDirectory.keepingInstallIDs([service("Studio iPad", id: "ID1")], known: [:])
+        let gone = DeviceDirectory.keepingInstallIDs([], known: first.known)
+        let back = DeviceDirectory.keepingInstallIDs([service("Studio iPad", id: nil)], known: gone.known)
+        XCTAssertNil(back.services[0].installID)
+    }
+
+    func test_aRecordThatArrivesWinsOverTheRememberedInstallId() {
+        let first = DeviceDirectory.keepingInstallIDs([service("Studio iPad", id: "ID1")], known: [:])
+        let second = DeviceDirectory.keepingInstallIDs([service("Studio iPad", id: "ID2")], known: first.known)
+        XCTAssertEqual(second.services.map(\.installID), ["ID2"])
+        XCTAssertEqual(second.known, ["Studio iPad": "ID2"])
+    }
+
     func test_unknownDevicesAreKeyedByHowTheyCanBeReached() {
         let devices = DeviceDirectory.merge(usb: [USBEntry(udid: "U9", name: nil)],
                                             services: [service("Kitchen iPad", id: nil)],

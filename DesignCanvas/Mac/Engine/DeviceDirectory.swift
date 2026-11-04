@@ -78,6 +78,24 @@ enum DeviceDirectory {
         }
         return devices
     }
+
+    /// Keeps each service's install id across a browse update that comes
+    /// without its TXT record. Unplugging the cable is one: the service loses
+    /// the cable's interfaces, the browser reports it again with no record and
+    /// does not resolve it again, and the paired iPad would read as a stranger
+    /// that may not be dialed over WiFi. Bonjour names are unique on the
+    /// network, so the name holds the id until the service is gone; the
+    /// session proves the iPad's key whatever the record says.
+    static func keepingInstallIDs(_ services: [ServiceEntry],
+                                  known: [String: String]) -> (services: [ServiceEntry], known: [String: String]) {
+        var kept = services
+        var stillKnown: [String: String] = [:]
+        for index in kept.indices {
+            if kept[index].installID == nil { kept[index].installID = known[kept[index].name] }
+            if let id = kept[index].installID { stillKnown[kept[index].name] = id }
+        }
+        return (kept, stillKnown)
+    }
 }
 
 /// When the Mac connects to an iPad without being asked.
