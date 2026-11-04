@@ -63,10 +63,12 @@ final class LinkLoopbackTests: XCTestCase {
 
     /// A receiver listening on a free port, and that port.
     private func startReceiver(name: String = "Test iPad",
-                               transportOf: ((NWConnection) -> String)? = nil) throws -> (CanvasReceiver, UInt16) {
+                               transportOf: ((NWConnection) -> String)? = nil,
+                               resumeSilence: TimeInterval? = nil) throws -> (CanvasReceiver, UInt16) {
         var configuration = CanvasReceiver.Configuration(port: 0, serviceType: nil, installID: "INSTALL-1",
                                                          deviceKind: "iPad", name: name)
         if let transportOf { configuration.transportOf = transportOf }
+        if let resumeSilence { configuration.resumeSilence = resumeSilence }
         let receiver = CanvasReceiver(configuration: configuration)
         var port: UInt16?
         receiver.onListening = { port = $0 }
@@ -406,16 +408,20 @@ final class LinkLoopbackTests: XCTestCase {
         }
     }
 
-    /// A WiFi session's own Mac, back on a new connection (a WiFi blip, its
-    /// watchdog) with the token the iPad gave it, is let straight in — and
-    /// the token works once: what a sniffer copies is spent.
+    /// A WiFi session's own Mac, back on a new connection after the old one
+    /// went silent (a WiFi blip, its watchdog) with the token the iPad gave
+    /// it, is let straight in — and the token works once: what a sniffer
+    /// copies is spent. (A Mac spoken by hand never pings, so the old session
+    /// goes silent on its own; the silence needed is shortened here.)
     func test_theSessionsOwnMacComesBackWithItsTokenUnasked_andTheTokenWorksOnce() throws {
-        let (receiver, port) = try startReceiver(transportOf: { _ in "WiFi" })
+        let (receiver, port) = try startReceiver(transportOf: { _ in "WiFi" }, resumeSilence: 0.3)
         let first = RawMac(port: port, queue: queue)
         defer { first.connection.cancel() }
         first.sayHello(name: "Zhao's Mac", resume: nil)
         guard waitUntil("the first hello back", { first.first(CanvasWire.hello) != nil }) else { return }
         let token = try XCTUnwrap(first.first(CanvasWire.hello).flatMap { HelloMessage(json: $0.object) }?.resume)
+        let silent = Date().addingTimeInterval(0.5)
+        while Date() < silent { RunLoop.current.run(until: Date().addingTimeInterval(0.01)) }
 
         let back = RawMac(port: port, queue: queue)
         defer { back.connection.cancel() }
@@ -425,6 +431,8 @@ final class LinkLoopbackTests: XCTestCase {
         XCTAssertNil(receiver.switchRequest)
         waitUntil("the old connection to be told") { first.first(CanvasWire.bye) != nil }
 
+        let quiet = Date().addingTimeInterval(0.5)
+        while Date() < quiet { RunLoop.current.run(until: Date().addingTimeInterval(0.01)) }
         let replay = RawMac(port: port, queue: queue)
         defer { replay.connection.cancel() }
         replay.sayHello(name: "Zhao's Mac", resume: token)

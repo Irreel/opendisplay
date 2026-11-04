@@ -143,11 +143,13 @@ iPad and say `hello` as a Mac. So while the iPad mirrors a Mac, a newcomer's
 `hello` is handled like this:
 
 - over USB: adopted at once (a cable is physical; plugging one in is intent);
-- over WiFi, while the session also runs over WiFi, presenting the `resume`
-  token the iPad gave that session: adopted at once (the session's own Mac
-  coming back on a new connection). The token goes only to that connection
-  and is replaced at every adoption, so a copied one is spent; nothing a Mac
-  merely says about itself (`name`) counts;
+- over WiFi, while the session also runs over WiFi and has received nothing
+  for 4 s, presenting the `resume` token the iPad gave that session: adopted
+  at once (the session's own Mac coming back after its link died). The token
+  goes only to that connection and is replaced at every adoption; it still
+  crosses WiFi in the clear, which is why it cannot take a session that is
+  alive. Nothing a Mac merely says about itself (`name`) counts. The Mac
+  forgets its token when the WiFi service it dials changes;
 - otherwise (another Mac over WiFi, or any WiFi newcomer while the session
   runs over the cable): held, and the iPad asks its user whether to switch,
   saying whether the current Mac is on the cable.

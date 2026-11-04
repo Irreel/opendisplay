@@ -172,6 +172,9 @@ final class MirrorLink: CanvasOutbound, @unchecked Sendable {
             let old = self.paths
             self.paths = newPaths
             guard newPaths != old else { return }
+            // A token belongs to the iPad that issued it, on the service it
+            // was dialed at.
+            if newPaths.wifi != old.wifi { self.resumeToken = nil }
             switch self.phase {
             case .idle, .retrying, .yielded:
                 self.attempts = 0

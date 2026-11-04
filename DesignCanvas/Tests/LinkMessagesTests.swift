@@ -50,11 +50,15 @@ final class LinkMessagesTests: XCTestCase {
     /// waits for the user whatever the session runs on. Plugging a cable in
     /// takes over, and the Mac being mirrored comes back without a question.
     func test_whoTakesTheSessionAtOnceAndWhoIsAskedAbout() {
-        func admit(_ current: String, _ currentToken: String?, _ newcomer: String, _ newcomerToken: String?) -> CanvasReceiver.Admission {
+        func admit(_ current: String, _ currentToken: String?, _ newcomer: String, _ newcomerToken: String?,
+                   silentFor silence: TimeInterval = 10) -> CanvasReceiver.Admission {
             CanvasReceiver.admission(currentTransport: current, currentResumeToken: currentToken,
+                                     currentSilence: silence,
                                      newcomerTransport: newcomer, newcomerResumeToken: newcomerToken)
         }
         XCTAssertEqual(admit("WiFi", "T1", "WiFi", "T1"), .adopt, "the session's own Mac, reconnecting")
+        XCTAssertEqual(admit("WiFi", "T1", "WiFi", "T1", silentFor: 1), .ask,
+                       "a copied token cannot take a session that is still alive")
         XCTAssertEqual(admit("WiFi", "T1", "WiFi", "T2"), .ask)
         XCTAssertEqual(admit("WiFi", "T1", "WiFi", nil), .ask)
         XCTAssertEqual(admit("WiFi", nil, "WiFi", nil), .ask)

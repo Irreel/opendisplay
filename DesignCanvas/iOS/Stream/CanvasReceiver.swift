@@ -38,6 +38,8 @@ final class CanvasReceiver: ObservableObject {
         /// cable connections from loopback; tests swap this to stand in for
         /// a cable and a network on one machine.
         var transportOf: (NWConnection) -> String = CanvasReceiver.transport(of:)
+        /// `CanvasWire.resumeSilence`; tests shorten it.
+        var resumeSilence: TimeInterval = CanvasWire.resumeSilence
     }
 
     /// Another Mac asking over WiFi to take over from the one this iPad
@@ -427,6 +429,8 @@ final class CanvasReceiver: ObservableObject {
         }
         if let current = session,
            Self.admission(currentTransport: current.transport, currentResumeToken: current.resumeToken,
+                          currentSilence: Date().timeIntervalSince(current.lastReceived),
+                          resumeSilence: configuration.resumeSilence,
                           newcomerTransport: peer.transport, newcomerResumeToken: hello.resume) == .ask {
             // One question at a time: a second Mac asking meanwhile is told
             // the iPad is in use. So is one asking soon after the user said
@@ -502,14 +506,19 @@ final class CanvasReceiver: ObservableObject {
     /// Nothing on the link is authenticated yet, and anything on the LAN can
     /// dial the iPad and say hello as a Mac. A cable is physical, so plugging
     /// one in takes over. A WiFi session's own Mac, reconnecting with the
-    /// one-time token this iPad gave it on that connection, is let straight
-    /// back in; nothing a Mac merely says about itself is. Everything else
-    /// over WiFi waits for the user, a cabled session always. The real fix is
-    /// a pairing step (spec/TODOS.md, encrypted WiFi transport).
+    /// one-time token this iPad gave it on that connection after the session
+    /// went silent (which is when a real reconnect happens), is let straight
+    /// back in; nothing a Mac merely says about itself is. The token crosses
+    /// WiFi in the clear, so a copy can at most take a session that is
+    /// already dead. Everything else over WiFi waits for the user, a cabled
+    /// session always. The real fix is a pairing step (spec/TODOS.md,
+    /// encrypted WiFi transport).
     static func admission(currentTransport: String, currentResumeToken: String?,
+                          currentSilence: TimeInterval, resumeSilence: TimeInterval = CanvasWire.resumeSilence,
                           newcomerTransport: String, newcomerResumeToken: String?) -> Admission {
         if newcomerTransport == "USB" { return .adopt }
-        if currentTransport != "USB", let token = newcomerResumeToken, token == currentResumeToken {
+        if currentTransport != "USB", currentSilence >= resumeSilence,
+           let token = newcomerResumeToken, token == currentResumeToken {
             return .adopt
         }
         return .ask

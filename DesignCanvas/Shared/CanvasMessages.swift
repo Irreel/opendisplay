@@ -36,6 +36,11 @@ enum CanvasWire {
     /// away unasked for this long, so a LAN neighbour cannot wear the user
     /// down with prompts.
     static let switchRequestCooldown: TimeInterval = 60
+    /// A resume token is honoured only once the session it belongs to has
+    /// been silent this long: a real reconnect comes after the old link
+    /// died, and the token crosses WiFi in the clear, so a copy of it must
+    /// not be able to take a session that is still alive.
+    static let resumeSilence: TimeInterval = 4
 
     // Link
     static let hello = "hello"
