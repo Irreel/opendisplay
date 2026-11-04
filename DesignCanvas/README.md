@@ -184,8 +184,9 @@ says which one to update.
    the listener: it has no list of Macs and nothing to pick. Over **USB**,
    plugging the cable in connects on its own. Over **WiFi**, the iPad
    appears under **iPads** in the Mac app's menu — click **Connect** next
-   to it. That click is also what makes the Mac reconnect that iPad over
-   WiFi on its own from then on (a cable never does);
+   to it. The first time, by cable or WiFi, the two pair: both screens
+   show the same six-digit code; check it matches and tap **Pair** on both.
+   From then on the Mac reconnects that iPad on its own, over either;
    **Disconnect** stops both the session and the auto-reconnect. If the
    iPad is already mirroring another Mac, it asks before it switches (see
    "Security note"). Until a Mac connects, the iPad's waiting screen lists
@@ -271,27 +272,31 @@ says which one to update.
 
 ## Security note
 
-Nothing on the Mac-iPad link is authenticated or encrypted yet. Over USB
-that is fine: the cable is the proof. Over WiFi:
+**The Mac and the iPad pair once, and every session is authenticated and
+encrypted**, over USB and WiFi alike. The pattern is HomeKit's and AirPlay
+2's (`spec/wire-protocol.md` section 5.7):
 
-- **The Mac trusts an iPad on first use.** A WiFi iPad needs one click
-  (**Connect**, in the Mac app's menu) and is remembered by the install id
-  its Bonjour service advertises; from then on the Mac dials it whenever it
-  is advertised, and streams only to an iPad whose hello names that id. A
-  cable never extends that trust to WiFi. But the id is broadcast in the
-  clear, so **a LAN neighbour who advertises a remembered iPad's id can get
-  dialed, receive your screen, and push a sketch into your Claude Code
-  session**.
-- **Any Mac on the network can ask the iPad to mirror to it.** While the
-  iPad mirrors a Mac, another Mac over WiFi never takes over silently: the
-  iPad asks "Switch Macs?" and names the asking Mac only as a claim. No
-  answer within 30 s keeps the current Mac, and after a no the iPad turns
-  further requests away for a minute without asking. Plugging a cable in
-  still takes over at once.
+- **Pairing.** The first time a Mac and an iPad meet, both screens show the
+  same six-digit code. Check that they match and tap **Pair** on both; if
+  they differ, cancel: something is in between. Each device then remembers
+  the other's key, in its Keychain.
+- **Every session after that** proves both keys and encrypts everything,
+  the screen included. A device that cannot prove a paired key gets nothing:
+  no picture, no sketches. A paired iPad reconnects by itself over USB or
+  WiFi; one that fails its proof on WiFi shows **Not paired** in the menu
+  rather than starting a new pairing on its own.
+- **Starting a pairing takes intent:** plugging the iPad in, or clicking
+  **Connect** for it. On the iPad, after a pairing is cancelled or times
+  out, WiFi requests are turned away for a minute without asking.
+- **Switching Macs.** While the iPad mirrors one Mac, another paired Mac
+  over WiFi never takes over silently: the iPad asks "Switch Macs?" first.
+  Plugging a cable in takes over at once.
+- **Forget** a device on either side (the Mac's Details window, the iPad's
+  Connection details) and it has to pair again.
 
-**Prefer USB on a shared or untrusted network.** Encrypted WiFi transport
-with a real pairing step is tracked as future work in
-[`spec/TODOS.md`](spec/TODOS.md); it isn't built yet.
+What pairing does not cover: the iPad's name and the Mac's name are only
+what each device calls itself, so compare the code, not the name. And the
+Mac app trusts everything else running on the Mac (below).
 
 The daemon listens on `127.0.0.1:47100` only, which keeps other machines
 out — but binding to loopback does **not** keep a *browser* out. A page on
@@ -344,7 +349,7 @@ files. Treat the daemon as trusting everything already running on your Mac.
   mods and Start refuses it. The Mac and iPad apps must speak the same wire
   version: a pair that does not is not connected, and says which side to
   update. That includes any iPad or Mac app from before Design Canvas had
-  its own link (2026-11-03).
+  its own link, or before pairing (both 2026-11-03).
 - **The mod approves one thing on your behalf:** Claude Code reading the
   sketch for the round it is working on, from the store under
   `~/.claude/channels/design-canvas/`. Without that, the read opens a

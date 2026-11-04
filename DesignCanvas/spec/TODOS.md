@@ -2,51 +2,15 @@
 
 ## Design Canvas
 
-### Encrypted WiFi transport with a pairing step
+### Pair by typing a code, not only comparing one
 
-**What:** TLS on the Mac-iPad link with keys exchanged once at pairing (over the cable, or with a code shown on one device and typed on the other), so WiFi sessions can be neither spoofed nor sniffed: e.g. `NWProtocolTLS` with a pre-shared key or pinned per-device certificates.
+**What:** Let the iPad show a code that is typed on the Mac (as AirPlay and HomeKit do), inside a password-authenticated key exchange (SPAKE2 or SRP), as an alternative to comparing the code on both screens.
 
-**Why:** Nothing on the link is authenticated, which leaves LAN paths open. Anyone who advertises a trusted iPad's cleartext Bonjour id gets dialed, receives the Mac's screen, and can push a sketch into the user's Claude Code session. Any machine can ask the iPad to switch to it, which the user answers on the iPad without being able to tell who is asking. The resume token that lets a Mac back in after a dead link crosses WiFi in the clear. The Claude Code Channels reference also requires an authenticated sender before the permission relay can be declared, so this blocks permission prompts on the iPad.
+**Why:** Pairing since 2026-11-03 (`wire-protocol.md` section 5.7) compares a six-digit code on both screens, which is safe without a PAKE but asks for a tap on both devices. A typed code is one action, but safe only inside a PAKE, and CryptoKit has none, so it needs a vetted implementation.
 
-**Context:** The link is Design Canvas's own since 2026-11-03 (`wire-protocol.md`); OpenDisplay upstream tracks the same need for its own wire as roadmap issue #16. Both apps ship together, so this is a wire version bump with no migration. Start at `wire-protocol.md` sections 1, 5.1 and 5.6, `Mac/Stream/MirrorLink.swift` (dialing) and `iOS/Stream/CanvasReceiver.swift` (listening, adoption). With it, the switch question, the trust-on-first-use rules and the resume token's silence rule can all go. It also covers what the iPad cannot tell today: it takes any loopback connection as the cable, because usbmuxd delivers cable connections that way, so an app on the iPad itself could pose as a cabled Mac. Eng review 2026-09-16, decision 3A.
+**Context:** `Shared/Pairing.swift` (the pairing exchange), `Mac/App/PairingPanel.swift`, the iPad's alert in `CanvasScreen.swift`. Pairing also gates the permission relay on the iPad (the Claude Code Channels reference requires an authenticated sender), which is now possible. Eng review 2026-09-16, decision 3A.
 
-**Effort:** XL
-**Priority:** P1
-**Depends on:** None. Blocks: permission relay on the iPad.
-
-### MCP tool returning the composite as an image block
-
-**What:** `design_canvas_get_image(annotation_id)` on the channel server, returning the composite as an MCP image content block, as a second delivery path beside the file path.
-
-**Why:** The file-path form gives the daemon no signal that the model actually looked at the sketch; a tool call is logged. It also works in a sandboxed or remote Claude Code session where the path does not exist, and it is the interface a future embedded-agent backend would use.
-
-**Context:** Decided against for the MVP in technical_doc.md section 5.5 on contract stability and vendor precedent (fakechat sends a path). Build when replies show the model acting without reading the sketch, or when the embedded backend lands. Start in packages/server/src/channel/index.ts beside the reply tool; downscale server-side to about 1568 px before encoding.
-
-**Effort:** S
-**Priority:** P3
-**Depends on:** Reply tool shipped.
-
-### Measure batched sketches in one Claude Code turn (G10)
-
-**What:** A dogfooding protocol: send a second round while the first is being applied, ten times, and record whether the batched turn produces correct edits for both.
-
-**Why:** The Channels reference says events arriving mid-task are delivered together on the next turn. Whether two sketches in one turn yield good edits is unknown and decides whether the iPad should discourage sending while a round is unanswered.
-
-**Context:** G10 in technical_doc.md section 10. Run with the E2E harness and a real session once the MVP round works end to end.
-
-**Effort:** S
-**Priority:** P3
-**Depends on:** MVP round working end to end.
-
-### Pending-round TTL
-
-**What:** Mark `pending` rounds older than about 30 minutes as `expired` in the daemon sweep and never emit them; show `expired` in the rounds snapshot.
-
-**Why:** At-least-once delivery plus backlog replay plus Claude Code batching means sketches drawn on a UI that no longer exists replay after a Claude Code restart and get applied to moved-on source. With Stack cut, the iPad has no way to cancel a queued round.
-
-**Context:** Outside-voice finding 8 in the 2026-09-16 eng review; deferred by owner. The daemon already has a lease sweep (packages/server, claim lease 30 s) to extend. Revisit together with Stack.
-
-**Effort:** S
+**Effort:** M
 **Priority:** P3
 **Depends on:** None.
 
@@ -54,7 +18,7 @@
 
 **What:** A per-launch secret the Mac app gives the daemon and the mod (a 0600 file under the app's support folder, or the launch environment for sessions it starts), sent as a bearer token on every request and checked both ways: the daemon refuses requests without it, and the mod refuses a daemon that cannot show it.
 
-**Why:** The daemon trusts every process on the Mac (README, "Residual risk"). Anything local can register a session, make itself the target (`wasTarget`), and receive the iPad's sketches, or answer on the daemon's port first and hand the mod rounds of its own. Since 2026-11-03 the mod approves a sketch Read only for a composite whose real path is in the store's own layout, so a fake daemon can no longer have it read an arbitrary file unprompted; it can still inject sketches and notes.
+**Why:** The daemon trusts every process on the Mac (README, "Residual risk"). Anything local can register a session, make itself the target (`wasTarget`), and receive the iPad's sketches, or answer on the daemon's port first and hand the mod rounds of its own. Since 2026-11-03 the mod approves a sketch Read only for a composite whose real path is in the store's own layout, so a fake daemon can no longer have it read an arbitrary file unprompted; it can still inject sketches and notes. (The Mac-iPad link is paired and encrypted since the same day; this hop is the one left open.)
 
 **Context:** Raised by the automated security review on 2026-11-03. Start at `server/src/http/server.ts` (the sessions routes) and `mod/hooks/register.js` (`call`, `registerSession`). A session the user started by hand has no launch environment, so the mod needs a file it can read through `$.fs`.
 

@@ -30,7 +30,7 @@ Design Canvas removes capture by mirroring the Mac live, keeps ai.cst.2's agent 
 4. Claude Code's outcome (applied, failed, needs input, PR link) shows on the iPad.
 5. The fix is visible on the same iPad without leaving the app.
 6. Connection health for both hops (iPad to Mac, Mac to Claude Code) is visible at a glance: the iPad shows a waiting screen while it has no Mac, and names the Claude Code session the next sketch goes to.
-7. One pairing: the iPad connects to the Mac by cable or with one click, as OpenDisplay's did (Design Canvas's own link since 2026-11-03).
+7. One pairing: the iPad connects to the Mac by cable or with one click, and the first time both screens show a code to confirm (Design Canvas's own link since 2026-11-03).
 
 **Non-goals (MVP)**
 
@@ -49,7 +49,7 @@ Design Canvas removes capture by mirroring the Mac live, keeps ai.cst.2's agent 
 
 ## 5. Flow
 
-**Setup, once.** Install both apps. Connect the iPad (a cable, or one click on WiFi; no code). Pick the project in the menu-bar app. Tap Start session; the app launches Claude Code with the Design Canvas channel attached.
+**Setup, once.** Install both apps. Connect the iPad (a cable, or one click on WiFi) and confirm the code both screens show. Pick the project in the menu-bar app. Tap Start session; the app launches Claude Code with the Design Canvas channel attached.
 
 **Each round.**
 
