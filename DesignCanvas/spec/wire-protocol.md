@@ -96,7 +96,11 @@ any other session) and answers with its own.
 | `device` | `"iPad"` or `"iPhone"` | iPad only |
 
 If `v` differs from its own, the receiving side sends `bye` with reason
-`version` and closes. The Mac starts streaming when the iPad's `hello`
+`version` and closes. Over WiFi the Mac streams only to an iPad whose `id`
+is the one its Bonjour service advertised. A `hello` over WiFi does not replace a session that
+runs over USB: the iPad answers it with `bye` reason `inUse` and closes.
+Nothing on the link is authenticated, and a cable is the one thing a LAN
+neighbour cannot fake. The Mac starts streaming when the iPad's `hello`
 arrives. A candidate that sends no `hello` within 6 s is dropped.
 
 ### 5.2 `ping`, `pong` (both ways)
@@ -115,8 +119,9 @@ changed, the Mac re-encodes the newest frame it has.
 
 Sent just before closing on purpose. `reason`: `sleep` (the iPad locked; it
 comes back on wake), `quit` (the app is quitting or the user disconnected),
-`version` (section 5.1), `replaced` (the iPad adopted a newer connection). An
-unknown reason reads as `quit`. A Mac told `replaced` stops dialing that iPad
+`version` (section 5.1), `replaced` (the iPad adopted a newer connection),
+`inUse` (the iPad is mirroring a cabled Mac, section 5.1). An unknown reason
+reads as `quit`. A Mac told `replaced` or `inUse` stops dialing that iPad
 until something changes (it is replugged, re-advertised, or the user connects
 it), so two Macs never take one iPad back and forth.
 

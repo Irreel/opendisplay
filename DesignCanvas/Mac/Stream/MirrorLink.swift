@@ -21,6 +21,10 @@ enum LinkTransport: String, Equatable {
 struct LinkPaths: Equatable {
     var usbUDID: String?
     var wifi: NWEndpoint?
+    /// The install id the WiFi service advertised. A hello over WiFi that
+    /// names another iPad is not streamed to: the id is all that ties the
+    /// service to the iPad the user trusted.
+    var wifiInstallID: String?
 
     static let none = LinkPaths()
 
@@ -516,7 +520,7 @@ final class MirrorLink: CanvasOutbound, @unchecked Sendable {
             closeConnection()
             if wasStreaming { delegate?.linkDidDrop(self) }
             switch bye.reason {
-            case .replaced:
+            case .replaced, .inUse:
                 phase = .yielded
             case .version:
                 phase = .versionMismatch(theirs: peer?.version ?? 0)
@@ -535,6 +539,11 @@ final class MirrorLink: CanvasOutbound, @unchecked Sendable {
         guard case .handshaking(let transport) = phase else { return }
         guard let hello = HelloMessage(json: object), hello.role == .ipad else {
             dropConnection("the peer's hello was not an iPad's")
+            return
+        }
+        if transport == .wifi, let advertised = paths.wifiInstallID, hello.installID != advertised {
+            Log.info("link \(label): the hello over WiFi names another iPad than the service advertised — not streaming to it")
+            dropConnection("identity mismatch")
             return
         }
         guard hello.version == CanvasWire.version else {

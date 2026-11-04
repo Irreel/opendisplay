@@ -86,8 +86,11 @@ struct ByeMessage: Equatable {
         case quit
         /// The other side speaks a different wire version.
         case version
-        /// A newer connection from the same Mac replaced this one.
+        /// The iPad adopted a newer connection in this one's place.
         case replaced
+        /// The iPad is mirroring a Mac over its cable; a WiFi hello does not
+        /// take that over.
+        case inUse
     }
 
     var reason: Reason

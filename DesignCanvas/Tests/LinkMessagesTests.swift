@@ -37,6 +37,15 @@ final class LinkMessagesTests: XCTestCase {
         XCTAssertNil(StatusMessage(json: [:]))
     }
 
+    /// A LAN neighbour can say hello as a Mac; it must not take a cabled
+    /// session. USB may still take over from WiFi (plugging in).
+    func test_aWiFiHelloNeverEvictsACabledSession() {
+        XCTAssertFalse(CanvasReceiver.mayReplace(current: "USB", with: "WiFi"))
+        XCTAssertTrue(CanvasReceiver.mayReplace(current: "WiFi", with: "USB"))
+        XCTAssertTrue(CanvasReceiver.mayReplace(current: "WiFi", with: "WiFi"))
+        XCTAssertTrue(CanvasReceiver.mayReplace(current: "USB", with: "USB"))
+    }
+
     func test_byeRoundTripsAndAnUnknownReasonIsQuit() {
         XCTAssertEqual(ByeMessage(json: ByeMessage(reason: .replaced).json).reason, .replaced)
         XCTAssertEqual(ByeMessage(json: ["reason": "bored"]).reason, .quit)

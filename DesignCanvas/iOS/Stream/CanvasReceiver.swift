@@ -378,7 +378,24 @@ final class CanvasReceiver: ObservableObject {
                       : "\(hello.name ?? "Your Mac") has an older Design Canvas — update it there")
             return
         }
+        if let current = session, !Self.mayReplace(current: current.transport, with: peer.transport) {
+            Log.info("receiver: \(hello.name ?? "a Mac") said hello over WiFi while a cabled Mac is connected — turned away")
+            sendLinkMessage(CanvasWire.bye, ByeMessage(reason: .inUse).json, on: peer.connection)
+            candidates.removeAll { $0 === peer }
+            let connection = peer.connection
+            queue.asyncAfter(deadline: .now() + 0.5) { connection.cancel() }
+            return
+        }
         adopt(peer, hello: hello)
+    }
+
+    /// Whether a newcomer may take the session from the connection it has.
+    /// Nothing on the link is authenticated yet, and anything on the LAN can
+    /// dial the iPad and say hello as a Mac; a cable at least is physical. So
+    /// a WiFi hello never evicts a session over USB. The real fix is a pairing
+    /// step (spec/TODOS.md, encrypted WiFi transport).
+    static func mayReplace(current: String, with newcomer: String) -> Bool {
+        !(current == "USB" && newcomer != "USB")
     }
 
     /// Make `peer` the session, replacing any other.

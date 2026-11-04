@@ -75,13 +75,13 @@ final class LinkLoopbackTests: XCTestCase {
         return (receiver, port)
     }
 
-    private func startLink(to port: UInt16, macName: String = "Test Mac",
+    private func startLink(to port: UInt16, macName: String = "Test Mac", advertisedID: String? = nil,
                            delegate: RecordingDelegate, frames: CleanFrameStore = CleanFrameStore()) -> MirrorLink {
         let link = MirrorLink(queue: queue, macName: macName, frames: frames, quality: .fast)
         link.delegate = delegate
         links.append(link)
         let endpoint = NWEndpoint.hostPort(host: "127.0.0.1", port: NWEndpoint.Port(rawValue: port)!)
-        link.start(paths: LinkPaths(usbUDID: nil, wifi: endpoint))
+        link.start(paths: LinkPaths(usbUDID: nil, wifi: endpoint, wifiInstallID: advertisedID))
         return link
     }
 
@@ -206,6 +206,25 @@ final class LinkLoopbackTests: XCTestCase {
 
         receiver.setFrozen(false)
         waitUntil("the thaw to show the newest frame", timeout: 10) { receiver.currentFrame() == 2 }
+    }
+
+    /// Over WiFi the service's install id is all that ties it to the iPad the
+    /// user trusted, so a hello naming another iPad gets no picture.
+    func test_aWiFiHelloNamingAnotherIPadIsNotStreamedTo() throws {
+        let (_, port) = try startReceiver()
+        let delegate = RecordingDelegate()
+        _ = startLink(to: port, advertisedID: "SOMEONE-ELSE", delegate: delegate)
+
+        waitUntil("the link to refuse it") { delegate.phase == .retrying(.network("identity mismatch")) }
+        XCTAssertTrue(delegate.hellos.isEmpty)
+        XCTAssertFalse(delegate.phases.contains { if case .streaming = $0 { return true } else { return false } })
+    }
+
+    func test_aWiFiHelloMatchingTheAdvertisedIdStreams() throws {
+        let (_, port) = try startReceiver()
+        let delegate = RecordingDelegate()
+        _ = startLink(to: port, advertisedID: "INSTALL-1", delegate: delegate)
+        waitUntil("the link to stream") { isStreaming(delegate.phase) }
     }
 
     // MARK: - Leaving

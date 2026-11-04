@@ -32,7 +32,11 @@ struct VisibleDevice: Equatable, Identifiable {
 
     var name: String { usb?.name ?? service?.name ?? "iPad" }
 
-    var paths: LinkPaths { LinkPaths(usbUDID: usb?.udid, wifi: service?.endpoint) }
+    /// Every way to reach it. The engine dials WiFi only for an iPad the user
+    /// trusted there (`ConnectPolicy`).
+    var paths: LinkPaths {
+        LinkPaths(usbUDID: usb?.udid, wifi: service?.endpoint, wifiInstallID: service?.installID)
+    }
 
     /// "USB", "WiFi" or "USB · WiFi".
     var transportLabel: String {

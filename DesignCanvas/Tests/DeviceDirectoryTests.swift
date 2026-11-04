@@ -18,7 +18,8 @@ final class DeviceDirectoryTests: XCTestCase {
         XCTAssertEqual(devices.count, 1)
         XCTAssertEqual(devices[0].id, "id:ID1")
         XCTAssertEqual(devices[0].transportLabel, "USB · WiFi")
-        XCTAssertEqual(devices[0].paths, LinkPaths(usbUDID: "U1", wifi: devices[0].service?.endpoint))
+        XCTAssertEqual(devices[0].paths, LinkPaths(usbUDID: "U1", wifi: devices[0].service?.endpoint,
+                                                   wifiInstallID: "ID1"))
     }
 
     func test_withNoLearnedIdTheNameIsTheFallback() {

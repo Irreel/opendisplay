@@ -151,11 +151,23 @@ final class MirrorEngine: SenderEngine {
         var kept: [Served] = []
         for var entry in served {
             if let device = visible.first(where: { entry.matches($0) }) {
-                entry.lastSeen = now
                 if entry.udid == nil { entry.udid = device.usb?.udid }
                 if let name = device.service?.name { entry.serviceName = name }
-                entry.link.update(paths: device.paths)
-                kept.append(entry)
+                let paths = permittedPaths(entry, device)
+                entry.link.update(paths: paths)
+                // An iPad seen only over a WiFi path it is not trusted on
+                // counts as gone: its link is dropped, and the iPad is offered
+                // for a Connect click instead.
+                if paths.best != nil { entry.lastSeen = now }
+                if case .streaming = entry.phase {
+                    kept.append(entry)
+                } else if now.timeIntervalSince(entry.lastSeen) < Self.goneAfter {
+                    kept.append(entry)
+                } else {
+                    Log.info("engine: \(entry.peerName ?? device.name) has no path it may be dialed on — dropping its link")
+                    entry.link.stop()
+                    router.remove(entry.link)
+                }
             } else {
                 entry.link.update(paths: .none)
                 if case .streaming = entry.phase {
@@ -179,10 +191,24 @@ final class MirrorEngine: SenderEngine {
 
     private func serve(_ device: VisibleDevice, clickedOverWiFi: Bool = false) {
         let link = router.makeLink(macName: macName)
-        served.append(Served(link: link, installID: device.installID, udid: device.usb?.udid,
-                             serviceName: device.service?.name, clickedOverWiFi: clickedOverWiFi))
+        let entry = Served(link: link, installID: device.installID, udid: device.usb?.udid,
+                           serviceName: device.service?.name, clickedOverWiFi: clickedOverWiFi)
+        served.append(entry)
         Log.info("engine: connecting \(device.name) (\(device.transportLabel))")
-        link.start(paths: device.paths)
+        link.start(paths: permittedPaths(entry, device))
+    }
+
+    /// The cable always; WiFi only for an iPad the user trusted there, so a
+    /// cabled session never fails over onto a service that merely claims the
+    /// iPad's name or id (anything on the LAN can advertise either).
+    private func permittedPaths(_ entry: Served, _ device: VisibleDevice) -> LinkPaths {
+        let wifiTrusted = entry.clickedOverWiFi || device.installID.map { policy.trusted.contains($0) } == true
+        var paths = device.paths
+        if !wifiTrusted {
+            paths.wifi = nil
+            paths.wifiInstallID = nil
+        }
+        return paths
     }
 
     private func linkChanged(_ linkID: String, phase: LinkPhase, peer: HelloMessage?) {
@@ -192,7 +218,11 @@ final class MirrorEngine: SenderEngine {
             served[index].peerName = peer.name
             if let installID = peer.installID, served[index].installID != installID {
                 served[index].installID = installID
-                if let udid = served[index].udid { installIDByUDID[udid] = installID }
+                // Only a hello over the cable may name the cable's iPad: one
+                // over WiFi could come from anything on the LAN.
+                if case .streaming(.usb) = phase, let udid = served[index].udid {
+                    installIDByUDID[udid] = installID
+                }
             }
             if case .streaming(.wifi) = phase, served[index].clickedOverWiFi, let installID = peer.installID {
                 policy.connectedOverWiFi(installID: installID)
