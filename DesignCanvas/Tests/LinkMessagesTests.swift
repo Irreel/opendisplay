@@ -26,6 +26,15 @@ final class LinkMessagesTests: XCTestCase {
         XCTAssertNil(HelloMessage(json: ["v": 1, "role": "mac", "name": ""])?.name)
     }
 
+    /// A peer's name ends up in a security prompt: nothing in it may break
+    /// the prompt's lines or reorder its text.
+    func test_aPeersNameLosesControlAndFormattingCharacters() {
+        XCTAssertEqual(HelloMessage.displayName("Zhao\u{2019}s\nMac\u{202E}Book\t"), "Zhao\u{2019}s MacBook")
+        XCTAssertEqual(HelloMessage.displayName("  Studio    iMac  "), "Studio iMac")
+        XCTAssertNil(HelloMessage.displayName("\u{202E}\u{200B}\n"))
+        XCTAssertEqual(HelloMessage(json: ["v": 1, "role": "mac", "name": "A\rB\u{0007}C"])?.name, "A BC")
+    }
+
     func test_statusRoundTripsAndOmitsAnAbsentProject() {
         let status = StatusMessage(channel: .attached, project: "site")
         XCTAssertEqual(StatusMessage(json: status.json), status)

@@ -32,9 +32,33 @@ extension HelloMessage {
               let role = (json["role"] as? String).flatMap(Role.init(rawValue:)) else { return nil }
         self.version = version
         self.role = role
-        self.name = (json["name"] as? String).flatMap { $0.isEmpty ? nil : String($0.prefix(CanvasWire.macNameMaxCharacters)) }
+        self.name = (json["name"] as? String).flatMap(Self.displayName)
         self.installID = (json["id"] as? String).flatMap { $0.isEmpty ? nil : $0 }
         self.device = (json["device"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+    }
+
+    /// The peer's name as something safe to show: control and formatting
+    /// characters (newlines, bidirectional overrides) dropped, runs of
+    /// whitespace folded to one space, at most 60 characters. Nil when
+    /// nothing is left. It is still only what the peer claims to be called.
+    static func displayName(_ raw: String) -> String? {
+        var kept = String.UnicodeScalarView()
+        var lastWasSpace = true
+        for scalar in raw.unicodeScalars {
+            switch scalar.properties.generalCategory {
+            case .spaceSeparator, .lineSeparator, .paragraphSeparator,
+                 .control where scalar.properties.isWhitespace:
+                if !lastWasSpace { kept.append(" ") }
+                lastWasSpace = true
+            case .control, .format:
+                continue
+            default:
+                kept.append(scalar)
+                lastWasSpace = false
+            }
+        }
+        let name = String(String(kept).trimmingCharacters(in: .whitespaces).prefix(CanvasWire.macNameMaxCharacters))
+        return name.isEmpty ? nil : name
     }
 
     var json: [String: Any] {

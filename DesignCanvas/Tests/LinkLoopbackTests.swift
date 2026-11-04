@@ -285,7 +285,7 @@ final class LinkLoopbackTests: XCTestCase {
 
     func test_switchingGivesTheWiFiMacTheIPad_andTheCabledOneStandsAside() throws {
         let (receiver, _, cabled, asking) = try startSwitchRequest()
-        receiver.answerSwitchRequest(switchTo: true)
+        receiver.answerSwitchRequest(id: try XCTUnwrap(receiver.switchRequest?.id), switchTo: true)
         waitUntil("the WiFi Mac to stream") { isStreaming(asking.phase) }
         waitUntil("the cabled Mac to stand aside") { cabled.phase == .yielded }
         waitUntil("the iPad to show the WiFi Mac") { receiver.macName == "WiFi Mac" }
@@ -294,7 +294,7 @@ final class LinkLoopbackTests: XCTestCase {
 
     func test_keepingTheCableTurnsTheWiFiMacAway() throws {
         let (receiver, _, cabled, asking) = try startSwitchRequest()
-        receiver.answerSwitchRequest(switchTo: false)
+        receiver.answerSwitchRequest(id: try XCTUnwrap(receiver.switchRequest?.id), switchTo: false)
         waitUntil("the WiFi Mac to stand aside") { asking.phase == .yielded }
         waitUntil("the request to close") { receiver.switchRequest == nil }
         XCTAssertTrue(isStreaming(cabled.phase))
@@ -308,6 +308,29 @@ final class LinkLoopbackTests: XCTestCase {
         _ = startLink(to: port, macName: "Third Mac", delegate: third)
         waitUntil("the third Mac to be turned away") { third.phase == .yielded }
         XCTAssertEqual(receiver.switchRequest?.macName, "WiFi Mac")
+    }
+
+    /// A Switch only ever adopts the Mac it was asked about.
+    func test_anAnswerToAnotherRequestDoesNothing() throws {
+        let (receiver, _, cabled, asking) = try startSwitchRequest()
+        receiver.answerSwitchRequest(id: UUID(), switchTo: true)
+        let settle = Date().addingTimeInterval(0.3)
+        while Date() < settle { RunLoop.current.run(until: Date().addingTimeInterval(0.01)) }
+        XCTAssertEqual(asking.phase, .awaitingApproval(.wifi))
+        XCTAssertTrue(isStreaming(cabled.phase))
+        XCTAssertNotNil(receiver.switchRequest)
+    }
+
+    /// After a no, the next WiFi Mac is turned away without asking again.
+    func test_afterKeepingTheCableTheNextAskIsTurnedAwayUnasked() throws {
+        let (receiver, port, _, asking) = try startSwitchRequest()
+        receiver.answerSwitchRequest(id: try XCTUnwrap(receiver.switchRequest?.id), switchTo: false)
+        guard waitUntil("the first ask to be turned away", { asking.phase == .yielded }) else { return }
+        let again = RecordingDelegate()
+        _ = startLink(to: port, macName: "Persistent Mac", delegate: again)
+        waitUntil("the second ask to be turned away") { again.phase == .yielded }
+        XCTAssertFalse(again.phases.contains(.awaitingApproval(.wifi)))
+        XCTAssertNil(receiver.switchRequest)
     }
 
     // MARK: - Leaving

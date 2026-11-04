@@ -88,14 +88,17 @@ struct CanvasScreen: View {
         }
     }
 
-    private var switchTitle: String {
-        "Switch to \(receiver.switchRequest?.macName ?? "another Mac")?"
-    }
-
-    private var switchMessage: String {
-        let asking = receiver.switchRequest?.macName ?? "A Mac"
-        let current = receiver.switchRequest?.currentMacName ?? "the Mac"
-        return "\(asking) wants to mirror to this \(deviceKind) over WiFi, instead of \(current) on the cable. Only switch if you were expecting it."
+    /// The asking Mac's name is only what it calls itself, so it is quoted
+    /// as a claim, and a name that copies the cabled Mac's is called out.
+    static func switchMessage(_ request: CanvasReceiver.SwitchRequest) -> String {
+        let current = request.currentMacName.map { "\u{201C}\($0)\u{201D}" } ?? "the Mac"
+        guard let asking = request.macName else {
+            return "A Mac on this WiFi wants to mirror to this \(deviceKind) instead of \(current) on the cable. Only switch if you were expecting it."
+        }
+        if asking == request.currentMacName {
+            return "A Mac on this WiFi using the same name as the one on the cable (\(current)) wants to mirror to this \(deviceKind). If you didn\u{2019}t expect this, keep the cable."
+        }
+        return "A Mac calling itself \u{201C}\(asking)\u{201D} wants to mirror to this \(deviceKind) over WiFi, instead of \(current) on the cable. Only switch if you were expecting it."
     }
 
     /// The blank page is up in place of the mirror.
@@ -170,13 +173,13 @@ struct CanvasScreen: View {
         // A Mac asking over WiFi to take over from the one on the cable. The
         // iPad cannot tell who is asking, so the person holding it decides;
         // no answer keeps the cable.
-        .alert(switchTitle, isPresented: Binding(
+        .alert("Switch Macs?", isPresented: Binding(
             get: { receiver.switchRequest != nil },
-            set: { _ in })) {
-            Button("Keep the Cable", role: .cancel) { receiver.answerSwitchRequest(switchTo: false) }
-            Button("Switch") { receiver.answerSwitchRequest(switchTo: true) }
-        } message: {
-            Text(switchMessage)
+            set: { _ in }), presenting: receiver.switchRequest) { request in
+            Button("Keep the Cable", role: .cancel) { receiver.answerSwitchRequest(id: request.id, switchTo: false) }
+            Button("Switch") { receiver.answerSwitchRequest(id: request.id, switchTo: true) }
+        } message: { request in
+            Text(Self.switchMessage(request))
         }
         // The freeze deadline only needs a clock while the freeze is
         // outstanding.

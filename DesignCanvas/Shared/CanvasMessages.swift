@@ -31,6 +31,10 @@ enum CanvasWire {
     /// longer, so the iPad's answer is the one that lands.
     static let switchRequestTimeout: TimeInterval = 30
     static let switchRequestMacWait: TimeInterval = 45
+    /// After the user keeps the cable (or lets a request time out), further
+    /// WiFi requests are turned away unasked for this long, so a LAN
+    /// neighbour cannot wear the user down with prompts.
+    static let switchRequestCooldown: TimeInterval = 60
 
     // Link
     static let hello = "hello"

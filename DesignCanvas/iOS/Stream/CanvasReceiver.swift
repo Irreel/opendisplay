@@ -87,6 +87,8 @@ final class CanvasReceiver: ObservableObject {
     private var formatDescription: CMVideoFormatDescription?
     private var parameterSets: [Data] = []
     private var lastKeyframeRequest = Date.distantPast
+    /// When the user last kept the cable, or let a request time out.
+    private var lastDeclinedAt = Date.distantPast
     private var framesThisWindow = 0
     private var bytesThisWindow = 0
     private var windowStart = Date()
@@ -107,9 +109,11 @@ final class CanvasReceiver: ObservableObject {
         var sawLegacyFrame = false
         /// The hello this peer was adopted with, once it is the session.
         var hello: HelloMessage?
-        /// A WiFi hello held while the user is asked whether to switch to it.
+        /// A WiFi hello held while the user is asked whether to switch to it,
+        /// and the request the answer must name.
         var heldHello: HelloMessage?
         var askedAt: Date?
+        var requestID: UUID?
 
         init(connection: NWConnection, transport: String) {
             self.connection = connection
@@ -410,37 +414,53 @@ final class CanvasReceiver: ObservableObject {
         }
         if let current = session, !Self.mayReplace(current: current.transport, with: peer.transport) {
             // One question at a time: a second Mac asking meanwhile is told
-            // the iPad is in use.
+            // the iPad is in use. So is one asking soon after the user said
+            // no: an unauthenticated peer must not be able to repeat the
+            // question until someone taps Switch to make it stop.
             guard !candidates.contains(where: { $0.heldHello != nil }) else {
                 Log.info("receiver: \(hello.name ?? "a Mac") asked over WiFi while another request is open — turned away")
                 refuse(peer)
                 return
             }
+            guard Date().timeIntervalSince(lastDeclinedAt) > CanvasWire.switchRequestCooldown else {
+                Log.info("receiver: \(hello.name ?? "a Mac") asked over WiFi within a minute of the last no — turned away unasked")
+                refuse(peer)
+                return
+            }
             Log.info("receiver: \(hello.name ?? "a Mac") asked over WiFi while a cabled Mac is connected — asking the user")
+            let request = SwitchRequest(macName: hello.name, currentMacName: current.hello?.name)
             peer.heldHello = hello
             peer.askedAt = Date()
+            peer.requestID = request.id
             sendLinkMessage(CanvasWire.asking, [:], on: peer.connection)
-            let request = SwitchRequest(macName: hello.name, currentMacName: current.hello?.name)
             DispatchQueue.main.async { self.switchRequest = request }
             return
         }
         adopt(peer, hello: hello)
     }
 
-    /// The user's answer to `switchRequest`. Switching adopts the WiFi Mac,
-    /// which tells the cabled one it was replaced; keeping the cable tells
-    /// the asking Mac the iPad is in use.
-    func answerSwitchRequest(switchTo: Bool) {
+    /// The user's answer to the request with this `id`. Switching adopts the
+    /// WiFi Mac, which tells the cabled one it was replaced; keeping the cable
+    /// tells the asking Mac the iPad is in use. An answer to a request that
+    /// is no longer the open one (it timed out, its Mac left, another took
+    /// its place) does nothing: a Switch is only ever for the Mac it was
+    /// asked about.
+    func answerSwitchRequest(id: UUID, switchTo: Bool) {
         queue.async {
-            self.clearSwitchRequest()
-            guard let peer = self.candidates.first(where: { $0.heldHello != nil }),
-                  let hello = peer.heldHello else { return }
+            guard let peer = self.candidates.first(where: { $0.requestID == id }),
+                  let hello = peer.heldHello else {
+                Log.info("receiver: an answer arrived for a switch request that is no longer open — ignored")
+                return
+            }
+            self.clearSwitchRequest(id: id)
             if switchTo {
                 Log.info("receiver: the user switched to \(hello.name ?? "the Mac") over WiFi")
                 peer.heldHello = nil
+                peer.requestID = nil
                 self.adopt(peer, hello: hello)
             } else {
                 Log.info("receiver: the user kept the cable")
+                self.lastDeclinedAt = Date()
                 self.refuse(peer)
             }
         }
@@ -453,9 +473,12 @@ final class CanvasReceiver: ObservableObject {
         queue.asyncAfter(deadline: .now() + 0.5) { connection.cancel() }
     }
 
-    private func clearSwitchRequest() {
+    /// Takes the alert down: any request, or only the one with `id`, so a
+    /// late clear never takes down a newer question.
+    private func clearSwitchRequest(id: UUID? = nil) {
         DispatchQueue.main.async {
-            if self.switchRequest != nil { self.switchRequest = nil }
+            guard let shown = self.switchRequest, id == nil || shown.id == id else { return }
+            self.switchRequest = nil
         }
     }
 
@@ -532,9 +555,9 @@ final class CanvasReceiver: ObservableObject {
         } else if let index = candidates.firstIndex(where: { $0 === peer }) {
             candidates.remove(at: index)
             peer.connection.cancel()
-            if peer.heldHello != nil {
+            if let id = peer.requestID {
                 Log.info("receiver: the Mac asking to switch went away (\(reason))")
-                clearSwitchRequest()
+                clearSwitchRequest(id: id)
             }
             if peer.sawLegacyFrame {
                 setStatus("A Mac with an older Design Canvas tried to connect — update it there")
@@ -613,7 +636,8 @@ final class CanvasReceiver: ObservableObject {
             if let askedAt = candidate.askedAt {
                 if now.timeIntervalSince(askedAt) > CanvasWire.switchRequestTimeout {
                     Log.info("receiver: no answer to the switch request — keeping the cable")
-                    clearSwitchRequest()
+                    clearSwitchRequest(id: candidate.requestID)
+                    lastDeclinedAt = now
                     refuse(candidate)
                 } else if now.timeIntervalSince(candidate.lastReceived) > CanvasWire.silenceTimeout {
                     lost(candidate, reason: "silent while waiting")
