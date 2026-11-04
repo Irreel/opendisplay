@@ -51,6 +51,12 @@ final class CanvasReceiver: ObservableObject {
         /// The Mac, as it names itself.
         let macName: String?
         let code: String
+        /// Pairing switches this iPad to the new Mac at once, so the alert
+        /// names the one it is mirroring now, if any, and says if that one is
+        /// on the cable: it stands in for the "Switch Macs?" question.
+        var replacesMacName: String?
+        var replacesOverCable = false
+        var replacesASession = false
     }
 
     /// Another Mac asking over WiFi to take over from the one this iPad
@@ -116,9 +122,6 @@ final class CanvasReceiver: ObservableObject {
     /// it timed out, or the asking Mac left before the answer. Any of them
     /// starts the cooldown, so dropping the connection is no way around it.
     private var lastDeclinedAt = Date.distantPast
-    /// The same for pairing: after one is cancelled, times out or is left,
-    /// further WiFi pairing requests are turned away unasked for a while.
-    private var lastPairingEndedAt = Date.distantPast
     private var framesThisWindow = 0
     private var bytesThisWindow = 0
     private var windowStart = Date()
@@ -589,13 +592,20 @@ final class CanvasReceiver: ObservableObject {
             lost(peer, reason: "another pairing is open")
             return
         }
-        guard peer.transport == "USB" || Date().timeIntervalSince(lastPairingEndedAt) > CanvasWire.switchRequestCooldown else {
+        // One cooldown for pairing and switching: either question, declined,
+        // holds off both for a minute over WiFi.
+        guard peer.transport == "USB" || Date().timeIntervalSince(lastDeclinedAt) > CanvasWire.switchRequestCooldown else {
             Log.info("receiver: a pairing request over WiFi within a minute of the last one ending — turned away unasked")
             sendLink(CanvasWire.bye, ByeMessage(reason: .notPaired).json, to: peer)
             lost(peer, reason: "pairing cooldown")
             return
         }
-        let request = PairingRequest(macName: peer.hello?.name, code: code)
+        var request = PairingRequest(macName: peer.hello?.name, code: code)
+        if let current = session {
+            request.replacesASession = true
+            request.replacesMacName = current.hello?.name
+            request.replacesOverCable = current.transport == "USB"
+        }
         peer.pairingRequestID = request.id
         DispatchQueue.main.async { self.pairingRequest = request }
     }
@@ -839,7 +849,7 @@ final class CanvasReceiver: ObservableObject {
             if let id = peer.pairingRequestID {
                 // Cancelled, timed out, or the Mac left: the cooldown starts.
                 clearPairingRequest(id: id)
-                lastPairingEndedAt = Date()
+                lastDeclinedAt = Date()
             }
             if peer.sawLegacyFrame {
                 setStatus("A Mac with an older Design Canvas tried to connect — update it there")

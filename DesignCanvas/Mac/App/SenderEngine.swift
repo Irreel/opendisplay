@@ -47,6 +47,9 @@ struct PairingPrompt: Equatable, Identifiable {
     let id: String
     let deviceName: String
     let code: String
+    /// This Mac had paired that iPad with another key: a reinstalled iPad,
+    /// or something posing as it. Said in the prompt.
+    var replacesPairing = false
 }
 
 /// One device the engine can see but is not serving: a Bonjour service on the LAN, or a cabled

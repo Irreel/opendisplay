@@ -97,8 +97,8 @@ final class MirrorEngine: SenderEngine {
         router.onCaptureStoppedByUser = { [weak self] in
             Task { @MainActor in self?.captureStoppedByUser() }
         }
-        router.onPairingCode = { [weak self] linkID, code, peer in
-            Task { @MainActor in self?.pairingReachedCode(linkID, code: code, peer: peer) }
+        router.onPairingCode = { [weak self] linkID, code, peer, replacing in
+            Task { @MainActor in self?.pairingReachedCode(linkID, code: code, peer: peer, replacing: replacing) }
         }
         router.onPaired = { [weak self] _, peer in
             Task { @MainActor in self?.paired(peer) }
@@ -185,9 +185,10 @@ final class MirrorEngine: SenderEngine {
         publish(force: true)
     }
 
-    private func pairingReachedCode(_ linkID: String, code: String, peer: HelloMessage) {
+    private func pairingReachedCode(_ linkID: String, code: String, peer: HelloMessage, replacing: Bool) {
         guard served.contains(where: { $0.link.id == linkID }) else { return }
-        pairingPrompt = PairingPrompt(id: linkID, deviceName: peer.name ?? "iPad", code: code)
+        pairingPrompt = PairingPrompt(id: linkID, deviceName: peer.name ?? "iPad", code: code,
+                                      replacesPairing: replacing)
         onDevicesChanged?()
     }
 
@@ -374,7 +375,7 @@ final class StreamRouter: MirrorLinkDelegate {
     private var streaming: [ObjectIdentifier: MirrorLink] = [:]
     private var attached: [ObjectIdentifier: CanvasSession] = [:]
 
-    var onPairingCode: ((_ linkID: String, _ code: String, _ peer: HelloMessage) -> Void)?
+    var onPairingCode: ((_ linkID: String, _ code: String, _ peer: HelloMessage, _ replacing: Bool) -> Void)?
     var onPaired: ((_ linkID: String, _ peer: HelloMessage) -> Void)?
     private let pairing: PairingStore
 
@@ -422,8 +423,8 @@ final class StreamRouter: MirrorLinkDelegate {
         session.attach(link)
     }
 
-    func link(_ link: MirrorLink, confirmPairing code: String, with peer: HelloMessage) {
-        onPairingCode?(link.id, code, peer)
+    func link(_ link: MirrorLink, confirmPairing code: String, with peer: HelloMessage, replacing: Bool) {
+        onPairingCode?(link.id, code, peer, replacing)
     }
 
     func link(_ link: MirrorLink, didPair peer: HelloMessage) {

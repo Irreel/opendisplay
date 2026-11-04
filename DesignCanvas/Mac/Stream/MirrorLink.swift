@@ -90,7 +90,9 @@ protocol MirrorLinkDelegate: AnyObject {
     /// streaming starts now.
     func link(_ link: MirrorLink, didHello peer: HelloMessage)
     /// Pairing reached its code: show it, and answer with `answerPairing`.
-    func link(_ link: MirrorLink, confirmPairing code: String, with peer: HelloMessage)
+    /// `replacing` is true when this Mac had paired that iPad with another
+    /// key: a reinstalled iPad, or something posing as it.
+    func link(_ link: MirrorLink, confirmPairing code: String, with peer: HelloMessage, replacing: Bool)
     /// Pairing finished on both sides: the iPad is pinned in the store.
     func link(_ link: MirrorLink, didPair peer: HelloMessage)
     /// A canvas message (anything that is not the link's own business).
@@ -150,11 +152,18 @@ final class MirrorLink: CanvasOutbound, @unchecked Sendable {
     private var sealer: FrameSealer?
     private var opener: FrameOpener?
     private var pairingState: PairingState?
-    /// The user asked for this iPad (a Connect click) since the last pairing
-    /// ended. Pairing starts only from that or a cable: a WiFi reconnect that
-    /// fails its proof is an impostor as likely as a reinstalled iPad, and must
-    /// not put a pairing question in front of the user unasked.
-    private var pairingAllowedByUser = false
+    /// Until when the user's Connect click lets this link pair. Pairing
+    /// starts only from that or a cable: a WiFi reconnect that fails its proof
+    /// is an impostor as likely as a reinstalled iPad, and must not put a
+    /// pairing question in front of the user unasked. The grant ends with the
+    /// first handshake that settles (proven, paired, or pairing ended).
+    private var pairingAllowedUntil: Date?
+    private static let pairingGrant: TimeInterval = 120
+
+    private var pairingAllowedByUser: Bool {
+        guard let until = pairingAllowedUntil else { return false }
+        return Date() < until
+    }
 
     private struct PairingState {
         let macNonce = PairingCrypto.randomNonce()
@@ -233,14 +242,14 @@ final class MirrorLink: CanvasOutbound, @unchecked Sendable {
     func reconnect() {
         queue.async {
             guard self.started, self.phase != .stopped else { return }
-            self.pairingAllowedByUser = true
+            self.pairingAllowedUntil = Date().addingTimeInterval(Self.pairingGrant)
             self.reconnectNow()
         }
     }
 
     /// The user clicked Connect for this iPad: pairing it, if needed, is wanted.
     func allowPairing() {
-        queue.async { self.pairingAllowedByUser = true }
+        queue.async { self.pairingAllowedUntil = Date().addingTimeInterval(Self.pairingGrant) }
     }
 
     /// The user's answer to `confirmPairing`.
@@ -731,6 +740,8 @@ final class MirrorLink: CanvasOutbound, @unchecked Sendable {
             // between its hello and this verify.
             sealer = FrameSealer(key: derived.macToIPad)
             opener = FrameOpener(key: derived.ipadToMac)
+            // Settled without pairing: the user's grant is used up.
+            pairingAllowedUntil = nil
             Log.info("link \(label): the iPad proved itself — waiting for it to take the session")
             return
         }
@@ -796,7 +807,10 @@ final class MirrorLink: CanvasOutbound, @unchecked Sendable {
         state.code = code
         pairingState = state
         phase = .pairing(transport, code: code)
-        if let peerHello { delegate?.link(self, confirmPairing: code, with: peerHello) }
+        if let peerHello {
+            let replacing = peerHello.installID.flatMap { pairing.peer($0) }.map { $0.publicKey != peerHello.key } ?? false
+            delegate?.link(self, confirmPairing: code, with: peerHello, replacing: replacing)
+        }
     }
 
     private func handlePairConfirm(_ object: [String: Any]) {
@@ -823,7 +837,7 @@ final class MirrorLink: CanvasOutbound, @unchecked Sendable {
               let ipadKey = peerHello.key else { return }
         pairing.pin(PairedPeer(id: installID, publicKey: ipadKey, name: peerHello.name, pairedAt: Date()))
         pairingState = nil
-        pairingAllowedByUser = false
+        pairingAllowedUntil = nil
         // The iPad's `ready` follows at once; the handshake clock restarts.
         connectedAt = Date()
         phase = .handshaking(transport)
@@ -833,7 +847,7 @@ final class MirrorLink: CanvasOutbound, @unchecked Sendable {
 
     private func endPairing(_ reason: String) {
         Log.info("link \(label): pairing ended (\(reason))")
-        pairingAllowedByUser = false
+        pairingAllowedUntil = nil
         closeConnection()
         phase = .notPaired
     }

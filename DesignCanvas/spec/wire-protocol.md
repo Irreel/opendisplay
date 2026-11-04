@@ -220,10 +220,14 @@ the user confirms on both.
    sends `ready`. Cancel on either side is `bye` reason `notPaired`.
 
 Pairing waits up to 90 s for its users. A Mac starts it only over the cable
-or after its user clicked Connect for that iPad: a WiFi reconnect whose proof
-fails ends with `notPaired`, not with a question. After a pairing ends
-without being confirmed, the iPad turns WiFi pairing requests away unasked
-for 60 s. Forgetting a paired device on either side removes its pin; a
+or within two minutes of its user clicking Connect for that iPad, and the
+grant ends with the first handshake that settles: a WiFi reconnect whose
+proof fails ends with `notPaired`, not with a question. The Mac's prompt says
+so when it had that iPad paired with another key. Pairing switches the iPad
+to the new Mac at once, so while another Mac is mirroring, the iPad's prompt
+names it (and says if it is on the cable) in place of the switch question.
+After a pairing or a switch question ends without a yes, the iPad turns WiFi
+requests of either kind away unasked for 60 s. Forgetting a paired device on either side removes its pin; a
 session with it ends with `bye` reason `notPaired`.
 
 **Sealing.** The two directions' keys come from HKDF-SHA256 over the X25519

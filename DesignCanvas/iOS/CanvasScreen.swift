@@ -88,6 +88,17 @@ struct CanvasScreen: View {
         }
     }
 
+    /// The code, what to check, and what pairing will do to the Mac being
+    /// mirrored now: pairing switches to the new Mac at once.
+    static func pairingMessage(_ request: CanvasReceiver.PairingRequest) -> String {
+        var text = "Code \(request.code)\n\nCheck that your Mac shows the same code, then tap Pair on both. If the codes differ, cancel."
+        if request.replacesASession {
+            let current = request.replacesMacName.map { "\u{201C}\($0)\u{201D}" } ?? "the Mac it is mirroring"
+            text += "\n\nPairing switches this \(deviceKind) to it from \(current)\(request.replacesOverCable ? " on the cable" : "")."
+        }
+        return text
+    }
+
     /// The asking Mac's name is only what it calls itself, so it is quoted
     /// as a claim, and a name that copies the cabled Mac's is called out.
     static func switchMessage(_ request: CanvasReceiver.SwitchRequest) -> String {
@@ -183,7 +194,7 @@ struct CanvasScreen: View {
             Button("Cancel", role: .cancel) { receiver.answerPairing(id: request.id, accept: false) }
             Button("Pair") { receiver.answerPairing(id: request.id, accept: true) }
         } message: { request in
-            Text("Code \(request.code)\n\nCheck that your Mac shows the same code, then tap Pair on both. If the codes differ, cancel.")
+            Text(Self.pairingMessage(request))
         }
         // A Mac asking over WiFi to take over from the one on the cable. The
         // iPad cannot tell who is asking, so the person holding it decides;

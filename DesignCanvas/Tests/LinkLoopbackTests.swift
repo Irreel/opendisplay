@@ -46,7 +46,7 @@ final class LinkLoopbackTests: XCTestCase {
             lock.withLock { storedMessages.append(message) }
         }
 
-        func link(_ link: MirrorLink, confirmPairing code: String, with peer: HelloMessage) {
+        func link(_ link: MirrorLink, confirmPairing code: String, with peer: HelloMessage, replacing: Bool) {
             lock.withLock { storedCodes.append(code) }
             if let answerPairing { link.answerPairing(accept: answerPairing) }
         }
@@ -488,6 +488,24 @@ final class LinkLoopbackTests: XCTestCase {
         }
         waitUntil("the iPad to ask") { receiver.pairingRequest != nil }
         XCTAssertFalse(isStreaming(delegate.phase))
+    }
+
+    /// Pairing switches the iPad to the new Mac at once, so while another Mac
+    /// is mirroring, the pairing question says so: it stands in for "Switch
+    /// Macs?".
+    func test_pairingWhileAnotherMacMirrors_namesTheMacItWouldReplace() throws {
+        let (receiver, port) = try startReceiver()
+        let current = RecordingDelegate()
+        _ = startLink(to: port, macName: "Studio Mac", delegate: current)
+        guard waitUntil("the current Mac", { isStreaming(current.phase) && receiver.connected }) else { return }
+
+        let newcomer = RecordingDelegate()
+        _ = startLink(to: port, macName: "New Mac", pairing: InMemoryPairingStore(), userAsked: true, delegate: newcomer)
+        guard waitUntil("the iPad to ask", { receiver.pairingRequest != nil }) else { return }
+        let request = try XCTUnwrap(receiver.pairingRequest)
+        XCTAssertTrue(request.replacesASession)
+        XCTAssertEqual(request.replacesMacName, "Studio Mac")
+        XCTAssertTrue(request.replacesOverCable, "the loopback reads as the cable")
     }
 
     /// After a cancelled pairing, a WiFi Mac asking again within the minute is

@@ -23,8 +23,12 @@ final class PairingPanel {
         }
         guard prompt.id != shownID || window == nil else { return }
         window?.close()
-        let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 360, height: 220),
-                            styleMask: [.titled, .closable], backing: .buffered, defer: false)
+        // Non-activating, and never key on its own: it must not take the
+        // keyboard from whatever the user is typing in, or a Return meant for
+        // that would answer it.
+        let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 360, height: 240),
+                            styleMask: [.titled, .closable, .nonactivatingPanel], backing: .buffered, defer: false)
+        panel.becomesKeyOnlyIfNeeded = true
         panel.title = "Pair with \(prompt.deviceName)"
         panel.level = .floating
         panel.isReleasedWhenClosed = false
@@ -32,8 +36,7 @@ final class PairingPanel {
             model.answerPairing(accept: accept)
         })
         panel.center()
-        NSApp.activate(ignoringOtherApps: true)
-        panel.makeKeyAndOrderFront(nil)
+        panel.orderFrontRegardless()
         window = panel
         shownID = prompt.id
     }
@@ -42,6 +45,9 @@ final class PairingPanel {
 private struct PairingView: View {
     let prompt: PairingPrompt
     let answer: (Bool) -> Void
+    /// Pair takes a click, and only after a beat: a click already on its way
+    /// when the window appeared must not land on it.
+    @State private var armed = false
 
     var body: some View {
         VStack(spacing: 14) {
@@ -55,14 +61,25 @@ private struct PairingView: View {
                 .foregroundColor(.secondary)
                 .multilineTextAlignment(.center)
                 .fixedSize(horizontal: false, vertical: true)
+            if prompt.replacesPairing {
+                Text("This Mac paired with an iPad of this name before, with another key. That is expected after reinstalling the iPad app; otherwise, cancel.")
+                    .font(.callout)
+                    .foregroundColor(.orange)
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             HStack {
                 Button("Cancel") { answer(false) }
                     .keyboardShortcut(.cancelAction)
                 Button("Pair") { answer(true) }
-                    .keyboardShortcut(.defaultAction)
+                    .disabled(!armed)
             }
         }
         .padding(20)
         .frame(width: 360)
+        .task {
+            try? await Task.sleep(nanoseconds: 1_000_000_000)
+            armed = true
+        }
     }
 }
