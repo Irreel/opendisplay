@@ -81,10 +81,8 @@ struct StatusDot: View {
 /// The modal behind the status panel (P2).
 struct ConnectionDetailView: View {
 
-    @ObservedObject var receiver: StreamReceiver
+    @ObservedObject var receiver: CanvasReceiver
     @ObservedObject var model: CanvasModel
-    let port: UInt16
-    let serviceType: String
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
@@ -101,12 +99,11 @@ struct ConnectionDetailView: View {
                         LabeledContent("Mirror",
                                        value: "\(Int(receiver.videoSize.width))×\(Int(receiver.videoSize.height)) @ \(receiver.fps) fps")
                     }
+                    if receiver.connected {
+                        LabeledContent("Link", value: linkDescription)
+                    }
                 } header: {
                     Text("Status")
-                } footer: {
-                    if receiver.connected && !receiver.canvas.macSupportsCanvas {
-                        Text("The Mac connected to this \(deviceKind) is not running Design Canvas, so Draw Mode is unavailable. It mirrors the screen and nothing else.")
-                    }
                 }
 
                 if model.sessions.sessions.count > 1 {
@@ -141,12 +138,13 @@ struct ConnectionDetailView: View {
                 }
 
                 Section {
-                    LabeledContent("Listening", value: "Port \(port)")
-                    LabeledContent("Service", value: serviceType)
+                    LabeledContent("Listening", value: "Port \(CanvasWire.port)")
+                    LabeledContent("Service", value: CanvasWire.serviceType)
+                    LabeledContent("Wire version", value: String(CanvasWire.version))
                 } header: {
                     Text("Connection")
                 } footer: {
-                    Text("Design Canvas listens on its own port and Bonjour type, so an OpenDisplay Mac never dials this app and Design Canvas never dials an OpenDisplay \(deviceKind).")
+                    Text("Over USB your Mac connects through the cable on its own. On WiFi it finds this \(deviceKind) by its service and connects after one click in its menu.")
                 }
 
                 Section {
@@ -169,6 +167,13 @@ struct ConnectionDetailView: View {
                 }
             }
         }
+    }
+
+    /// "USB · 2.1 Mbps · 4 ms"
+    private var linkDescription: String {
+        var parts = [receiver.transport, String(format: "%.1f Mbps", receiver.mbps)]
+        if let rtt = receiver.rttMs { parts.append("\(Int(rtt.rounded())) ms") }
+        return parts.joined(separator: " \u{00B7} ")
     }
 
     private var channelDescription: String {

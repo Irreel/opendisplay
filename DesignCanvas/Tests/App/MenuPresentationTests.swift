@@ -198,45 +198,74 @@ final class MenuPresentationTests: XCTestCase {
         XCTAssertNil(row.action)
     }
 
-    func testConnectedDeviceKeepsTheEngineStatus() {
-        let row = MenuPresentation.deviceRow(EngineDevice(id: "d1", name: "Amy's iPad", status: "Streaming", onUSB: true))
-        XCTAssertEqual(row.word, "Streaming")
+    // Each engine state reads as one short word, so the device name is never the thing that
+    // truncates in a 320-point popover; what the user has to do goes underneath.
+
+    private func row(_ state: EngineDevice.State) -> RowPresentation {
+        MenuPresentation.deviceRow(EngineDevice(id: "d1", name: "Amy's iPad", state: state, onUSB: true))
+    }
+
+    func testAMirroringDeviceIsGreen() {
+        let row = row(.mirroring)
+        XCTAssertEqual(row.word, "Mirroring")
         XCTAssertEqual(row.tint, .green)
+        XCTAssertNil(row.subline)
         XCTAssertEqual(row.action, .disconnect)
     }
 
-    // The sender's status strings are sentences; the row keeps a short state word so the
-    // device name is never the thing that truncates in a 320-point popover.
+    func testAConnectingDeviceSaysSo() {
+        let row = row(.connecting)
+        XCTAssertEqual(row.word, "Connecting\u{2026}")
+        XCTAssertEqual(row.tint, .orange)
+        XCTAssertNil(row.subline)
+    }
 
-    func testFoundDeviceGetsAShortWordAndTheNextStepUnderneath() {
-        let row = MenuPresentation.deviceRow(EngineDevice(
-            id: "d1", name: "iPhone / iPad",
-            status: "Device found \u{2014} open the OpenDisplay app on it\u{2026}", onUSB: true))
+    func testAFoundDeviceGetsTheNextStepUnderneath() {
+        let row = row(.waitingForApp)
         XCTAssertEqual(row.word, "Found")
         XCTAssertEqual(row.subline, "Open Design Canvas on the iPad or iPhone")
         XCTAssertEqual(row.action, .disconnect)
     }
 
-    func testMirroringStatusDropsTheResolution() {
-        let row = MenuPresentation.deviceRow(EngineDevice(
-            id: "d1", name: "iPadz", status: "Mirroring to device (3024\u{00D7}1964)", onUSB: true))
-        XCTAssertEqual(row.word, "Mirroring")
-        XCTAssertNil(row.subline)
+    func testAnAsleepDeviceSaysItResumesOnWake() {
+        let row = row(.asleep)
+        XCTAssertEqual(row.word, "Asleep")
+        XCTAssertEqual(row.tint, .secondary)
+        XCTAssertEqual(row.subline, "Mirroring resumes when it wakes")
     }
 
-    func testConnectedToEndpointDropsTheEndpointName() {
-        let row = MenuPresentation.deviceRow(EngineDevice(
-            id: "d1", name: "iPadz", status: "Connected to iPadz", onUSB: true))
-        XCTAssertEqual(row.word, "Connected")
-        XCTAssertNil(row.subline)
+    func testAnUnreachableDeviceSaysHowToReachIt() {
+        let row = row(.unreachable)
+        XCTAssertEqual(row.word, "Not reachable")
+        XCTAssertEqual(row.subline, "Plug it in, or open Design Canvas on it on the same WiFi")
     }
 
-    func testWaitingStatusesCollapseToWaiting() {
-        for status in ["Waiting for receiver at iPadz\u{2026}", "Waiting for the device to connect\u{2026}"] {
-            let row = MenuPresentation.deviceRow(EngineDevice(id: "d1", name: "iPadz", status: status, onUSB: true))
-            XCTAssertEqual(row.word, "Waiting\u{2026}", status)
-            XCTAssertNil(row.subline, status)
+    func testADeviceAnotherMacTookIsInUse() {
+        let row = row(.inUseElsewhere)
+        XCTAssertEqual(row.word, "In use")
+        XCTAssertEqual(row.tint, .orange)
+        XCTAssertEqual(row.subline, "Another Mac is mirroring to it")
+    }
+
+    func testAVersionMismatchIsRed_andSaysWhatToInstall() {
+        let row = row(.needsUpdate)
+        XCTAssertEqual(row.word, "Update needed")
+        XCTAssertEqual(row.tint, .red, "a red state has a way out (D7): the sub-line")
+        XCTAssertEqual(row.subline, "Install the same Design Canvas version on it and on this Mac")
+    }
+
+    func testEveryStateCanBeDisconnected() {
+        let states: [EngineDevice.State] = [.connecting, .mirroring, .waitingForApp, .asleep,
+                                            .unreachable, .inUseElsewhere, .needsUpdate]
+        for state in states {
+            XCTAssertEqual(row(state).action, .disconnect, "\(state)")
         }
+        XCTAssertEqual(Set(states.map { row($0).word }).count, states.count, "every state stays distinguishable (D7)")
+    }
+
+    func testOnlyAMirroringDeviceCountsAsConnected() {
+        XCTAssertTrue(EngineDevice(id: "d1", name: "iPad", state: .mirroring, onUSB: true).connected)
+        XCTAssertFalse(EngineDevice(id: "d1", name: "iPad", state: .waitingForApp, onUSB: true).connected)
     }
 
     func testDiscoveredDeviceIsAvailable() {

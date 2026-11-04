@@ -3,38 +3,41 @@ import Foundation
 import ImageIO
 import XCTest
 
-// NOTE: this hostless bundle compiles DesignCanvas/Mac/Engine,
-// DesignCanvas/Shared and Mac/SenderCanvasHooks.swift straight into it (see
-// project.yml), so everything under test is available without an import.
+// NOTE: this hostless bundle compiles DesignCanvas/Shared and Mac/Engine
+// straight into it (see project.yml), so everything under test is available
+// without an import.
 
 final class CanvasSessionTests: XCTestCase {
 
     // MARK: - helpers
 
+    /// The Mac's frame ring, as a session sees it. Fresh per test.
+    private let frames = FakeFrames()
+
     private func makeSession(
         daemon: FakeDaemon,
         status: CanvasStatus = CanvasStatus(),
+        installID: String = "install-A",
         deviceName: String = "Zhao's iPad",
-        parking: CanvasCaptureParkingLot = CanvasCaptureParkingLot(),
+        sleep: @escaping (TimeInterval) async -> Void = { _ in await Task.yield() },
         now: @escaping () -> Date = Date.init
     ) -> CanvasSession {
         CanvasSession(
+            installID: installID,
             deviceName: deviceName,
             daemon: daemon,
             status: status,
-            parking: parking,
+            frames: frames,
             workQueue: DispatchQueue(label: "test.canvas.work", qos: .utility),
             now: now,
-            // Immediate, but cooperative: a test that parks a job in its retry
-            // loop must not monopolise the executor while it waits.
-            sleep: { _ in await Task.yield() }
+            // Immediate, but cooperative by default: a test that parks a job in
+            // its retry loop must not monopolise the executor while it waits.
+            sleep: sleep
         )
     }
 
-    private func freezeJSON(captureMs: Int64, zoomRect: NormalizedRect = .full) -> [String: Any] {
-        var object = FreezeMessage(captureMs: captureMs, zoomRect: zoomRect, t: 1_700_000_000_000).json
-        object["type"] = CanvasWire.freeze
-        return object
+    private func freezeJSON(frame: UInt64) -> [String: Any] {
+        FreezeMessage(frame: frame, t: 1_700_000_000_000).json
     }
 
     private func frozenReplies(_ outbound: FakeOutbound) -> [Bool] {
@@ -43,26 +46,29 @@ final class CanvasSessionTests: XCTestCase {
 
     private static let testViewport = CanvasViewport(width: 1366, height: 1024, scale: 2)
 
+    /// A sketch with nothing drawn on it: the composite is the frozen frame.
+    /// The wire carries no empty sketch, so tests that only care about the
+    /// round use this one.
+    private lazy var blankSketch = sketchPNG(width: 40, height: 30, bandHeight: 0, fill: TestImages.RGBA(0, 0, 0))
+
     /// `t` identifies the round: the Mac drops a second `annotation` carrying a
     /// `t` it has already accepted as the iPad's byte-identical re-send (C1), so
     /// a test sending two *different* sketches gives them different stamps, as
     /// two real Done taps would.
     private func annotationJSON(
-        sketch: Data,
-        zoomRect: NormalizedRect = .full,
         viewport: CanvasViewport = CanvasSessionTests.testViewport,
         note: String? = nil,
         t: Double = 1_700_000_000_000
     ) -> [String: Any] {
-        var object = AnnotationMessage(
-            sketchPNG: sketch,
-            zoomRect: zoomRect,
-            viewport: viewport,
-            note: note,
-            t: t
-        ).json
-        object["type"] = CanvasWire.annotation
-        return object
+        AnnotationMessage(sketchPNG: Data([0]), viewport: viewport, note: note, t: t).json
+    }
+
+    /// Sends an `annotation` the way the link delivers it: JSON plus the
+    /// sketch as the attachment.
+    private func annotate(_ session: CanvasSession, sketch: Data? = nil, note: String? = nil,
+                          t: Double = 1_700_000_000_000) {
+        session.receive(type: CanvasWire.annotation, object: annotationJSON(note: note, t: t),
+                        attachment: sketch ?? blankSketch)
     }
 
     /// A sketch whose top `bandHeight` rows are opaque `fill` and whose rest
@@ -85,33 +91,32 @@ final class CanvasSessionTests: XCTestCase {
         return CGSize(width: image.width, height: image.height)
     }
 
-    /// Feeds one frame and freezes on it, waiting until its capture has been
-    /// posted so the held capture already carries an id.
+    /// Puts one frame in the ring and freezes on it, waiting until its capture
+    /// has been posted so the held capture already carries an id.
     @discardableResult
     private func freeze(
         _ session: CanvasSession,
-        outbound: FakeOutbound,
         daemon: FakeDaemon,
-        captureMs: Int64,
+        frame: UInt64,
         colour: TestImages.RGBA,
         width: Int = 40,
         height: Int = 30,
+        capturedAt: Date = Date(timeIntervalSince1970: 1_700_000_000),
         waitForCapturePost: Bool = true
     ) -> Int {
         let posts = daemon.captureCalls.count
-        session.canvasDidEncodeFrame(
-            TestImages.solidBGRAPixelBuffer(width: width, height: height, color: colour),
-            captureMs: captureMs
-        )
-        session.canvasDidReceive(type: CanvasWire.freeze, object: freezeJSON(captureMs: captureMs), outbound: outbound)
+        frames.put(TestImages.solidBGRAPixelBuffer(width: width, height: height, color: colour),
+                   frame: frame, capturedAt: capturedAt)
+        session.receive(type: CanvasWire.freeze, object: freezeJSON(frame: frame), attachment: Data())
         if waitForCapturePost {
             waitUntil("the freeze capture to be posted") { daemon.captureCalls.count == posts + 1 }
         }
         return posts + 1
     }
 
-    private func hello(_ session: CanvasSession, outbound: FakeOutbound, installID: String = "install-A") {
-        session.canvasPeerDidHello(CanvasPeer(installID: installID, deviceKind: "ipad"), outbound: outbound)
+    /// The iPad said hello on `outbound`.
+    private func hello(_ session: CanvasSession, outbound: FakeOutbound) {
+        session.attach(outbound)
     }
 
     // MARK: - freeze
@@ -120,13 +125,16 @@ final class CanvasSessionTests: XCTestCase {
         let daemon = FakeDaemon()
         let outbound = FakeOutbound()
         let session = makeSession(daemon: daemon)
-        let frame = TestImages.solidBGRAPixelBuffer(width: 40, height: 30, color: TestImages.RGBA(10, 200, 30))
-        session.canvasDidEncodeFrame(frame, captureMs: 1_000)
+        hello(session, outbound: outbound)
+        frames.put(TestImages.solidBGRAPixelBuffer(width: 40, height: 30, color: TestImages.RGBA(10, 200, 30)), frame: 7)
 
-        session.canvasDidReceive(type: CanvasWire.freeze, object: freezeJSON(captureMs: 1_000), outbound: outbound)
+        session.receive(type: CanvasWire.freeze, object: freezeJSON(frame: 7), attachment: Data())
 
-        // The reply is sent before any PNG work, so it is already recorded.
+        // The reply is sent before any PNG work, so it is already recorded,
+        // and it names the frame it answers.
         XCTAssertEqual(frozenReplies(outbound), [true])
+        XCTAssertEqual(outbound.objects(ofType: CanvasWire.frozen).first.flatMap(FrozenMessage.init(json:)),
+                       FrozenMessage(frame: 7, ok: true))
 
         guard waitUntil("the freeze capture to be posted", { daemon.captureCalls.count == 1 }) else { return }
         let call = daemon.captureCalls[0]
@@ -135,67 +143,57 @@ final class CanvasSessionTests: XCTestCase {
         XCTAssertEqual(TestImages.pixel(inPNG: call.png, x: 5, y: 5), TestImages.RGBA(10, 200, 30))
     }
 
-    func test_freeze_100msOffTheRing_repliesNotOk_andPostsNoCapture() {
+    /// The frame is matched exactly by number: the ring either holds the
+    /// frame the iPad is looking at or the freeze misses.
+    func test_freeze_ofAFrameTheRingDoesNotHold_repliesNotOk_andPostsNoCapture() {
         let daemon = FakeDaemon()
         let outbound = FakeOutbound()
         let session = makeSession(daemon: daemon)
-        session.canvasDidEncodeFrame(
-            TestImages.solidBGRAPixelBuffer(width: 40, height: 30, color: TestImages.RGBA(200, 0, 0)),
-            captureMs: 1_000
-        )
-        session.canvasDidEncodeFrame(
-            TestImages.solidBGRAPixelBuffer(width: 20, height: 10, color: TestImages.RGBA(0, 0, 200)),
-            captureMs: 2_000
-        )
+        hello(session, outbound: outbound)
+        frames.put(TestImages.solidBGRAPixelBuffer(width: 40, height: 30, color: TestImages.RGBA(200, 0, 0)), frame: 1)
+        frames.put(TestImages.solidBGRAPixelBuffer(width: 20, height: 10, color: TestImages.RGBA(0, 0, 200)), frame: 2)
 
-        session.canvasDidReceive(type: CanvasWire.freeze, object: freezeJSON(captureMs: 1_100), outbound: outbound)
+        session.receive(type: CanvasWire.freeze, object: freezeJSON(frame: 3), attachment: Data())
 
         XCTAssertEqual(frozenReplies(outbound), [false])
 
         // Positive marker: a freeze that does hit posts, and because the
         // upload pipeline is FIFO the miss would have been posted first.
-        session.canvasDidReceive(type: CanvasWire.freeze, object: freezeJSON(captureMs: 2_000), outbound: outbound)
+        session.receive(type: CanvasWire.freeze, object: freezeJSON(frame: 2), attachment: Data())
         guard waitUntil("the hitting freeze's capture to be posted", { daemon.captureCalls.count == 1 }) else { return }
         XCTAssertEqual(frozenReplies(outbound), [false, true])
         XCTAssertEqual(daemon.captureCalls[0].width, 20)
         XCTAssertEqual(daemon.captureCalls.count, 1)
     }
 
-    func test_freeze_unparseable_repliesNotOk() {
+    /// With no frame number there is nothing a `frozen` could answer; the
+    /// iPad's own freeze deadline takes it out of FREEZING.
+    func test_freeze_unparseable_repliesNothing_andPostsNoCapture() {
         let daemon = FakeDaemon()
         let outbound = FakeOutbound()
         let session = makeSession(daemon: daemon)
-        session.canvasDidEncodeFrame(
-            TestImages.solidBGRAPixelBuffer(width: 8, height: 8, color: TestImages.RGBA(1, 2, 3)),
-            captureMs: 1_000
-        )
+        hello(session, outbound: outbound)
+        frames.put(TestImages.solidBGRAPixelBuffer(width: 8, height: 8, color: TestImages.RGBA(1, 2, 3)), frame: 1)
 
-        session.canvasDidReceive(
-            type: CanvasWire.freeze,
-            object: ["type": CanvasWire.freeze, "captureMs": "not a number", "t": 1],
-            outbound: outbound
-        )
+        session.receive(type: CanvasWire.freeze, object: ["frame": "not a number", "t": 1], attachment: Data())
 
-        XCTAssertEqual(frozenReplies(outbound), [false])
+        XCTAssertEqual(frozenReplies(outbound), [])
         XCTAssertTrue(daemon.captureCalls.isEmpty)
     }
 
     // MARK: - annotation
 
-    func test_annotation_afterFreeze_uploadsTheCompositeWithCaptureIdDeviceZoomNoteAndViewport() {
+    func test_annotation_afterFreeze_uploadsTheCompositeWithCaptureIdDeviceNoteAndViewport() {
         let daemon = FakeDaemon()
         let outbound = FakeOutbound()
         let createdAt = Date(timeIntervalSince1970: 1_700_000_000)
-        let session = makeSession(daemon: daemon, deviceName: "Zhao's iPad", now: { createdAt })
-        hello(session, outbound: outbound, installID: "install-A")
-        freeze(session, outbound: outbound, daemon: daemon, captureMs: 1_000, colour: TestImages.RGBA(0, 0, 200))
+        let session = makeSession(daemon: daemon, installID: "install-A", deviceName: "Zhao's iPad",
+                                  now: { createdAt })
+        hello(session, outbound: outbound)
+        freeze(session, daemon: daemon, frame: 1, colour: TestImages.RGBA(0, 0, 200))
 
         let sketch = sketchPNG(width: 40, height: 30, bandHeight: 6, fill: TestImages.RGBA(255, 0, 0))
-        session.canvasDidReceive(
-            type: CanvasWire.annotation,
-            object: annotationJSON(sketch: sketch, note: "make this blue"),
-            outbound: outbound
-        )
+        annotate(session, sketch: sketch, note: "make this blue")
         XCTAssertEqual(session.pendingUploadCount, 1)
 
         guard waitUntil("the annotation to be uploaded", { daemon.annotationCalls.count == 1 }) else { return }
@@ -203,7 +201,7 @@ final class CanvasSessionTests: XCTestCase {
         XCTAssertEqual(upload.sourceCaptureId, "capture-1")
         XCTAssertEqual(upload.deviceID, "install-A")
         XCTAssertEqual(upload.deviceName, "Zhao's iPad")
-        XCTAssertNil(upload.zoomRect, "a full rect is uploaded as null — the channel's \"full frame\" (M1)")
+        XCTAssertNil(upload.zoomRect, "a round is the whole frame, uploaded as null — the channel's \"full frame\" (M1)")
         XCTAssertEqual(upload.viewport, CanvasSessionTests.testViewport)
         XCTAssertEqual(upload.note, "make this blue")
         XCTAssertEqual(upload.createdAt, createdAt)
@@ -217,60 +215,40 @@ final class CanvasSessionTests: XCTestCase {
 
     /// M2: "Captured at" is what the channel tells the model the frame is
     /// from. It was the daemon's own receipt time, minutes late for a round
-    /// that waited out a retry — the frame's own millisecond is right there in
-    /// the ring entry.
+    /// that waited out a retry — the frame's own capture time is right there
+    /// in the ring entry.
     func test_freeze_postsTheCaptureStampedWithTheFramesOwnTime() {
         let daemon = FakeDaemon()
         let outbound = FakeOutbound()
         // The app's clock is deliberately somewhere else entirely: the stamp
         // must come from the frame, not from "now".
         let session = makeSession(daemon: daemon, now: { Date(timeIntervalSince1970: 9_999) })
-        hello(session, outbound: outbound, installID: "install-A")
+        hello(session, outbound: outbound)
 
-        freeze(session, outbound: outbound, daemon: daemon, captureMs: 1_700_000_123_456,
-               colour: TestImages.RGBA(0, 0, 200))
+        freeze(session, daemon: daemon, frame: 1, colour: TestImages.RGBA(0, 0, 200),
+               capturedAt: Date(timeIntervalSince1970: 1_700_000_123.456))
 
         XCTAssertEqual(daemon.captureCalls.count, 1)
         XCTAssertEqual(daemon.captureCalls[0].capturedAt,
                        Date(timeIntervalSince1970: 1_700_000_123.456))
     }
 
-    /// M1: the channel prints "full frame" only for a null `zoomRect`, and the
-    /// engine never sent one — so an un-zoomed sketch was described to the
-    /// model as a crop of the whole screen.
-    func test_annotation_onAFullFrame_uploadsANilZoomRect() {
+    /// An annotation with no sketch attached is not an annotation: the iPad
+    /// never sends one, and there would be nothing to composite.
+    func test_annotation_withNoAttachment_isDropped() {
         let daemon = FakeDaemon()
         let outbound = FakeOutbound()
         let session = makeSession(daemon: daemon)
-        hello(session, outbound: outbound, installID: "install-A")
-        freeze(session, outbound: outbound, daemon: daemon, captureMs: 1_000, colour: TestImages.RGBA(0, 0, 200))
+        hello(session, outbound: outbound)
+        freeze(session, daemon: daemon, frame: 1, colour: TestImages.RGBA(0, 0, 200))
 
-        session.canvasDidReceive(
-            type: CanvasWire.annotation,
-            object: annotationJSON(sketch: Data(), zoomRect: .full),
-            outbound: outbound
-        )
+        session.receive(type: CanvasWire.annotation, object: annotationJSON(), attachment: Data())
 
-        guard waitUntil("the annotation to be uploaded", { daemon.annotationCalls.count == 1 }) else { return }
-        XCTAssertNil(daemon.annotationCalls[0].zoomRect)
-    }
-
-    func test_annotation_onAZoomedFrame_uploadsTheRect() {
-        let daemon = FakeDaemon()
-        let outbound = FakeOutbound()
-        let session = makeSession(daemon: daemon)
-        hello(session, outbound: outbound, installID: "install-A")
-        freeze(session, outbound: outbound, daemon: daemon, captureMs: 1_000, colour: TestImages.RGBA(0, 0, 200))
-
-        let zoom = NormalizedRect(x: 0.25, y: 0.25, width: 0.5, height: 0.5)
-        session.canvasDidReceive(
-            type: CanvasWire.annotation,
-            object: annotationJSON(sketch: Data(), zoomRect: zoom),
-            outbound: outbound
-        )
-
-        guard waitUntil("the annotation to be uploaded", { daemon.annotationCalls.count == 1 }) else { return }
-        XCTAssertEqual(daemon.annotationCalls[0].zoomRect, zoom)
+        XCTAssertEqual(session.pendingUploadCount, 0)
+        // Positive marker: the held capture is still there for a real one.
+        annotate(session, t: 2)
+        guard waitUntil("the real annotation to be uploaded", { daemon.annotationCalls.count == 1 }) else { return }
+        XCTAssertEqual(daemon.annotationCalls[0].sourceCaptureId, "capture-1")
     }
 
     func test_annotation_withNoPriorFreeze_uploadsNothing() {
@@ -279,21 +257,13 @@ final class CanvasSessionTests: XCTestCase {
         let session = makeSession(daemon: daemon)
         hello(session, outbound: outbound)
 
-        session.canvasDidReceive(
-            type: CanvasWire.annotation,
-            object: annotationJSON(sketch: Data()),
-            outbound: outbound
-        )
+        annotate(session)
         XCTAssertEqual(session.pendingUploadCount, 0)
 
         // Positive marker: an annotation that does have a freeze uploads, and
         // the pipeline is FIFO, so a dropped one would have been posted first.
-        freeze(session, outbound: outbound, daemon: daemon, captureMs: 1_000, colour: TestImages.RGBA(0, 0, 200))
-        session.canvasDidReceive(
-            type: CanvasWire.annotation,
-            object: annotationJSON(sketch: Data()),
-            outbound: outbound
-        )
+        freeze(session, daemon: daemon, frame: 1, colour: TestImages.RGBA(0, 0, 200))
+        annotate(session, t: 2)
         guard waitUntil("the second annotation to be uploaded", { daemon.annotationCalls.count == 1 }) else { return }
         XCTAssertEqual(daemon.annotationCalls.count, 1)
         XCTAssertEqual(daemon.annotationCalls[0].sourceCaptureId, "capture-1")
@@ -305,15 +275,11 @@ final class CanvasSessionTests: XCTestCase {
         let session = makeSession(daemon: daemon)
         hello(session, outbound: outbound)
 
-        freeze(session, outbound: outbound, daemon: daemon, captureMs: 1_000, colour: TestImages.RGBA(200, 0, 0))
-        freeze(session, outbound: outbound, daemon: daemon, captureMs: 2_000, colour: TestImages.RGBA(0, 200, 0))
+        freeze(session, daemon: daemon, frame: 1, colour: TestImages.RGBA(200, 0, 0))
+        freeze(session, daemon: daemon, frame: 2, colour: TestImages.RGBA(0, 200, 0))
         XCTAssertEqual(daemon.captureCalls.count, 2)
 
-        session.canvasDidReceive(
-            type: CanvasWire.annotation,
-            object: annotationJSON(sketch: Data()),
-            outbound: outbound
-        )
+        annotate(session)
 
         guard waitUntil("the annotation to be uploaded", { daemon.annotationCalls.count == 1 }) else { return }
         let upload = daemon.annotationCalls[0]
@@ -327,13 +293,9 @@ final class CanvasSessionTests: XCTestCase {
         let outbound = FakeOutbound()
         let session = makeSession(daemon: daemon)
         hello(session, outbound: outbound)
-        freeze(session, outbound: outbound, daemon: daemon, captureMs: 1_000, colour: TestImages.RGBA(0, 0, 200))
+        freeze(session, daemon: daemon, frame: 1, colour: TestImages.RGBA(0, 0, 200))
 
-        session.canvasDidReceive(
-            type: CanvasWire.annotation,
-            object: annotationJSON(sketch: Data()),
-            outbound: outbound
-        )
+        annotate(session)
 
         guard waitUntil("the annotation to be uploaded", { daemon.annotationCalls.count == 1 }) else { return }
         XCTAssertEqual(daemon.captureCalls.count, 2)
@@ -350,29 +312,13 @@ final class CanvasSessionTests: XCTestCase {
         let outbound = FakeOutbound()
         var delays: [TimeInterval] = []
         let delaysLock = NSLock()
-        let session = CanvasSession(
-            deviceName: "Zhao's iPad",
-            daemon: daemon,
-            status: CanvasStatus(),
-            workQueue: DispatchQueue(label: "test.canvas.work", qos: .utility),
-            now: Date.init,
-            sleep: { seconds in delaysLock.withLock { delays.append(seconds) } }
-        )
+        let session = makeSession(daemon: daemon, sleep: { seconds in delaysLock.withLock { delays.append(seconds) } })
         hello(session, outbound: outbound)
 
-        freeze(session, outbound: outbound, daemon: daemon, captureMs: 1_000, colour: TestImages.RGBA(200, 0, 0))
-        session.canvasDidReceive(
-            type: CanvasWire.annotation,
-            object: annotationJSON(sketch: Data()),
-            outbound: outbound
-        )
-        freeze(session, outbound: outbound, daemon: daemon, captureMs: 2_000, colour: TestImages.RGBA(0, 200, 0),
-               waitForCapturePost: false)
-        session.canvasDidReceive(
-            type: CanvasWire.annotation,
-            object: annotationJSON(sketch: Data(), t: 1_700_000_005_000),
-            outbound: outbound
-        )
+        freeze(session, daemon: daemon, frame: 1, colour: TestImages.RGBA(200, 0, 0))
+        annotate(session)
+        freeze(session, daemon: daemon, frame: 2, colour: TestImages.RGBA(0, 200, 0), waitForCapturePost: false)
+        annotate(session, t: 1_700_000_005_000)
 
         guard waitUntil("both annotations to be uploaded", { daemon.annotationCalls.count == 4 }) else { return }
         XCTAssertEqual(
@@ -389,22 +335,11 @@ final class CanvasSessionTests: XCTestCase {
         let outbound = FakeOutbound()
         var delays: [TimeInterval] = []
         let delaysLock = NSLock()
-        let session = CanvasSession(
-            deviceName: "Zhao's iPad",
-            daemon: daemon,
-            status: CanvasStatus(),
-            workQueue: DispatchQueue(label: "test.canvas.work", qos: .utility),
-            now: Date.init,
-            sleep: { seconds in delaysLock.withLock { delays.append(seconds) } }
-        )
+        let session = makeSession(daemon: daemon, sleep: { seconds in delaysLock.withLock { delays.append(seconds) } })
         hello(session, outbound: outbound)
-        freeze(session, outbound: outbound, daemon: daemon, captureMs: 1_000, colour: TestImages.RGBA(0, 0, 200))
+        freeze(session, daemon: daemon, frame: 1, colour: TestImages.RGBA(0, 0, 200))
 
-        session.canvasDidReceive(
-            type: CanvasWire.annotation,
-            object: annotationJSON(sketch: Data()),
-            outbound: outbound
-        )
+        annotate(session)
 
         guard waitUntil("the retried annotation to be uploaded", { daemon.annotationCalls.count == 2 }) else { return }
         XCTAssertEqual(daemon.captureCalls.count, 2)
@@ -419,20 +354,11 @@ final class CanvasSessionTests: XCTestCase {
         let session = makeSession(daemon: daemon)
         hello(session, outbound: outbound)
 
-        freeze(session, outbound: outbound, daemon: daemon, captureMs: 1_000, colour: TestImages.RGBA(200, 0, 0))
-        session.canvasDidReceive(
-            type: CanvasWire.annotation,
-            object: annotationJSON(sketch: Data([0x01, 0x02, 0x03, 0x04])),
-            outbound: outbound
-        )
+        freeze(session, daemon: daemon, frame: 1, colour: TestImages.RGBA(200, 0, 0))
+        annotate(session, sketch: Data([0x01, 0x02, 0x03, 0x04]))
 
-        freeze(session, outbound: outbound, daemon: daemon, captureMs: 2_000, colour: TestImages.RGBA(0, 200, 0),
-               waitForCapturePost: false)
-        session.canvasDidReceive(
-            type: CanvasWire.annotation,
-            object: annotationJSON(sketch: Data(), t: 1_700_000_005_000),
-            outbound: outbound
-        )
+        freeze(session, daemon: daemon, frame: 2, colour: TestImages.RGBA(0, 200, 0), waitForCapturePost: false)
+        annotate(session, t: 1_700_000_005_000)
 
         guard waitUntil("the second annotation to be uploaded", { daemon.annotationCalls.count == 1 }) else { return }
         XCTAssertEqual(daemon.annotationCalls[0].sourceCaptureId, "capture-2")
@@ -466,19 +392,16 @@ final class CanvasSessionTests: XCTestCase {
         ]
         daemon.scriptRounds(.success(rounds))
         let outbound = FakeOutbound()
-        let session = makeSession(daemon: daemon)
+        let session = makeSession(daemon: daemon, installID: "install-A")
 
-        hello(session, outbound: outbound, installID: "install-A")
+        hello(session, outbound: outbound)
 
-        guard waitUntil("the rounds snapshot to be sent", { outbound.payloads.count == 1 }) else { return }
+        guard waitUntil("the rounds snapshot to be sent", { outbound.objects(ofType: CanvasWire.rounds).count == 1 }) else { return }
         XCTAssertEqual(daemon.roundsCalls.count, 1)
         XCTAssertEqual(daemon.roundsCalls[0].deviceID, "install-A")
         XCTAssertEqual(daemon.roundsCalls[0].limit, CanvasWire.roundsSnapshotLimit)
 
-        let object = try XCTUnwrap(
-            (try? JSONSerialization.jsonObject(with: outbound.payloads[0])) as? [String: Any]
-        )
-        XCTAssertEqual(object["type"] as? String, CanvasWire.rounds)
+        let object = try XCTUnwrap(outbound.objects(ofType: CanvasWire.rounds).first)
         XCTAssertEqual(RoundsMessage(json: object), RoundsMessage(rounds: rounds))
     }
 
@@ -490,11 +413,8 @@ final class CanvasSessionTests: XCTestCase {
 
         hello(session, outbound: outbound)
 
-        guard waitUntil("the rounds snapshot to be sent", { outbound.payloads.count == 1 }) else { return }
-        let object = try XCTUnwrap(
-            (try? JSONSerialization.jsonObject(with: outbound.payloads[0])) as? [String: Any]
-        )
-        XCTAssertEqual(object["type"] as? String, CanvasWire.rounds)
+        guard waitUntil("the rounds snapshot to be sent", { outbound.objects(ofType: CanvasWire.rounds).count == 1 }) else { return }
+        let object = try XCTUnwrap(outbound.objects(ofType: CanvasWire.rounds).first)
         XCTAssertEqual(RoundsMessage(json: object), RoundsMessage(rounds: []))
     }
 
@@ -506,38 +426,35 @@ final class CanvasSessionTests: XCTestCase {
         let rounds = [round("a1", status: .applied, message: "done")]
         daemon.scriptRounds(.success(rounds))
         let outbound = FakeOutbound()
-        let session = makeSession(daemon: daemon)
+        let session = makeSession(daemon: daemon, installID: "install-A")
 
-        hello(session, outbound: outbound, installID: "install-A")
-        guard waitUntil("hello's snapshot to be sent", { outbound.payloads.count == 1 }) else { return }
+        hello(session, outbound: outbound)
+        guard waitUntil("hello's snapshot to be sent", { outbound.objects(ofType: CanvasWire.rounds).count == 1 }) else { return }
 
         session.resendSnapshot()
 
-        guard waitUntil("the resent snapshot", { outbound.payloads.count == 2 }) else { return }
+        guard waitUntil("the resent snapshot", { outbound.objects(ofType: CanvasWire.rounds).count == 2 }) else { return }
         XCTAssertEqual(daemon.roundsCalls.map(\.deviceID), ["install-A", "install-A"])
-        let object = try XCTUnwrap(
-            (try? JSONSerialization.jsonObject(with: outbound.payloads[1])) as? [String: Any]
-        )
-        XCTAssertEqual(object["type"] as? String, CanvasWire.rounds)
+        let object = try XCTUnwrap(outbound.objects(ofType: CanvasWire.rounds).last)
         XCTAssertEqual(RoundsMessage(json: object), RoundsMessage(rounds: rounds))
     }
 
-    func test_resendSnapshot_withNoDeviceOrNoLink_sendsNothing() {
+    func test_resendSnapshot_withNoLink_sendsNothing() {
         let daemon = FakeDaemon()
         let outbound = FakeOutbound()
         let session = makeSession(daemon: daemon)
 
-        // No hello yet: there is no device to ask about.
+        // No hello yet: there is nowhere to send it.
         session.resendSnapshot()
         XCTAssertTrue(daemon.roundsCalls.isEmpty)
 
-        hello(session, outbound: outbound, installID: "install-A")
-        guard waitUntil("hello's snapshot to be sent", { outbound.payloads.count == 1 }) else { return }
-        session.canvasLinkDidDrop()
+        hello(session, outbound: outbound)
+        guard waitUntil("hello's snapshot to be sent", { outbound.objects(ofType: CanvasWire.rounds).count == 1 }) else { return }
+        session.detach(outbound)
 
         session.resendSnapshot()
         XCTAssertEqual(daemon.roundsCalls.count, 1, "nothing to send it down")
-        XCTAssertEqual(outbound.payloads.count, 1)
+        XCTAssertEqual(outbound.objects(ofType: CanvasWire.rounds).count, 1)
     }
 
     // MARK: - deliver
@@ -549,8 +466,9 @@ final class CanvasSessionTests: XCTestCase {
     func test_deliver_forThisDevice_sendsAnAgentReplyWithATruncatedMessage() {
         let daemon = FakeDaemon()
         let outbound = FakeOutbound()
-        let session = makeSession(daemon: daemon, now: { Date(timeIntervalSince1970: 1_700_000_000) })
-        hello(session, outbound: outbound, installID: "install-A")
+        let session = makeSession(daemon: daemon, installID: "install-A",
+                                  now: { Date(timeIntervalSince1970: 1_700_000_000) })
+        hello(session, outbound: outbound)
 
         let long = String(repeating: "é", count: 4_000)   // 8000 UTF-8 bytes
         session.deliver(RoundUpdate(
@@ -572,8 +490,8 @@ final class CanvasSessionTests: XCTestCase {
     func test_deliver_forAnotherDevice_sendsNothing() {
         let daemon = FakeDaemon()
         let outbound = FakeOutbound()
-        let session = makeSession(daemon: daemon)
-        hello(session, outbound: outbound, installID: "install-A")
+        let session = makeSession(daemon: daemon, installID: "install-A")
+        hello(session, outbound: outbound)
 
         session.deliver(RoundUpdate(deviceID: "install-B", round: round("a1")))
         XCTAssertEqual(agentReplies(outbound).count, 0)
@@ -586,181 +504,109 @@ final class CanvasSessionTests: XCTestCase {
     func test_deliver_afterTheLinkDropped_sendsNothing() {
         let daemon = FakeDaemon()
         let outbound = FakeOutbound()
-        let session = makeSession(daemon: daemon)
-        hello(session, outbound: outbound, installID: "install-A")
-        session.canvasLinkDidDrop()
+        let session = makeSession(daemon: daemon, installID: "install-A")
+        hello(session, outbound: outbound)
+        session.detach(outbound)
 
         session.deliver(RoundUpdate(deviceID: "install-A", round: round("a1")))
 
         XCTAssertEqual(agentReplies(outbound).count, 0)
     }
 
-    // MARK: - link drop and the parked freeze capture (C1)
+    /// A link that drops reports it late, after the iPad has already said
+    /// hello on the next one: the late report must not cut off the new link.
+    func test_detachingAnOldLink_leavesTheNewOneAttached() {
+        let daemon = FakeDaemon()
+        let old = FakeOutbound()
+        let new = FakeOutbound()
+        let session = makeSession(daemon: daemon, installID: "install-A")
+        hello(session, outbound: old)
+        hello(session, outbound: new)
+
+        session.detach(old)
+        session.deliver(RoundUpdate(deviceID: "install-A", round: round("a1")))
+
+        XCTAssertEqual(agentReplies(new).map { $0["annotationId"] as? String }, ["a1"])
+        XCTAssertEqual(agentReplies(old).count, 0)
+    }
+
+    // MARK: - a link drop, and the reconnect that finishes the round (C1)
 
     /// The iPad answers a link loss in SENDING by keeping the sketch and
     /// re-sending it after the next `hello` (ruling 5). A Mac that forgot its
     /// freeze capture on the drop would then log "no freeze capture is held"
-    /// and bin a sketch the device shows as sent.
+    /// and bin a sketch the device shows as sent. The session is the iPad's
+    /// for the app's life, so the reconnect — a new link — finds it.
     func test_linkDrop_keepsTheHeldFreezeCapture_soAResentAnnotationStillUploads() {
         let daemon = FakeDaemon()
         let outbound = FakeOutbound()
         let session = makeSession(daemon: daemon)
-        hello(session, outbound: outbound, installID: "install-A")
-        freeze(session, outbound: outbound, daemon: daemon, captureMs: 1_000, colour: TestImages.RGBA(200, 0, 0))
+        hello(session, outbound: outbound)
+        freeze(session, daemon: daemon, frame: 1, colour: TestImages.RGBA(200, 0, 0))
 
         // Twice: one drop can be reported more than once.
-        session.canvasLinkDidDrop()
-        session.canvasLinkDidDrop()
+        session.detach(outbound)
+        session.detach(outbound)
 
-        hello(session, outbound: outbound, installID: "install-A")
-        session.canvasDidReceive(
-            type: CanvasWire.annotation,
-            object: annotationJSON(sketch: Data()),
-            outbound: outbound
-        )
+        let reconnected = FakeOutbound()
+        hello(session, outbound: reconnected)
+        annotate(session)
 
         guard waitUntil("the resent annotation to be uploaded", { daemon.annotationCalls.count == 1 }) else { return }
         XCTAssertEqual(daemon.annotationCalls[0].sourceCaptureId, "capture-1")
         XCTAssertEqual(daemon.captureCalls.count, 1, "the frame is not posted a second time")
     }
 
-    /// The sender tears the `DeviceSession` down after its 10 s grace, so the
-    /// re-send usually lands on a brand new `CanvasSession`. The capture is
-    /// parked per install id so that session inherits it.
-    func test_aNewSessionForTheSameInstallIdInheritsTheParkedCapture() {
-        let daemon = FakeDaemon()
-        let parking = CanvasCaptureParkingLot()
-        let outbound = FakeOutbound()
-        let first = makeSession(daemon: daemon, parking: parking)
-        hello(first, outbound: outbound, installID: "install-A")
-        freeze(first, outbound: outbound, daemon: daemon, captureMs: 1_000, colour: TestImages.RGBA(200, 0, 0))
-        first.canvasLinkDidDrop()
-
-        let second = makeSession(daemon: daemon, parking: parking)
-        let secondOutbound = FakeOutbound()
-        hello(second, outbound: secondOutbound, installID: "install-A")
-        second.canvasDidReceive(
-            type: CanvasWire.annotation,
-            object: annotationJSON(sketch: Data()),
-            outbound: secondOutbound
-        )
-
-        guard waitUntil("the resent annotation to be uploaded", { daemon.annotationCalls.count == 1 }) else { return }
-        XCTAssertEqual(daemon.annotationCalls[0].sourceCaptureId, "capture-1")
-        XCTAssertEqual(daemon.captureCalls.count, 1)
-    }
-
-    func test_aSessionForADifferentInstallIdDoesNotInheritTheParkedCapture() {
-        let daemon = FakeDaemon()
-        let parking = CanvasCaptureParkingLot()
-        let outbound = FakeOutbound()
-        let first = makeSession(daemon: daemon, parking: parking)
-        hello(first, outbound: outbound, installID: "install-A")
-        freeze(first, outbound: outbound, daemon: daemon, captureMs: 1_000, colour: TestImages.RGBA(200, 0, 0))
-        first.canvasLinkDidDrop()
-
-        let other = makeSession(daemon: daemon, parking: parking)
-        let otherOutbound = FakeOutbound()
-        hello(other, outbound: otherOutbound, installID: "install-B")
-        other.canvasDidReceive(
-            type: CanvasWire.annotation,
-            object: annotationJSON(sketch: Data()),
-            outbound: otherOutbound
-        )
-
-        // Positive marker: install-A's own re-send still lands, and the
-        // pipeline is FIFO, so install-B's would have been uploaded first.
-        let again = makeSession(daemon: daemon, parking: parking)
-        let againOutbound = FakeOutbound()
-        hello(again, outbound: againOutbound, installID: "install-A")
-        again.canvasDidReceive(
-            type: CanvasWire.annotation,
-            object: annotationJSON(sketch: Data()),
-            outbound: againOutbound
-        )
-
-        guard waitUntil("install-A's re-send to be uploaded", { daemon.annotationCalls.count == 1 }) else { return }
-        XCTAssertEqual(daemon.annotationCalls[0].deviceID, "install-A")
-    }
-
     /// The iPad re-sends byte-identical bytes, so `t` is stable: a `t` this Mac
     /// has already accepted is the same round arriving twice, not a second one.
-    func test_aReSentAnnotationWithTheSameT_isUploadedOnlyOnce() {
+    func test_aReSentAnnotationWithTheSameT_isUploadedOnlyOnce_acrossAReconnect() {
         let daemon = FakeDaemon()
         let outbound = FakeOutbound()
         let session = makeSession(daemon: daemon)
-        hello(session, outbound: outbound, installID: "install-A")
-        freeze(session, outbound: outbound, daemon: daemon, captureMs: 1_000, colour: TestImages.RGBA(200, 0, 0))
+        hello(session, outbound: outbound)
+        freeze(session, daemon: daemon, frame: 1, colour: TestImages.RGBA(200, 0, 0))
 
-        session.canvasDidReceive(
-            type: CanvasWire.annotation,
-            object: annotationJSON(sketch: Data(), t: 4_242),
-            outbound: outbound
-        )
+        annotate(session, t: 4_242)
         guard waitUntil("the first annotation to be uploaded", { daemon.annotationCalls.count == 1 }) else { return }
 
-        // The write's completion never reached the iPad, so it re-sends.
-        session.canvasLinkDidDrop()
-        hello(session, outbound: outbound, installID: "install-A")
-        session.canvasDidReceive(
-            type: CanvasWire.annotation,
-            object: annotationJSON(sketch: Data(), t: 4_242),
-            outbound: outbound
-        )
+        // The write's completion never reached the iPad, so it re-sends on the
+        // next link.
+        session.detach(outbound)
+        let reconnected = FakeOutbound()
+        hello(session, outbound: reconnected)
+        annotate(session, t: 4_242)
 
         // Positive marker: a genuinely new round (a different `t`) still uploads,
         // and the pipeline is FIFO, so a duplicate would have gone first.
-        freeze(session, outbound: outbound, daemon: daemon, captureMs: 2_000, colour: TestImages.RGBA(0, 200, 0),
-               waitForCapturePost: false)
-        session.canvasDidReceive(
-            type: CanvasWire.annotation,
-            object: annotationJSON(sketch: Data(), t: 5_000),
-            outbound: outbound
-        )
+        freeze(session, daemon: daemon, frame: 2, colour: TestImages.RGBA(0, 200, 0), waitForCapturePost: false)
+        annotate(session, t: 5_000)
 
         guard waitUntil("the next round to be uploaded", { daemon.annotationCalls.count == 2 }) else { return }
         XCTAssertEqual(daemon.annotationCalls.map(\.sourceCaptureId), ["capture-1", "capture-2"])
     }
 
-    /// A parked full-resolution frame must not be pinned for ever by a device
-    /// that never came back.
-    func test_aParkedCaptureOlderThanTenMinutes_isNotUsed() {
+    /// A held full-resolution frame must not be pinned for ever by a device
+    /// that never came back to finish its round.
+    func test_aHeldCaptureOlderThanTenMinutes_isNotUsed() {
         let daemon = FakeDaemon()
-        let parking = CanvasCaptureParkingLot()
         let clock = TestClock()
         clock.current = Date(timeIntervalSince1970: 1_700_000_000)
         let outbound = FakeOutbound()
-        let first = makeSession(daemon: daemon, parking: parking, now: clock.now)
-        hello(first, outbound: outbound, installID: "install-A")
-        freeze(first, outbound: outbound, daemon: daemon, captureMs: 1_000, colour: TestImages.RGBA(200, 0, 0))
-        first.canvasLinkDidDrop()
+        let session = makeSession(daemon: daemon, now: clock.now)
+        hello(session, outbound: outbound)
+        freeze(session, daemon: daemon, frame: 1, colour: TestImages.RGBA(200, 0, 0))
+        session.detach(outbound)
 
-        clock.advance(601)
+        clock.advance(CanvasSession.heldCaptureExpiry + 1)
 
-        let second = makeSession(daemon: daemon, parking: parking, now: clock.now)
-        let secondOutbound = FakeOutbound()
-        hello(second, outbound: secondOutbound, installID: "install-A")
-        second.canvasDidReceive(
-            type: CanvasWire.annotation,
-            object: annotationJSON(sketch: Data()),
-            outbound: secondOutbound
-        )
+        let reconnected = FakeOutbound()
+        hello(session, outbound: reconnected)
+        annotate(session)
 
-        // Positive marker: a freshly parked capture in the same lot is used, and
-        // the pipeline is FIFO, so the expired one would have uploaded first.
-        let third = makeSession(daemon: daemon, parking: parking, now: clock.now)
-        let thirdOutbound = FakeOutbound()
-        hello(third, outbound: thirdOutbound, installID: "install-A")
-        freeze(third, outbound: thirdOutbound, daemon: daemon, captureMs: 3_000, colour: TestImages.RGBA(0, 0, 200))
-        third.canvasLinkDidDrop()
-        let fourth = makeSession(daemon: daemon, parking: parking, now: clock.now)
-        let fourthOutbound = FakeOutbound()
-        hello(fourth, outbound: fourthOutbound, installID: "install-A")
-        fourth.canvasDidReceive(
-            type: CanvasWire.annotation,
-            object: annotationJSON(sketch: Data(), t: 1_700_000_009_000),
-            outbound: fourthOutbound
-        )
+        // Positive marker: a fresh freeze is used, and the pipeline is FIFO, so
+        // the expired one would have uploaded first.
+        freeze(session, daemon: daemon, frame: 3, colour: TestImages.RGBA(0, 0, 200))
+        annotate(session, t: 1_700_000_009_000)
 
         guard waitUntil("the annotation on the fresh capture to be uploaded", {
             daemon.annotationCalls.count == 1
@@ -768,37 +614,30 @@ final class CanvasSessionTests: XCTestCase {
         XCTAssertEqual(daemon.annotationCalls[0].sourceCaptureId, "capture-2")
     }
 
-    func test_linkDrop_keepsQueuedUploadsAndTheRing() {
+    func test_linkDrop_keepsQueuedUploads_andTheSameFrameCanBeFrozenAgain() {
         let daemon = FakeDaemon()
         daemon.scriptAnnotations([.failure(FakeDaemonFailure())])
         let outbound = FakeOutbound()
         let session = makeSession(daemon: daemon)
-        hello(session, outbound: outbound, installID: "install-A")
+        hello(session, outbound: outbound)
 
-        freeze(session, outbound: outbound, daemon: daemon, captureMs: 1_000, colour: TestImages.RGBA(200, 0, 0))
-        session.canvasDidReceive(
-            type: CanvasWire.annotation,
-            object: annotationJSON(sketch: Data()),
-            outbound: outbound
-        )
+        freeze(session, daemon: daemon, frame: 1, colour: TestImages.RGBA(200, 0, 0))
+        annotate(session)
 
         // Twice: one drop can be reported more than once.
-        session.canvasLinkDidDrop()
-        session.canvasLinkDidDrop()
+        session.detach(outbound)
+        session.detach(outbound)
 
         // The queued upload survives the drop: it is still retried to success.
         guard waitUntil("the queued upload to finish its retry", { daemon.annotationCalls.count == 2 }) else { return }
 
-        // The ring survives too, so the same frame can be frozen again.
-        hello(session, outbound: outbound, installID: "install-A")
-        freeze(session, outbound: outbound, daemon: daemon, captureMs: 1_000, colour: TestImages.RGBA(0, 0, 200),
-               waitForCapturePost: false)
-        XCTAssertEqual(frozenReplies(outbound), [true, true])
-        session.canvasDidReceive(
-            type: CanvasWire.annotation,
-            object: annotationJSON(sketch: Data(), t: 1_700_000_005_000),
-            outbound: outbound
-        )
+        // The ring is the Mac's, not the link's, so the same frame can be
+        // frozen again on the next link.
+        let reconnected = FakeOutbound()
+        hello(session, outbound: reconnected)
+        session.receive(type: CanvasWire.freeze, object: freezeJSON(frame: 1), attachment: Data())
+        XCTAssertEqual(frozenReplies(reconnected), [true])
+        annotate(session, t: 1_700_000_005_000)
 
         guard waitUntil("the last annotation to be uploaded", { daemon.annotationCalls.count == 3 }) else { return }
         XCTAssertEqual(
@@ -807,33 +646,75 @@ final class CanvasSessionTests: XCTestCase {
         )
     }
 
-    // MARK: - ping fields
+    // MARK: - status
 
-    func test_canvasPingFields_mirrorCanvasStatus_withNoProjectKeyWithoutATarget() {
+    private func statuses(_ outbound: FakeOutbound) -> [StatusMessage] {
+        outbound.objects(ofType: CanvasWire.status).compactMap(StatusMessage.init(json:))
+    }
+
+    func test_hello_sendsTheStatus_withNoProjectWithoutATarget() {
+        let session = makeSession(daemon: FakeDaemon())
+        let outbound = FakeOutbound()
+
+        hello(session, outbound: outbound)
+
+        XCTAssertEqual(statuses(outbound), [StatusMessage(channel: .none, project: nil)])
+    }
+
+    /// The status is pushed when it changes, never on a timer: the app's 2 s
+    /// health poll calls `sendStatus` far more often than anything changes.
+    func test_sendStatus_sendsOnlyWhatChanged() {
         let status = CanvasStatus()
         let session = makeSession(daemon: FakeDaemon(), status: status)
+        let outbound = FakeOutbound()
+        hello(session, outbound: outbound)
 
-        XCTAssertEqual(session.canvasPingFields(), [CanvasWire.pingChannelKey: "none", CanvasWire.pingBlankKey: "1"])
+        session.sendStatus()
+        XCTAssertEqual(statuses(outbound).count, 1, "nothing changed since the hello")
 
         status.channelState = .attached
         let site = CanvasSessionEntry(id: "dc-a", folder: "site", title: nil, branch: nil,
                                       startedAt: "2026-10-05T10:00:00.000Z", lastReplyAt: nil, state: .idle)
         status.sessions = SessionsMessage(sessions: [site], target: "dc-a")
-        XCTAssertEqual(
-            session.canvasPingFields(),
-            [CanvasWire.pingChannelKey: "attached", CanvasWire.pingProjectKey: "site", CanvasWire.pingBlankKey: "1"]
-        )
+        session.sendStatus()
+        session.sendStatus()
 
-        status.channelState = .detached
-        status.sessions = .empty
-        XCTAssertEqual(session.canvasPingFields(), [CanvasWire.pingChannelKey: "detached", CanvasWire.pingBlankKey: "1"])
+        XCTAssertEqual(statuses(outbound), [
+            StatusMessage(channel: .none, project: nil),
+            StatusMessage(channel: .attached, project: "site"),
+        ])
+    }
+
+    /// What the last link was told says nothing about what the next one knows.
+    func test_aNewHello_sendsTheStatusAgainEvenUnchanged() {
+        let session = makeSession(daemon: FakeDaemon())
+        let first = FakeOutbound()
+        hello(session, outbound: first)
+        session.detach(first)
+
+        let second = FakeOutbound()
+        hello(session, outbound: second)
+
+        XCTAssertEqual(statuses(second), [StatusMessage(channel: .none, project: nil)])
+    }
+
+    func test_sendStatus_withNoLink_sendsNothing() {
+        let status = CanvasStatus()
+        let session = makeSession(daemon: FakeDaemon(), status: status)
+        let outbound = FakeOutbound()
+        hello(session, outbound: outbound)
+        session.detach(outbound)
+
+        status.channelState = .attached
+        session.sendStatus()
+
+        XCTAssertEqual(statuses(outbound).count, 1)
     }
 
     // MARK: - lifetime
 
-    /// A session whose device has gone is dead weight: it holds a frame ring
-    /// of full-size deep copies and the link that fed it. Neither may be kept
-    /// alive by an upload that is still being retried.
+    /// An upload that is still being retried must not keep its session alive:
+    /// the pipeline carries only its own jobs, never the session or its link.
     func test_aSessionReleasedWhileAnUploadIsRetrying_stillDeallocates() {
         let daemon = FakeDaemon()
         daemon.setAnnotationsAlwaysFail(true)
@@ -841,13 +722,9 @@ final class CanvasSessionTests: XCTestCase {
         var session: CanvasSession? = makeSession(daemon: daemon)
         weak let released = session
 
-        hello(session!, outbound: outbound, installID: "install-A")
-        freeze(session!, outbound: outbound, daemon: daemon, captureMs: 1_000, colour: TestImages.RGBA(0, 0, 200))
-        session!.canvasDidReceive(
-            type: CanvasWire.annotation,
-            object: annotationJSON(sketch: Data()),
-            outbound: outbound
-        )
+        hello(session!, outbound: outbound)
+        freeze(session!, daemon: daemon, frame: 1, colour: TestImages.RGBA(0, 0, 200))
+        annotate(session!)
         guard waitUntil("the upload to be retrying", { daemon.annotationCalls.count >= 2 }) else {
             daemon.setAnnotationsAlwaysFail(false)
             return
@@ -871,20 +748,11 @@ final class CanvasSessionTests: XCTestCase {
         var session: CanvasSession? = makeSession(daemon: daemon)
         weak let released = session
 
-        hello(session!, outbound: outbound, installID: "install-A")
-        freeze(session!, outbound: outbound, daemon: daemon, captureMs: 1_000, colour: TestImages.RGBA(200, 0, 0))
-        session!.canvasDidReceive(
-            type: CanvasWire.annotation,
-            object: annotationJSON(sketch: Data()),
-            outbound: outbound
-        )
-        freeze(session!, outbound: outbound, daemon: daemon, captureMs: 2_000, colour: TestImages.RGBA(0, 200, 0),
-               waitForCapturePost: false)
-        session!.canvasDidReceive(
-            type: CanvasWire.annotation,
-            object: annotationJSON(sketch: Data(), t: 1_700_000_005_000),
-            outbound: outbound
-        )
+        hello(session!, outbound: outbound)
+        freeze(session!, daemon: daemon, frame: 1, colour: TestImages.RGBA(200, 0, 0))
+        annotate(session!)
+        freeze(session!, daemon: daemon, frame: 2, colour: TestImages.RGBA(0, 200, 0), waitForCapturePost: false)
+        annotate(session!, t: 1_700_000_005_000)
         XCTAssertEqual(session!.pendingUploadCount, 2)
 
         guard waitUntil("the first upload to be retrying", { daemon.annotationCalls.count >= 2 }) else {
@@ -916,49 +784,23 @@ final class CanvasSessionTests: XCTestCase {
 
     // MARK: - annotation on the blank canvas surface
 
-    private func blankAnnotationJSON(
-        sketch: Data,
-        viewport: CanvasViewport,
-        note: String? = nil,
-        t: Double = 1_700_000_000_000
-    ) -> [String: Any] {
-        var object = AnnotationMessage(sketchPNG: sketch, zoomRect: .full, viewport: viewport,
-                                       note: note, t: t, base: .blank).json
-        object["type"] = CanvasWire.annotation
-        return object
-    }
-
-    func test_pingFields_sayThisMacTakesBlankSketches() {
-        XCTAssertEqual(CanvasStatus().pingFields[CanvasWire.pingBlankKey], "1")
-    }
-
-    func test_pingFields_nameTheMac_whenItHasAName() {
-        XCTAssertEqual(CanvasStatus(macName: "Studio Mac").pingFields[CanvasWire.pingMacNameKey], "Studio Mac")
-        XCTAssertNil(CanvasStatus().pingFields[CanvasWire.pingMacNameKey])
-        XCTAssertNil(CanvasStatus(macName: "  ").pingFields[CanvasWire.pingMacNameKey], "a blank name is no name")
-    }
-
-    func test_pingFields_capTheMacsName() {
-        let long = String(repeating: "M", count: 200)
-        XCTAssertEqual(CanvasStatus(macName: long).pingFields[CanvasWire.pingMacNameKey]?.count,
-                       CanvasWire.macNameMaxCharacters)
+    private func blankAnnotate(_ session: CanvasSession, sketch: Data, viewport: CanvasViewport,
+                               note: String? = nil, t: Double = 1_700_000_000_000) {
+        let object = AnnotationMessage(sketchPNG: sketch, viewport: viewport, note: note, t: t, base: .blank).json
+        session.receive(type: CanvasWire.annotation, object: object, attachment: sketch)
     }
 
     func test_blankAnnotation_withNoFreeze_uploadsAWhitePageOfTheViewportsPixelSize() {
         let daemon = FakeDaemon()
         let outbound = FakeOutbound()
         let createdAt = Date(timeIntervalSince1970: 1_700_000_000)
-        let session = makeSession(daemon: daemon, now: { createdAt })
-        hello(session, outbound: outbound, installID: "install-A")
+        let session = makeSession(daemon: daemon, installID: "install-A", now: { createdAt })
+        hello(session, outbound: outbound)
 
         // 20x15 points at 2x: the sketch PNG and the page are both 40x30 pixels.
         let sketch = sketchPNG(width: 40, height: 30, bandHeight: 6, fill: TestImages.RGBA(255, 0, 0))
-        session.canvasDidReceive(
-            type: CanvasWire.annotation,
-            object: blankAnnotationJSON(sketch: sketch, viewport: CanvasViewport(width: 20, height: 15, scale: 2),
-                                        note: "three cards"),
-            outbound: outbound
-        )
+        blankAnnotate(session, sketch: sketch, viewport: CanvasViewport(width: 20, height: 15, scale: 2),
+                      note: "three cards")
 
         guard waitUntil("the annotation to be uploaded", { daemon.annotationCalls.count == 1 }) else { return }
         XCTAssertEqual(daemon.captureCalls.count, 1, "the page is posted as the round's capture")
@@ -983,10 +825,8 @@ final class CanvasSessionTests: XCTestCase {
         let outbound = FakeOutbound()
         let session = makeSession(daemon: daemon)
         hello(session, outbound: outbound)
-        freeze(session, outbound: outbound, daemon: daemon, captureMs: 1_000, colour: TestImages.RGBA(0, 0, 200))
-        session.canvasDidReceive(type: CanvasWire.annotation,
-                                 object: annotationJSON(sketch: sketchPNG(width: 40, height: 30, bandHeight: 6, fill: TestImages.RGBA(255, 0, 0))),
-                                 outbound: outbound)
+        freeze(session, daemon: daemon, frame: 1, colour: TestImages.RGBA(0, 0, 200))
+        annotate(session, sketch: sketchPNG(width: 40, height: 30, bandHeight: 6, fill: TestImages.RGBA(255, 0, 0)))
         guard waitUntil("the annotation to be uploaded", { daemon.annotationCalls.count == 1 }) else { return }
         XCTAssertEqual(daemon.annotationCalls[0].base, .mirror)
     }
@@ -997,10 +837,10 @@ final class CanvasSessionTests: XCTestCase {
         let session = makeSession(daemon: daemon)
         hello(session, outbound: outbound)
         let sketch = sketchPNG(width: 40, height: 30, bandHeight: 6, fill: TestImages.RGBA(255, 0, 0))
-        let object = blankAnnotationJSON(sketch: sketch, viewport: CanvasViewport(width: 40, height: 30, scale: 1))
+        let viewport = CanvasViewport(width: 40, height: 30, scale: 1)
 
-        session.canvasDidReceive(type: CanvasWire.annotation, object: object, outbound: outbound)
-        session.canvasDidReceive(type: CanvasWire.annotation, object: object, outbound: outbound)
+        blankAnnotate(session, sketch: sketch, viewport: viewport)
+        blankAnnotate(session, sketch: sketch, viewport: viewport)
 
         guard waitUntil("the annotation to be uploaded", { daemon.annotationCalls.count == 1 }) else { return }
         waitUntil("the queue to drain") { session.pendingUploadCount == 0 }
@@ -1013,15 +853,11 @@ final class CanvasSessionTests: XCTestCase {
         let outbound = FakeOutbound()
         let session = makeSession(daemon: daemon)
         hello(session, outbound: outbound)
-        freeze(session, outbound: outbound, daemon: daemon, captureMs: 1_000, colour: TestImages.RGBA(0, 0, 200))
+        freeze(session, daemon: daemon, frame: 1, colour: TestImages.RGBA(0, 0, 200))
 
         let sketch = sketchPNG(width: 40, height: 30, bandHeight: 6, fill: TestImages.RGBA(255, 0, 0))
-        session.canvasDidReceive(
-            type: CanvasWire.annotation,
-            object: blankAnnotationJSON(sketch: sketch, viewport: CanvasViewport(width: 40, height: 30, scale: 1), t: 1),
-            outbound: outbound
-        )
-        session.canvasDidReceive(type: CanvasWire.annotation, object: annotationJSON(sketch: sketch, t: 2), outbound: outbound)
+        blankAnnotate(session, sketch: sketch, viewport: CanvasViewport(width: 40, height: 30, scale: 1), t: 1)
+        annotate(session, sketch: sketch, t: 2)
 
         guard waitUntil("both annotations to be uploaded", { daemon.annotationCalls.count == 2 }) else { return }
         XCTAssertEqual(daemon.annotationCalls.map(\.base), [.blank, .mirror])
@@ -1034,11 +870,7 @@ final class CanvasSessionTests: XCTestCase {
         let outbound = FakeOutbound()
         let session = makeSession(daemon: daemon)
         hello(session, outbound: outbound)
-        session.canvasDidReceive(
-            type: CanvasWire.annotation,
-            object: blankAnnotationJSON(sketch: Data(), viewport: CanvasViewport(width: 0, height: 30, scale: 2)),
-            outbound: outbound
-        )
+        blankAnnotate(session, sketch: blankSketch, viewport: CanvasViewport(width: 0, height: 30, scale: 2))
         XCTAssertEqual(session.pendingUploadCount, 0)
         XCTAssertTrue(daemon.annotationCalls.isEmpty)
     }

@@ -10,13 +10,12 @@ import Foundation
 /// that is what "sent" means on the device (ruling 5) — so from then on the
 /// round is the Mac's to deliver, and the daemon may be down for minutes
 /// (PRD D5, technical_doc section 11: "Annotation held in the engine, retried
-/// with backoff"). A sender session, meanwhile, dies the moment the device
-/// disconnects.
+/// with backoff").
 ///
 /// So the drain task holds the pipeline strongly for exactly as long as jobs
 /// remain, and the pipeline goes away with its last job. What it does *not*
-/// hold is the session, its frame ring (full-size deep copies of up to 16
-/// frames) or the link: a job carries only its own frozen frame and sketch.
+/// hold is the session, the frame ring or the link: a job carries only its
+/// own frozen frame and sketch.
 final class UploadPipeline {
 
     /// A frozen frame waiting for its sketch.
@@ -24,8 +23,8 @@ final class UploadPipeline {
         let image: CGImage
         let width: Int
         let height: Int
-        /// When this frame was captured — the ring entry's own millisecond, not
-        /// when the freeze was handled. It is what the daemon stores as the
+        /// When this frame was captured — the ring entry's own time, not when
+        /// the freeze was handled. It is what the daemon stores as the
         /// capture's `createdAt` and therefore the "Captured at" the channel
         /// reports to the model (M2).
         let capturedAt: Date
@@ -34,12 +33,10 @@ final class UploadPipeline {
         private var storedCaptureID: String?
 
         /// Set by the capture job, read (and cleared, on `.captureNotFound`)
-        /// by the annotation job. Usually both run on the same serial
-        /// pipeline, which hands the capture job out first — but a capture
-        /// parked across a link drop (`CanvasCaptureParkingLot`) is posted by
-        /// one session's pipeline and consumed by the next session's, so the
-        /// two accesses are not always on the same queue. Once per freeze and
-        /// once per annotation, so the lock costs nothing that matters.
+        /// by the annotation job. Both run on the same serial pipeline, which
+        /// hands the capture job out first; the lock keeps that an
+        /// implementation detail rather than a requirement. Once per freeze
+        /// and once per annotation, so it costs nothing that matters.
         var captureID: String? {
             get {
                 lock.lock()
@@ -67,11 +64,11 @@ final class UploadPipeline {
         case frame(FreezeCapture)
         /// The blank canvas surface: a white page of this many pixels. Only
         /// the size is carried — the page itself is allocated on the work
-        /// queue, never on the sender's.
+        /// queue, never on the stream queue.
         case blank(width: Int, height: Int)
     }
 
-    /// Everything an `annotation` needs once the sender's queue is released.
+    /// Everything an `annotation` needs once the stream queue is released.
     struct AnnotationJob {
         let base: Base
         let sketchPNG: Data
@@ -346,7 +343,7 @@ final class UploadPipeline {
     // MARK: - hopping to the work queue
 
     /// Runs CPU-bound image work on `workQueue` and comes back with the
-    /// result, so neither the sender's queue nor the drainer's cooperative
+    /// result, so neither the stream queue nor the drainer's cooperative
     /// thread carries a PNG encode or a composite.
     private func onWorkQueue<T>(_ body: @escaping () -> T) async -> T {
         let queue = workQueue

@@ -57,10 +57,9 @@ final class AppModel: ObservableObject {
     /// Mirror of `engine.devices`, republished whenever the engine reports a change. The menu
     /// reads this rather than the engine so the view stays a plain `@ObservedObject` consumer.
     @Published private(set) var devices: [EngineDevice] = []
-    /// Mirror of `engine.discovered`: devices the sender can see but is not serving. The menu
-    /// offers each one a Connect, which is the only way a WiFi iPad can be started at all —
-    /// `SenderController` auto-connects a WiFi device only once the user has connected to it
-    /// once (I1, PRD D1).
+    /// Mirror of `engine.discovered`: devices the engine can see but is not serving. The menu
+    /// offers each one a Connect, which is how a WiFi iPad is started the first time — the engine
+    /// connects one on its own only once the user has connected it (I1, PRD D1).
     @Published private(set) var discoveredDevices: [DiscoveredDevice] = []
     /// Sketches the engine has accepted and not yet delivered to the daemon, refreshed on every
     /// health poll. Nothing reported this before, so a daemon that was down looked like a sketch
@@ -133,7 +132,7 @@ final class AppModel: ObservableObject {
     private static let port = 47100
     private static let maxRestartPollAttempts = 10
 
-    /// Production callers pass only the engine (`AppModel(engine: OpenDisplaySenderEngine())`).
+    /// Production callers pass only the engine (`AppModel(engine: MirrorEngine())`).
     /// Passing a `probe` marks this a test construction: it skips the daemon supervisor and the
     /// 2 s poll timer so unit tests can drive `pollOnce()` deterministically without spawning
     /// real processes or touching AppleScript/Terminal. The engine is started either way — it is

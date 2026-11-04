@@ -47,7 +47,7 @@ struct DetailsView: View {
                     Text("None connected").foregroundColor(.secondary)
                 }
                 ForEach(model.devices) { device in
-                    LabeledContent(device.name, value: "\(device.status) \u{00B7} \(device.onUSB ? "USB" : "WiFi") \u{00B7} \(device.id)")
+                    LabeledContent(device.name, value: "\(MenuPresentation.deviceRow(device).word) \u{00B7} \(device.onUSB ? "USB" : "WiFi") \u{00B7} \(device.id)")
                 }
                 ForEach(model.discoveredDevices) { device in
                     LabeledContent(device.name, value: "Discovered \u{00B7} \(device.transport) \u{00B7} \(device.id)")
@@ -90,10 +90,9 @@ struct DetailsView: View {
             }
             Section("Logs") {
                 Button("Open Logs Folder") {
-                    let logs = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Logs")
-                    NSWorkspace.shared.open(logs.appendingPathComponent("OpenDisplay"))
+                    NSWorkspace.shared.open(Log.fileURL.deletingLastPathComponent())
                 }
-                Text("App: ~/Library/Logs/OpenDisplay/opendisplay.log \u{00B7} Daemon: ~/Library/Logs/DesignCanvas/server.log")
+                Text("App: ~/Library/Logs/DesignCanvas/designcanvas.log \u{00B7} Daemon: ~/Library/Logs/DesignCanvas/server.log")
                     .font(.caption2)
                     .foregroundColor(.secondary)
             }

@@ -1,30 +1,28 @@
 // The iPad's Draw Mode view-model: it owns the Draw Mode state machine, turns
 // its effects into calls on the receiver, and holds everything the screen
 // draws — the rounds list, the current notice, the channel and project the Mac
-// reports on its ping.
+// reports in its `status`.
 //
 // The receiver is behind `CanvasReceiving` so this file stays free of UIKit and
-// of `StreamReceiver` itself: it is compiled into the hostless test bundle as
-// well as the app, and `ReceiverAdapter` is the only thing that knows both
-// sides (see project.yml, and DesignCanvas/iOS/ReceiverAdapter.swift).
+// of the socket: it is unit-tested against a fake, and `ReceiverAdapter` is the
+// only thing that knows both sides.
 
 import Combine
 import Foundation
 
-/// What `CanvasModel` needs from the receiver. `StreamReceiver` provides all of
-/// it; `ReceiverAdapter` is the conformance.
+/// What `CanvasModel` needs from the receiver. `CanvasReceiver` provides all
+/// of it; `ReceiverAdapter` is the conformance.
 protocol CanvasReceiving: AnyObject {
-    /// A Mac is on the other end of the socket right now.
+    /// A Mac said hello on the other end of the socket.
     var isConnected: Bool { get }
-    /// That Mac said `welcome.canvas: true` — it is a Design Canvas Mac.
-    var supportsCanvas: Bool { get }
-    /// Capture ms of the frame on screen, nil before the first one lands.
-    func currentCaptureMs() -> Int64?
+    /// The number of the frame on screen, nil before the first one lands.
+    func currentFrame() -> UInt64?
     /// Hold the picture (the freeze half of M1) or let it run again.
     func setFrozen(_ frozen: Bool)
-    /// Put a canvas message on the wire. True means the socket write
-    /// completed — there is no ack for these (plan ruling 5).
-    func sendCanvas(_ message: [String: Any], completion: @escaping (Bool) -> Void)
+    /// Put a canvas message on the wire, with `attachment` riding along. True
+    /// means the socket write completed — there is no ack (plan ruling 5).
+    func send(_ type: String, _ object: [String: Any], attachment: Data,
+              completion: @escaping (Bool) -> Void)
 }
 
 @MainActor
@@ -46,20 +44,16 @@ final class CanvasModel: ObservableObject {
     /// The outcome the screen is announcing (M8): the newest round that
     /// reached one while this device was watching. Nil once dismissed.
     @Published private(set) var replyNotification: ReplyNotification?
-    /// `.none` until a ping says otherwise (P1).
+    /// `.none` until the Mac's `status` says otherwise (P1).
     @Published private(set) var channel: ChannelState = .none
     @Published private(set) var project: String?
-    /// The connected Mac's own name, for the window menu. Nil from a Mac that
-    /// does not send one.
+    /// The connected Mac's own name, from its hello, for the window menu.
     @Published private(set) var macName: String?
     /// The surface the designer chose (B1). Persisted by the screen.
     @Published var preferredSurface: CanvasSurface = .mirror
-    /// The connected Mac's ping said it accepts a blank-page sketch (B3).
-    @Published private(set) var macSupportsBlank = false
     /// The Claude Code sessions the Mac is connected to and which one the next
     /// sketch goes to (X21 to X26). Empty until the Mac sends a `sessions`
-    /// message, which a Mac that predates the session list never does: this
-    /// device then behaves exactly as it did before there was one.
+    /// message.
     @Published private(set) var sessions: SessionsMessage = .empty
     /// The optional one-line note (M4). Bound to the text field.
     @Published var note = ""
@@ -71,7 +65,9 @@ final class CanvasModel: ObservableObject {
     /// is drawn on that frame, so that is what the Mac is told about — not
     /// whatever the live picture has moved on to.
     private var entryViewport = CanvasViewport(width: 0, height: 0, scale: 1)
-    private var entryCaptureMs: Int64 = 0
+    private var entryFrame: UInt64 = 0
+    /// The frame the last `freeze` named, so only its own `frozen` answers it.
+    private var freezeFrame: UInt64?
     /// What the sketch in progress was drawn on. Fixed at entry: the surface the screen shows later says nothing about this sketch.
     private var entryBase: CanvasSurface = .mirror
     /// Built by `done`, kept until the send lands so a retry after a link loss
@@ -101,18 +97,17 @@ final class CanvasModel: ObservableObject {
     // MARK: - What the screen asks
 
     /// What the iPad shows: the blank page only when the designer chose it and
-    /// a Mac that can composite a blank sketch is on the other end (B3). An
-    /// older Mac would drop the annotation with nothing to tell this device —
-    /// there is no ack — so the page is not offered to it at all.
+    /// a Mac is on the other end to take the sketch (B3).
     var surface: CanvasSurface {
-        preferredSurface == .blank && macSupportsBlank && receiver.isConnected ? .blank : .mirror
+        preferredSurface == .blank && receiver.isConnected ? .blank : .mirror
     }
 
-    /// Draw Mode is reachable only on a live, connected, Design Canvas session
-    /// (P3, and requirement 6 of the brief: a plain OpenDisplay Mac leaves the
-    /// button disabled).
+    /// The whiteboard needs a Mac on the other end to take its sketch (B3).
+    var whiteboardAvailable: Bool { receiver.isConnected }
+
+    /// Draw Mode is reachable only on a live, connected session (P3).
     var canEnterDrawMode: Bool {
-        machine.state == .live && receiver.isConnected && receiver.supportsCanvas
+        machine.state == .live && receiver.isConnected
     }
 
     /// Done is live only in DRAWING with at least one stroke (ruling 7), and,
@@ -120,8 +115,8 @@ final class CanvasModel: ObservableObject {
     /// has picked where the sketch goes (X26).
     var canSend: Bool { machine.canSend && !sessions.needsPick }
 
-    /// A Claude Code session is there to take a sketch: one the Mac lists, or,
-    /// from a Mac that predates the session list, the one its ping reports.
+    /// A Claude Code session is there to take a sketch: one the Mac lists, or
+    /// the one its status reports.
     var hasClaudeSession: Bool {
         !sessions.sessions.isEmpty || channel == .attached || channel == .existing
     }
@@ -196,13 +191,13 @@ final class CanvasModel: ObservableObject {
             return
         }
         entryBase = .mirror
-        guard let captureMs = receiver.currentCaptureMs() else {
+        guard let frame = receiver.currentFrame() else {
             // Nothing has been displayed yet, so there is no frame to name and
             // no point freezing on it (M7's message, without the round trip).
             notice = .noFrame
             return
         }
-        entryCaptureMs = captureMs
+        entryFrame = frame
         entryViewport = viewport
         // Whatever the last exit said, it is not about this sketch.
         notice = nil
@@ -222,19 +217,17 @@ final class CanvasModel: ObservableObject {
         // stranded in RETRY — would leave its payload behind as the thing the
         // next `hello` resends.
         guard canSend else { return }
-        // A sketch too big for one canvas frame used to be refused by the
-        // sender's own size guard, which looks exactly like a link loss from
-        // here — so the round went to RETRY and was re-sent, identically, after
-        // every hello, for ever. Refuse it here instead, where the designer
-        // still has the strokes and can erase some of them (M10).
-        guard CanvasWire.base64Length(ofByteCount: sketchPNG.count)
-                <= CanvasWire.annotationSketchBase64MaxBytes else {
+        // A sketch too big for one frame would be refused by the framing,
+        // which looks exactly like a link loss from here — so the round would
+        // go to RETRY and be re-sent, identically, after every hello, for ever.
+        // Refuse it here instead, where the designer still has the strokes and
+        // can erase some of them (M10).
+        guard sketchPNG.count <= CanvasWire.sketchMaxBytes else {
             notice = .sketchTooLarge
             return
         }
         let trimmed = note.trimmingCharacters(in: .whitespacesAndNewlines)
         pendingAnnotation = AnnotationMessage(sketchPNG: sketchPNG,
-                                              zoomRect: .full,
                                               viewport: entryViewport,
                                               note: trimmed.isEmpty ? nil : trimmed,
                                               t: nowMs(),
@@ -253,8 +246,9 @@ final class CanvasModel: ObservableObject {
     /// Leave without sending and throw the strokes away.
     func discard() { apply(.discard) }
 
-    /// The iPad turned: the Mac is rebuilding its display, so the frozen frame
-    /// no longer matches anything. The strokes stay in the canvas (PRD G6).
+    /// The iPad turned: the picture is laid out anew, so strokes drawn on the
+    /// old layout no longer sit on what they were drawn over. The strokes stay
+    /// in the canvas for the next entry (PRD G6).
     func rotated() { apply(.rotated) }
 
     /// The canvas emptied itself after `shouldClearStrokes`.
@@ -276,41 +270,38 @@ final class CanvasModel: ObservableObject {
         guard !connected else { return }
         // The channel and the project are things a *connected* Mac told us.
         // With the Mac gone the second hop cannot be up, and P1 asks the panel
-        // to show both hops honestly rather than leave the last ping's answer
-        // standing. The next ping repopulates them; the receiver's own
-        // `CanvasReceiverState` only resets when a new connection is adopted,
-        // which can be much later.
+        // to show both hops honestly rather than leave the last answer
+        // standing. The next connection's hello and status repopulate them.
         channel = .none
         project = nil
         macName = nil
-        macSupportsBlank = false
         sessions = .empty
         apply(.linkLost)
     }
 
-    /// A `welcome` landed. On a canvas session this is the resend trigger: the
-    /// link is back up and a sketch stranded in RETRY goes out again.
-    func welcomeReceived(canvas: Bool) {
+    /// A Mac said hello. This is the resend trigger: the link is back up and a
+    /// sketch stranded in RETRY goes out again.
+    func macHelloReceived(name: String?) {
         objectWillChange.send()
-        guard canvas else { return }
+        if macName != name { macName = name }
         apply(.helloReceived)
     }
 
-    /// The Mac's ping carries its channel state and selected project (P1), and
-    /// whether it accepts a blank-page sketch (B3).
-    func pingReceived(channel: String?, project: String?, blank: Bool = false, macName: String? = nil) {
-        self.channel = channel.flatMap(ChannelState.init(rawValue:)) ?? .none
-        self.project = project
-        if self.macName != macName { self.macName = macName }
-        if macSupportsBlank != blank { macSupportsBlank = blank }
+    /// The Mac's channel state and the target's project (P1).
+    func statusReceived(_ status: StatusMessage) {
+        if channel != status.channel { channel = status.channel }
+        if project != status.project { project = status.project }
     }
 
-    /// A canvas control message from the Mac. Anything that does not parse is
-    /// ignored, exactly as an unknown type is (PROTOCOL.md 6).
+    /// A message from the Mac. Anything that does not parse is ignored, exactly
+    /// as an unknown type is.
     func canvasMessage(type: String, object: [String: Any]) {
         switch type {
+        case CanvasWire.status:
+            guard let status = StatusMessage(json: object) else { return }
+            statusReceived(status)
         case CanvasWire.frozen:
-            guard let frozen = FrozenMessage(json: object) else { return }
+            guard let frozen = FrozenMessage(json: object), frozen.frame == freezeFrame else { return }
             apply(.frozen(ok: frozen.ok))
         case CanvasWire.rounds:
             guard let snapshot = RoundsMessage(json: object) else { return }
@@ -363,24 +354,22 @@ final class CanvasModel: ObservableObject {
         // the frame the user is looking at. It can only be nil if the link
         // dropped in between, and the frame from the entry check is then still
         // the best thing to ask for.
-        let captureMs = receiver.currentCaptureMs() ?? entryCaptureMs
-        let freeze = FreezeMessage(captureMs: captureMs, zoomRect: .full, t: nowMs())
-        send(CanvasWire.freeze, freeze.json) { _ in }
+        let frame = receiver.currentFrame() ?? entryFrame
+        freezeFrame = frame
+        send(CanvasWire.freeze, FreezeMessage(frame: frame, t: nowMs()).json) { _ in }
     }
 
     private func sendAnnotation() {
         guard let annotation = pendingAnnotation else { return }
-        send(CanvasWire.annotation, annotation.json) { [weak self] ok in
-            // Main queue, by StreamReceiver's contract.
+        send(CanvasWire.annotation, annotation.json, attachment: annotation.sketchPNG) { [weak self] ok in
+            // Main queue, by the receiver's contract.
             self?.apply(ok ? .sent : .linkLost)
         }
     }
 
-    private func send(_ type: String, _ body: [String: Any],
+    private func send(_ type: String, _ body: [String: Any], attachment: Data = Data(),
                       completion: @escaping (Bool) -> Void) {
-        var message = body
-        message["type"] = type
-        receiver.sendCanvas(message, completion: completion)
+        receiver.send(type, body, attachment: attachment, completion: completion)
     }
 
     // MARK: - Rounds

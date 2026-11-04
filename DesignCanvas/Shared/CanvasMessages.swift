@@ -1,9 +1,41 @@
 import Foundation
 
-/// Wire constants for the Design Canvas additions to the OpenDisplay
-/// protocol (see PROTOCOL.md, section "Wire additions to OpenDisplay").
-/// Additive JSON control messages, no `pv` bump, gated on `welcome.canvas: true`.
+/// The Design Canvas wire, version 1 (spec/wire-protocol.md): its address,
+/// its limits, and every message `type` both apps exchange.
 enum CanvasWire {
+    /// Bumped when the wire changes. Both apps ship together, so there is no
+    /// negotiation: a peer that says another version is told so and dropped.
+    static let version = 1
+    /// The iPad listens here. Over USB the Mac dials this port through
+    /// usbmuxd; over WiFi it finds the iPad by `serviceType`.
+    static let port: UInt16 = 9100
+    static let serviceType = "_designcanvas._tcp"
+    /// Bonjour TXT keys the iPad advertises: its install id and wire version.
+    static let txtIDKey = "id"
+    static let txtVersionKey = "v"
+
+    /// The largest frame either side accepts (length field, kind included).
+    static let maxFrameLength = 32 << 20          // 32 MiB
+    /// The largest JSON part of a message; the rest of a frame is attachment.
+    static let maxJSONLength = 1 << 20            // 1 MiB
+    /// The largest sketch PNG an `annotation` may carry. Refused on the iPad,
+    /// where the designer still has the strokes and can erase some (M10).
+    static let sketchMaxBytes = 24 << 20          // 24 MiB
+
+    /// Both sides ping this often, and give up on a link that has sent no
+    /// byte at all for `silenceTimeout`.
+    static let pingInterval: TimeInterval = 2
+    static let silenceTimeout: TimeInterval = 6
+
+    // Link
+    static let hello = "hello"
+    static let ping = "ping"
+    static let pong = "pong"
+    static let keyframe = "keyframe"
+    static let bye = "bye"
+    static let status = "status"
+
+    // Canvas
     static let freeze = "freeze"
     static let frozen = "frozen"
     static let annotation = "annotation"
@@ -14,15 +46,6 @@ enum CanvasWire {
     static let sessions = "sessions"
     static let selectSession = "selectSession"
 
-    static let welcomeCanvasKey = "canvas"                 // welcome.canvas: true
-
-    static let pingChannelKey = "channel"
-    static let pingProjectKey = "project"
-    /// `"1"` when the Mac accepts `annotation.base: "blank"` (PROTOCOL.md 11.3).
-    static let pingBlankKey = "blank"
-    /// The Mac's own name, as its Sharing settings give it, for the iPad's
-    /// window menu (PROTOCOL.md 11.3).
-    static let pingMacNameKey = "macName"
     static let macNameMaxCharacters = 60
     static let annotationBaseKey = "base"
     /// The target session the iPad was showing when Done was tapped (X23).
@@ -31,25 +54,8 @@ enum CanvasWire {
     static let sessionTextMaxCharacters = 80
     static let sessionFolderMaxCharacters = 60
 
-    static let senderJSONLimit = 32768                     // payload must be < this
     static let replyMessageMaxBytes = 2048
     static let roundsSnapshotLimit = 20
-    static let shrunkTextMaxBytes = 256
-
-    /// The most base64 an `annotation`'s `sketch` may be (M10). A canvas
-    /// receiver-to-sender frame is capped at 16 MiB (PROTOCOL.md 11.4) and the
-    /// rest of the message — the zoom rect, the viewport, the note — shares that
-    /// budget, so the sketch is held a megabyte short of it. A sketch over the
-    /// limit is refused on the iPad, where the designer still has it, rather
-    /// than by the sender's frame guard, which used to look like a link loss and
-    /// put the round into an endless resend.
-    static let annotationSketchBase64MaxBytes = 15 * 1024 * 1024   // 15728640
-
-    /// Base64's encoded length for `byteCount` raw bytes: four characters per
-    /// three bytes, rounded up, which is what actually crosses the wire.
-    static func base64Length(ofByteCount byteCount: Int) -> Int {
-        (byteCount + 2) / 3 * 4
-    }
 }
 
 // MARK: - Number parsing
@@ -66,8 +72,13 @@ private func canvasInt(_ any: Any?) -> Int? {
     (any as? NSNumber)?.intValue
 }
 
-private func canvasInt64(_ any: Any?) -> Int64? {
-    (any as? NSNumber)?.int64Value
+/// A frame number: a non-negative whole number. JSON carries it as a double,
+/// which is exact far beyond any count a capture reaches.
+private func canvasFrameNumber(_ any: Any?) -> UInt64? {
+    guard let number = any as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID() else { return nil }
+    let value = number.doubleValue
+    guard value >= 0, value < 9e15, value.rounded() == value else { return nil }
+    return UInt64(value)
 }
 
 // MARK: - NormalizedRect
@@ -173,11 +184,11 @@ enum RoundStatus: String {
     }
 }
 
-/// The Mac's verdict on its Claude Code hop, relayed to the iPad in `ping.channel` (P1). It is
-/// the menu's verdict (D7), not the daemon's raw subscriber count: `attached` is this app's own
+/// The Mac's verdict on its Claude Code hop, relayed to the iPad in `status.channel` (P1). It is
+/// the menu's verdict (D7), not the daemon's raw subscriber count: `attached` is a connected
 /// session, `existing` is a session the app did not start (the menu's "Another session"),
-/// `detached` a daemon with no channel, `none` no usable daemon. A receiver reads an unknown
-/// string as `none`, which is how an older iPad sees `existing`.
+/// `detached` a daemon with no session, `none` no usable daemon. A receiver reads an unknown
+/// string as `none`.
 enum ChannelState: String {
     case attached
     case detached
@@ -187,72 +198,72 @@ enum ChannelState: String {
 
 // MARK: - FreezeMessage (iPad to Mac)
 
+/// Enter Draw Mode on the frame that is on screen: `frame` is the number the
+/// video packet carried, which is what the Mac keeps the clean original under.
 struct FreezeMessage: Equatable {
-    var captureMs: Int64
-    var zoomRect: NormalizedRect
+    var frame: UInt64
     var t: Double
 }
 
 extension FreezeMessage {
     init?(json: [String: Any]) {
-        guard let captureMs = canvasInt64(json["captureMs"]),
-              let zoomRect = NormalizedRect(json: json["zoomRect"]),
+        guard let frame = canvasFrameNumber(json["frame"]),
               let t = canvasDouble(json["t"]) else { return nil }
-        self.captureMs = captureMs
-        self.zoomRect = zoomRect
+        self.frame = frame
         self.t = t
     }
 
     var json: [String: Any] {
-        ["captureMs": captureMs, "zoomRect": zoomRect.json, "t": t]
+        ["frame": frame, "t": t]
     }
 }
 
 // MARK: - FrozenMessage (Mac to iPad)
 
+/// The answer to a `freeze`: whether the Mac still holds that frame.
 struct FrozenMessage: Equatable {
+    var frame: UInt64
     var ok: Bool
 }
 
 extension FrozenMessage {
     init?(json: [String: Any]) {
-        guard let ok = json["ok"] as? Bool else { return nil }
+        guard let ok = json["ok"] as? Bool, let frame = canvasFrameNumber(json["frame"]) else { return nil }
+        self.frame = frame
         self.ok = ok
     }
 
     var json: [String: Any] {
-        ["ok": ok]
+        ["frame": frame, "ok": ok]
     }
 }
 
 // MARK: - AnnotationMessage (iPad to Mac)
 
+/// A finished sketch. The PNG is the message's attachment, not a JSON field:
+/// the strokes only, transparent, covering `viewport`.
 struct AnnotationMessage: Equatable {
     var sketchPNG: Data
-    var zoomRect: NormalizedRect
     var viewport: CanvasViewport
     var note: String?
     var t: Double
     /// `.blank` when the sketch was drawn on the blank page: no `freeze` came
-    /// first and the Mac composites it on white. On the wire only when blank,
-    /// so a mirror annotation is byte-for-byte what it always was.
+    /// first and the Mac composites it on white. On the wire only when blank.
     var base: CanvasSurface = .mirror
     /// The session this sketch was drawn for: the target the iPad was showing
-    /// at Done. Absent from an iPad that predates the session list, and when
-    /// there was no target to show; the Mac then uses the target of the moment.
+    /// at Done. Absent when there was no target to show; the Mac then uses the
+    /// target of the moment.
     var session: String?
 }
 
 extension AnnotationMessage {
-    /// "sketch" is base64. An absent or unknown "base" is a mirror sketch.
-    init?(json: [String: Any]) {
-        guard let sketchBase64 = json["sketch"] as? String,
-              let sketchPNG = Data(base64Encoded: sketchBase64),
-              let zoomRect = NormalizedRect(json: json["zoomRect"]),
+    /// An absent or unknown `base` is a mirror sketch. An empty attachment is
+    /// no sketch at all.
+    init?(json: [String: Any], attachment: Data) {
+        guard !attachment.isEmpty,
               let viewport = CanvasViewport(json: json["viewport"]),
               let t = canvasDouble(json["t"]) else { return nil }
-        self.sketchPNG = sketchPNG
-        self.zoomRect = zoomRect
+        self.sketchPNG = attachment
         self.viewport = viewport
         self.note = json["note"] as? String
         self.t = t
@@ -260,10 +271,9 @@ extension AnnotationMessage {
         self.session = (json[CanvasWire.annotationSessionKey] as? String).flatMap { $0.isEmpty ? nil : $0 }
     }
 
+    /// The JSON half; `sketchPNG` goes as the attachment.
     var json: [String: Any] {
         var dict: [String: Any] = [
-            "sketch": sketchPNG.base64EncodedString(),
-            "zoomRect": zoomRect.json,
             "viewport": viewport.json,
             "t": t,
         ]
@@ -363,8 +373,7 @@ extension SessionsMessage {
     }
 
     /// At most `sessionsMaxEntries` entries, with the text fields already cut by
-    /// `CanvasSessionEntry.json`, which keeps the payload far inside the 32768
-    /// byte rule (D23). The target is kept even when the list is cut.
+    /// `CanvasSessionEntry.json`. The target is kept even when the list is cut.
     var json: [String: Any] {
         var listed = Array(sessions.prefix(CanvasWire.sessionsMaxEntries))
         if let entry = targetEntry, !listed.contains(where: { $0.id == entry.id }) {
@@ -484,9 +493,9 @@ extension RoundsMessage {
     /// An entry this build cannot read — a status invented later, a field gone
     /// missing — is skipped rather than failing the whole snapshot (M6): the
     /// readable entries are still this device's round history, and skipping
-    /// what cannot be understood is the rule PROTOCOL.md section 6 already
-    /// applies to unknown types and fields. A missing or non-array `rounds`
-    /// key is still not a snapshot at all.
+    /// what cannot be understood is the rule the wire applies to unknown
+    /// types and fields. A missing or non-array `rounds` key is still not a
+    /// snapshot at all.
     init?(json: [String: Any]) {
         guard let roundsJSON = json["rounds"] as? [[String: Any]] else { return nil }
         self.rounds = roundsJSON.compactMap(CanvasRound.init(json:))
@@ -494,45 +503,6 @@ extension RoundsMessage {
 
     var json: [String: Any] {
         ["rounds": rounds.map { $0.json }]
-    }
-
-    /// JSON bytes guaranteed < limit, shrinking per ruling 3: full; then
-    /// messages and notes cut to `CanvasWire.shrunkTextMaxBytes`; then oldest
-    /// rounds (the tail, since `rounds` is newest-first) dropped until it
-    /// fits. Never returns nil: worst case is an empty list.
-    func encoded(limit: Int = CanvasWire.senderJSONLimit) -> Data {
-        func attempt(_ candidate: [CanvasRound]) -> Data? {
-            let dict: [String: Any] = ["rounds": candidate.map { $0.json }]
-            return try? JSONSerialization.data(withJSONObject: dict)
-        }
-
-        if let data = attempt(rounds), data.count < limit {
-            return data
-        }
-
-        let shrunk = rounds.map { round -> CanvasRound in
-            var shrunkRound = round
-            if let message = shrunkRound.message {
-                shrunkRound.message = message.truncatedUTF8(maxBytes: CanvasWire.shrunkTextMaxBytes)
-            }
-            if let note = shrunkRound.note {
-                shrunkRound.note = note.truncatedUTF8(maxBytes: CanvasWire.shrunkTextMaxBytes)
-            }
-            return shrunkRound
-        }
-        if let data = attempt(shrunk), data.count < limit {
-            return data
-        }
-
-        var remaining = shrunk
-        while !remaining.isEmpty {
-            remaining.removeLast()
-            if let data = attempt(remaining), data.count < limit {
-                return data
-            }
-        }
-
-        return attempt([]) ?? Data(#"{"rounds":[]}"#.utf8)
     }
 }
 

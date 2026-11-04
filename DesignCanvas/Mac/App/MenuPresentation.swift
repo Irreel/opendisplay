@@ -145,29 +145,30 @@ enum MenuPresentation {
                                subline: "Open Design Canvas on the iPad or iPhone", action: nil)
     }
 
-    /// The sender's statuses are sentences ("Mirroring to device (2048×1536)", "Device found —
-    /// open the OpenDisplay app on it…"). The row keeps a one-word state so the device name,
-    /// not the state, is what survives a 320-point popover; the one sentence that tells the
-    /// user to do something becomes the sub-line, in this app's words.
+    /// The row keeps a one-word state so the device name, not the state, is what survives a
+    /// 320-point popover; anything the user has to do becomes the sub-line.
     static func deviceRow(_ device: EngineDevice) -> RowPresentation {
-        let status = device.status
-        let word: String
-        var subline: String?
-        if status.hasPrefix("Device found") {
-            word = "Found"
-            subline = "Open Design Canvas on the iPad or iPhone"
-        } else if status.hasPrefix("Waiting") {
-            word = "Waiting\u{2026}"
-        } else if status.hasPrefix("Mirroring") {
-            word = "Mirroring"
-        } else if status.hasPrefix("Extending") {
-            word = "Extending"
-        } else if status.hasPrefix("Connected") {
-            word = "Connected"
-        } else {
-            word = status
+        switch device.state {
+        case .mirroring:
+            return RowPresentation(word: "Mirroring", tint: .green, subline: nil, action: .disconnect)
+        case .connecting:
+            return RowPresentation(word: "Connecting\u{2026}", tint: .orange, subline: nil, action: .disconnect)
+        case .waitingForApp:
+            return RowPresentation(word: "Found", tint: .secondary,
+                                   subline: "Open Design Canvas on the iPad or iPhone", action: .disconnect)
+        case .asleep:
+            return RowPresentation(word: "Asleep", tint: .secondary,
+                                   subline: "Mirroring resumes when it wakes", action: .disconnect)
+        case .unreachable:
+            return RowPresentation(word: "Not reachable", tint: .secondary,
+                                   subline: "Plug it in, or open Design Canvas on it on the same WiFi", action: .disconnect)
+        case .inUseElsewhere:
+            return RowPresentation(word: "In use", tint: .orange,
+                                   subline: "Another Mac is mirroring to it", action: .disconnect)
+        case .needsUpdate:
+            return RowPresentation(word: "Update needed", tint: .red,
+                                   subline: "Install the same Design Canvas version on it and on this Mac", action: .disconnect)
         }
-        return RowPresentation(word: word, tint: .green, subline: subline, action: .disconnect)
     }
 
     static func discoveredRow(_ device: DiscoveredDevice) -> RowPresentation {

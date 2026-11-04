@@ -52,13 +52,28 @@ jobs:
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY=""
 
-      # The DesignCanvasMac scheme's test action also builds the DesignCanvasMac
-      # app target (like OpenSidecarMac above), so this is both the Design
-      # Canvas Swift test suite and a compile check for the Mac app.
+  # Design Canvas is its own project (DesignCanvas/project.yml) and builds
+  # without anything from the OpenDisplay apps.
+  design-canvas:
+    runs-on: macos-26
+    defaults:
+      run:
+        working-directory: DesignCanvas
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate project
+        run: xcodegen generate
+
+      # The DesignCanvasMac scheme's test action also builds the Mac app, so
+      # this is both the Swift test suite and a compile check for the app.
       - name: Run Design Canvas Swift tests
         run: |
           xcodebuild test \
-            -project OpenSidecar.xcodeproj \
+            -project DesignCanvas.xcodeproj \
             -scheme DesignCanvasMac \
             -destination 'platform=macOS' \
             CODE_SIGNING_ALLOWED=NO \
@@ -66,11 +81,11 @@ jobs:
             CODE_SIGN_IDENTITY=""
 
       # No iOS simulator/device run here (no signing, no hardware) — this is a
-      # compile check only, same as OpenSidecariOS would be if it were built here.
+      # compile check only.
       - name: Build Design Canvas iOS app
         run: |
           xcodebuild build \
-            -project OpenSidecar.xcodeproj \
+            -project DesignCanvas.xcodeproj \
             -scheme DesignCanvasiOS \
             -destination 'generic/platform=iOS' \
             CODE_SIGNING_ALLOWED=NO \

@@ -3,25 +3,37 @@ import CoreVideo
 import Dispatch
 import Foundation
 
-/// The additive `ping` fields (spec section 2, P1), shared by every session
-/// and written by the app as the daemon health poll and the session list
-/// change, plus the one fact that flows the other way: when the last
-/// captured frame arrived, which is how the app knows capture is running
-/// (`isCapturing`). Thread-safe because sessions read and stamp it from the
-/// sender's queue while the app writes and reads it from the main one.
+/// Where a canvas session sends its messages: the link to its iPad.
+/// `MirrorLink` conforms.
+///
+/// Delivery is best-effort. Whether the link is up is knowable only on the
+/// link's own queue, so a send hands the message over and returns; one that
+/// finds the link down there is dropped with a log line. The Bool is the
+/// synchronous answer only: false means the message could not be framed at
+/// all (not serialisable, or over the wire's size limits).
+protocol CanvasOutbound: AnyObject {
+    @discardableResult func send(_ type: String, _ object: [String: Any], attachment: Data) -> Bool
+}
+
+extension CanvasOutbound {
+    @discardableResult func send(_ type: String, _ object: [String: Any]) -> Bool {
+        send(type, object, attachment: Data())
+    }
+}
+
+/// What every session tells its iPad about the Claude Code hop (P1), written
+/// by the app as the daemon health poll and the session list change, plus the
+/// one fact that flows the other way: when the last frame was captured, which
+/// is how the app knows capture is running (`isCapturing`). Thread-safe:
+/// sessions and the capture read and stamp it off the main queue while the
+/// app writes and reads it on the main one.
 final class CanvasStatus {
-    /// This Mac's name, sent so the iPad can say which Mac it mirrors. Fixed
-    /// for the app's life: renaming the Mac mid-session is not worth a lock.
-    private let macName: String?
     private let lock = NSLock()
     private var storedChannelState: ChannelState = .none
     private var storedLastFrameAt: Date?
     private var storedSessions: SessionsMessage = .empty
 
-    init(macName: String? = nil) {
-        let trimmed = macName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        self.macName = trimmed.isEmpty ? nil : String(trimmed.prefix(CanvasWire.macNameMaxCharacters))
-    }
+    init() {}
 
     var channelState: ChannelState {
         get {
@@ -51,30 +63,16 @@ final class CanvasStatus {
         }
     }
 
-    /// `channel` always; `project` only when a session is the target — an
-    /// absent key is how the iPad is told there is none (spec section 2).
-    var pingFields: [String: String] {
+    /// The `status` message every iPad is sent. The project it names is where
+    /// the next sketch goes: the target session's folder, absent when there is
+    /// no target (XG8).
+    var statusMessage: StatusMessage {
         lock.lock()
         defer { lock.unlock() }
-        // `blank` is a capability, not a state: this Mac composites a sketch
-        // drawn on the iPad's blank page, and says so on every beat so the
-        // iPad offers that page only to a Mac that can take it.
-        var fields = [
-            CanvasWire.pingChannelKey: storedChannelState.rawValue,
-            CanvasWire.pingBlankKey: "1",
-        ]
-        // The project the iPad names is where the next sketch goes: the target
-        // session's folder. The folder Start last used is not named (XG8).
-        if let project = storedSessions.targetEntry?.folder {
-            fields[CanvasWire.pingProjectKey] = project
-        }
-        if let macName {
-            fields[CanvasWire.pingMacNameKey] = macName
-        }
-        return fields
+        return StatusMessage(channel: storedChannelState, project: storedSessions.targetEntry?.folder)
     }
 
-    /// A frame was captured at `at`. Called at capture rate from the sender's queue.
+    /// A frame was captured at `at`. Called at capture rate from the stream queue.
     func noteFrame(at: Date) {
         lock.lock()
         storedLastFrameAt = at
@@ -92,52 +90,62 @@ final class CanvasStatus {
     }
 }
 
-/// One connected iPad's join between the OpenDisplay wire and the local
-/// daemon: it rings the captured frames, answers `freeze` from that ring,
-/// composites the sketch an `annotation` carries onto the frozen frame,
-/// uploads the round, and relays what Claude Code said back to the device
-/// (spec sections 3 and 5.4).
+/// One iPad's join between the wire and the local daemon: it answers `freeze`
+/// from the Mac's frame ring, composites the sketch an `annotation` carries
+/// onto the frozen frame, uploads the round, and relays what Claude Code said
+/// back to the device (spec sections 3 and 5.4).
 ///
-/// Threading. Every `SenderCanvasDelegate` callback arrives on the sender's
-/// serial queue and returns without doing PNG work, compositing or I/O: all
-/// of that happens in `UploadPipeline`, which also owns the queue of accepted
-/// uploads and outlives this session when it has to. `deliver` may be called
-/// from anywhere (`CanvasHub`'s consuming task). All of this session's own
-/// mutable state is behind `lock`.
-final class CanvasSession: SenderCanvasDelegate {
+/// One per iPad (install id) for the app's life, not one per connection. A
+/// link drop in SENDING is answered by the iPad re-sending the same
+/// `annotation` after the next hello (plan ruling 5), and the frame that
+/// sketch belongs to, and the `t` that identifies the round, are simply still
+/// here when it does.
+///
+/// Threading. Messages arrive on the stream queue and return without doing PNG
+/// work, compositing or I/O: all of that happens in `UploadPipeline`, which
+/// owns the queue of accepted uploads. `deliver`, `sendSessions` and
+/// `sendStatus` may be called from anywhere. All mutable state is behind `lock`.
+final class CanvasSession {
+
+    let installID: String
 
     private let daemon: DaemonAPI
     private let status: CanvasStatus
+    private let frames: CleanFrameSource
     private let now: () -> Date
     private let pipeline: UploadPipeline
-    /// Shared with every other session the hub built, so a frozen frame and a
-    /// round's identity survive the session that first saw them (C1).
-    private let parking: CanvasCaptureParkingLot
 
     private let lock = NSLock()
-    private var ring = FrameRing()
-    private var peer: CanvasPeer?
-    /// Weak: this is the `MacSender` that owns the link, and it must not be
-    /// kept alive by the session it hands its messages to.
+    /// Weak: the link owns its connection and outlives this attachment only as
+    /// long as the engine keeps it.
     private weak var outbound: CanvasOutbound?
-    private var heldCapture: UploadPipeline.FreezeCapture?
+    private var heldCapture: (capture: UploadPipeline.FreezeCapture, at: Date)?
+    /// The `t` of the last `annotation` accepted. The iPad re-sends identical
+    /// bytes after a link loss, so `t` identifies the round.
+    private var lastAcceptedT: Double?
+    /// What this attachment was last told, so a status that did not change is
+    /// not sent again.
+    private var lastSentStatus: StatusMessage?
 
-    /// `parking` defaults to a private lot so a session is constructible
-    /// without a hub (tests, and any future single-session caller): it then
-    /// only ever finds what it parked itself, which is the old in-session
-    /// behaviour.
+    /// How long a frozen frame stays usable. A full-resolution `CGImage` is
+    /// megabytes, and a device that never comes back must not pin one for the
+    /// app's whole life.
+    static let heldCaptureExpiry: TimeInterval = 600
+
     init(
+        installID: String,
         deviceName: String,
         daemon: DaemonAPI,
         status: CanvasStatus,
-        parking: CanvasCaptureParkingLot = CanvasCaptureParkingLot(),
+        frames: CleanFrameSource,
         workQueue: DispatchQueue = DispatchQueue(label: "canvas.work", qos: .utility),
         now: @escaping () -> Date = Date.init,
         sleep: @escaping (TimeInterval) async -> Void = { try? await Task.sleep(nanoseconds: UInt64($0 * 1e9)) }
     ) {
+        self.installID = installID
         self.daemon = daemon
         self.status = status
-        self.parking = parking
+        self.frames = frames
         self.now = now
         self.pipeline = UploadPipeline(
             deviceName: deviceName,
@@ -147,65 +155,77 @@ final class CanvasSession: SenderCanvasDelegate {
         )
     }
 
-    /// Ending a session does not cancel the rounds it accepted: the device was
-    /// told they were sent, so the pipeline keeps them and keeps trying. Said
-    /// out loud, because otherwise a round landing minutes after its iPad
-    /// disconnected reads like the work of a session that is not there.
-    deinit {
-        let pending = pipeline.pendingUploadCount
-        if pending > 0 {
-            Log.info("canvas: session ended with \(pending) uploads pending; continuing in the background")
-        }
-    }
-
     /// Annotations accepted but not yet uploaded or dropped.
     var pendingUploadCount: Int { pipeline.pendingUploadCount }
 
-    // MARK: - SenderCanvasDelegate
+    // MARK: - The link
 
-    /// Every hello, including the re-hellos a rotation causes: the iPad keeps
-    /// no round history of its own, so the snapshot is what shows a reply
-    /// that landed while it was away (spec section 5.4).
-    func canvasPeerDidHello(_ peer: CanvasPeer, outbound: CanvasOutbound) {
+    /// The iPad said hello on `outbound`. It keeps no round history of its own,
+    /// so the snapshot is what shows a reply that landed while it was away
+    /// (spec section 5.4); the session list and the status follow.
+    func attach(_ outbound: CanvasOutbound) {
         lock.lock()
-        self.peer = peer
         self.outbound = outbound
+        lastSentStatus = nil
         lock.unlock()
 
-        sendRoundsSnapshot(deviceID: peer.installID, via: outbound)
-        send(type: CanvasWire.sessions, status.sessions.json, via: outbound)
+        sendRoundsSnapshot(via: outbound)
+        outbound.send(CanvasWire.sessions, status.sessions.json)
+        sendStatus()
     }
 
-    /// The session list changed (or the target did). `CanvasHub` calls this for
-    /// every live session; one with no link has nowhere to send it, and its
-    /// next hello sends the list anyway.
-    func sendSessions() {
+    /// The link that said hello is gone. Only the link is forgotten: queued
+    /// uploads, the held freeze capture and the last accepted round all stay,
+    /// because the next hello may be the iPad coming back to finish the round.
+    func detach(_ outbound: CanvasOutbound) {
         lock.lock()
-        let outbound = self.outbound
+        if self.outbound === outbound { self.outbound = nil }
         lock.unlock()
-        guard let outbound else { return }
-        send(type: CanvasWire.sessions, status.sessions.json, via: outbound)
+    }
+
+    private var currentOutbound: CanvasOutbound? {
+        lock.lock()
+        defer { lock.unlock() }
+        return outbound
+    }
+
+    // MARK: - Mac to iPad
+
+    /// The session list changed (or the target did). `CanvasHub` calls this for
+    /// every session; one with no link has nowhere to send it, and its next
+    /// hello sends the list anyway.
+    func sendSessions() {
+        currentOutbound?.send(CanvasWire.sessions, status.sessions.json)
+    }
+
+    /// The channel state or the target's project may have changed. Sent only
+    /// when what the iPad was last told is different.
+    func sendStatus() {
+        let message = status.statusMessage
+        lock.lock()
+        guard let outbound, message != lastSentStatus else {
+            lock.unlock()
+            return
+        }
+        lastSentStatus = message
+        lock.unlock()
+        outbound.send(CanvasWire.status, message.json)
     }
 
     /// The same snapshot hello sends, on demand. `CanvasHub` calls this after
     /// the daemon's rounds stream (re)connects: the daemon replays nothing, so
     /// a `round.updated` emitted while the stream was down is only ever seen
-    /// again in a snapshot (I2). A session with no device or no link has
-    /// nothing to send and nowhere to send it.
+    /// again in a snapshot (I2).
     func resendSnapshot() {
-        lock.lock()
-        let deviceID = peer?.installID
-        let outbound = self.outbound
-        lock.unlock()
-
-        guard let deviceID, let outbound else { return }
-        sendRoundsSnapshot(deviceID: deviceID, via: outbound)
+        guard let outbound = currentOutbound else { return }
+        sendRoundsSnapshot(via: outbound)
     }
 
     /// A daemon that cannot answer still gets an empty snapshot out, so the
     /// device is not left waiting on one.
-    private func sendRoundsSnapshot(deviceID: String, via outbound: CanvasOutbound) {
+    private func sendRoundsSnapshot(via outbound: CanvasOutbound) {
         let daemon = self.daemon
+        let deviceID = installID
         Task {
             let rounds: [CanvasRound]
             do {
@@ -214,21 +234,20 @@ final class CanvasSession: SenderCanvasDelegate {
                 Log.info("canvas: rounds snapshot fetch failed (\(error)); sending an empty one")
                 rounds = []
             }
-            outbound.sendCanvasJSONData(CanvasSession.roundsPayload(RoundsMessage(rounds: rounds)))
+            let snapshot = RoundsMessage(rounds: Array(rounds.prefix(CanvasWire.roundsSnapshotLimit)).map { round in
+                var capped = round
+                capped.message = round.message?.truncatedUTF8(maxBytes: CanvasWire.replyMessageMaxBytes)
+                return capped
+            })
+            outbound.send(CanvasWire.rounds, snapshot.json)
         }
     }
 
     /// Relays one round update to the device it belongs to. A drop on the
-    /// floor here (wrong device, or no link) is deliberate: the snapshot the
-    /// next hello sends carries the round anyway.
+    /// floor here (another device's round, or no link) is deliberate: the
+    /// snapshot the next hello sends carries the round anyway.
     func deliver(_ update: RoundUpdate) {
-        lock.lock()
-        let installID = peer?.installID
-        let outbound = self.outbound
-        lock.unlock()
-
-        guard let outbound, installID == update.deviceID else { return }
-
+        guard update.deviceID == installID, let outbound = currentOutbound else { return }
         let reply = AgentReplyMessage(
             annotationId: update.round.annotationId,
             status: update.round.status,
@@ -236,49 +255,23 @@ final class CanvasSession: SenderCanvasDelegate {
             prUrl: update.round.prUrl,
             t: (now().timeIntervalSince1970 * 1000).rounded()
         )
-        send(type: CanvasWire.agentReply, reply.json, via: outbound)
+        outbound.send(CanvasWire.agentReply, reply.json)
     }
 
-    /// Runs at capture rate: one deep copy into the ring and nothing else —
-    /// no logging, no I/O (global constraint "logging discipline").
-    func canvasDidEncodeFrame(_ pixelBuffer: CVPixelBuffer, captureMs: Int64) {
-        lock.lock()
-        ring.append(pixelBuffer, captureMs: captureMs)
-        lock.unlock()
-        status.noteFrame(at: Date())
-    }
+    // MARK: - iPad to Mac
 
-    func canvasDidReceive(type: String, object: [String: Any], outbound: CanvasOutbound) {
+    func receive(type: String, object: [String: Any], attachment: Data) {
         switch type {
         case CanvasWire.freeze:
-            handleFreeze(object, outbound: outbound)
+            handleFreeze(object)
         case CanvasWire.annotation:
-            handleAnnotation(object)
+            handleAnnotation(object, attachment: attachment)
         case CanvasWire.selectSession:
             handleSelectSession(object)
         default:
             break
         }
     }
-
-    /// Idempotent, because one drop can be reported more than once.
-    ///
-    /// Only the link is forgotten. Queued uploads, the ring and — since C1 —
-    /// the held freeze capture all stay: the round the designer already
-    /// pressed Done on must still reach Claude Code; the next hello freezes
-    /// against the same frames; and a drop in SENDING is answered by the iPad
-    /// re-sending the same `annotation` after the next `hello` (ruling 5), so
-    /// the frame that sketch belongs to has to still be there — here if the
-    /// session survives, in the parking lot if it does not.
-    func canvasLinkDidDrop() {
-        lock.lock()
-        outbound = nil
-        lock.unlock()
-    }
-
-    func canvasPingFields() -> [String: String] { status.pingFields }
-
-    // MARK: - selectSession
 
     /// The iPad picked the target (X24). The daemon owns the target, so the
     /// choice goes there; the list that comes back on the sessions stream is
@@ -304,112 +297,90 @@ final class CanvasSession: SenderCanvasDelegate {
     /// Mode is blocked in FREEZING until it arrives (spec section 3). A frame
     /// that is in the ring but cannot be turned into an image is a miss: the
     /// user must not be left drawing on a frame this Mac cannot use.
-    private func handleFreeze(_ object: [String: Any], outbound: CanvasOutbound) {
+    private func handleFreeze(_ object: [String: Any]) {
+        guard let outbound = currentOutbound else { return }
         guard let message = FreezeMessage(json: object) else {
             Log.info("canvas: unparseable freeze")
-            send(type: CanvasWire.frozen, FrozenMessage(ok: false).json, via: outbound)
+            return
+        }
+        guard let found = frames.cleanFrame(message.frame),
+              let image = Compositor.cgImage(from: found.pixelBuffer) else {
+            Log.info("canvas: freeze missed the ring at frame \(message.frame)")
+            outbound.send(CanvasWire.frozen, FrozenMessage(frame: message.frame, ok: false).json)
             return
         }
 
-        lock.lock()
-        let found = ring.frame(at: message.captureMs)
-        lock.unlock()
+        outbound.send(CanvasWire.frozen, FrozenMessage(frame: message.frame, ok: true).json)
 
-        guard let found, let image = Compositor.cgImage(from: found.pixelBuffer) else {
-            Log.info("canvas: freeze missed the ring at captureMs \(message.captureMs)")
-            send(type: CanvasWire.frozen, FrozenMessage(ok: false).json, via: outbound)
-            return
-        }
-
-        send(type: CanvasWire.frozen, FrozenMessage(ok: true).json, via: outbound)
-
-        // Stamped with the frame's own millisecond — the same clock the video
-        // telemetry's `cap` uses, which is Unix epoch ms — so the store and the
+        // Stamped with the frame's own capture time, so the store and the
         // channel's "Captured at" describe the moment the designer froze (M2).
-        let capture = UploadPipeline.FreezeCapture(
-            image: image,
-            capturedAt: Date(timeIntervalSince1970: Double(found.captureMs) / 1000)
-        )
+        let capture = UploadPipeline.FreezeCapture(image: image, capturedAt: found.capturedAt)
         lock.lock()
         let hadPrevious = heldCapture != nil
-        heldCapture = capture
-        let installID = peer?.installID
+        heldCapture = (capture, now())
         lock.unlock()
-        // Parked as well as held, so the session that serves the reconnect
-        // after a link drop inherits it. A new freeze from this device
-        // replaces whatever was parked: the designer has moved on.
-        if let installID {
-            parking.park(capture, installID: installID, at: now())
-        }
         pipeline.enqueue(capture: capture)
 
         if hadPrevious {
             Log.info("canvas: discarding previous freeze capture")
         }
-        Log.info("canvas: freeze accepted at captureMs \(found.captureMs)")
+        Log.info("canvas: freeze accepted at frame \(message.frame)")
     }
 
     // MARK: - annotation
 
     /// Hands the freeze capture and the sketch to the upload pipeline and
     /// returns: the composite and the upload are the pipeline's work, not the
-    /// sender queue's. `createdAt` is stamped here rather than when the upload
+    /// stream queue's. `createdAt` is stamped here rather than when the upload
     /// finally lands, so retries keep their original order in the store.
     ///
-    /// The capture is this session's held one, or — after a link drop rebuilt
-    /// the session under the iPad's re-send — the one parked for this device
-    /// (C1). A `t` already accepted from this device is that re-send arriving
-    /// after the Mac had in fact taken the round: it is acknowledged by being
-    /// dropped, never uploaded twice.
-    private func handleAnnotation(_ object: [String: Any]) {
-        guard let message = AnnotationMessage(json: object) else {
+    /// A `t` already accepted is the iPad's re-send arriving after the Mac had
+    /// in fact taken the round: it is acknowledged by being dropped, never
+    /// uploaded twice.
+    private func handleAnnotation(_ object: [String: Any], attachment: Data) {
+        guard let message = AnnotationMessage(json: object, attachment: attachment) else {
             Log.info("canvas: unparseable annotation")
             return
         }
         let createdAt = now()
-
-        lock.lock()
-        guard let installID = peer?.installID else {
-            lock.unlock()
-            Log.info("canvas: dropping annotation — no peer has said hello yet")
-            return
-        }
-        lock.unlock()
-
-        guard !parking.hasAccepted(t: message.t, installID: installID) else {
-            Log.info("canvas: annotation t=\(message.t) was already accepted — dropping the re-send")
-            return
-        }
-
-        let base: UploadPipeline.Base
+        // Drawn on the iPad's blank page: no `freeze` came first and no frame
+        // is involved. A held capture belongs to a mirror sketch that may
+        // still arrive, so it is left exactly where it is.
+        var blankPage: (width: Int, height: Int)?
         if message.base == .blank {
-            // Drawn on the iPad's blank page: no `freeze` came first and no
-            // frame is involved. A held or parked capture belongs to a mirror
-            // sketch that may still arrive, so it is left exactly where it is.
             guard let page = Self.blankPageSize(for: message.viewport) else {
                 Log.info("canvas: dropping blank annotation — viewport \(message.viewport.width)x\(message.viewport.height)@\(message.viewport.scale) has no area")
                 return
             }
-            base = .blank(width: page.width, height: page.height)
-        } else {
-            lock.lock()
-            let held = heldCapture
-            heldCapture = nil
-            lock.unlock()
+            blankPage = page
+        }
 
-            guard let capture = held ?? parking.parkedCapture(installID: installID, now: createdAt) else {
+        lock.lock()
+        if lastAcceptedT == message.t {
+            lock.unlock()
+            Log.info("canvas: annotation t=\(message.t) was already accepted — dropping the re-send")
+            return
+        }
+        let base: UploadPipeline.Base
+        if let blankPage {
+            base = .blank(width: blankPage.width, height: blankPage.height)
+        } else {
+            guard let held = heldCapture, createdAt.timeIntervalSince(held.at) <= Self.heldCaptureExpiry else {
+                heldCapture = nil
+                lock.unlock()
                 Log.info("canvas: dropping annotation — no freeze capture is held")
                 return
             }
-            parking.removeParkedCapture(installID: installID)
-            base = .frame(capture)
+            heldCapture = nil
+            base = .frame(held.capture)
         }
-        parking.recordAccepted(t: message.t, installID: installID)
+        lastAcceptedT = message.t
+        lock.unlock()
 
         pipeline.enqueue(annotation: UploadPipeline.AnnotationJob(
             base: base,
             sketchPNG: message.sketchPNG,
-            zoomRect: message.zoomRect,
+            zoomRect: .full,
             viewport: message.viewport,
             note: message.note,
             deviceID: installID,
@@ -425,34 +396,13 @@ final class CanvasSession: SenderCanvasDelegate {
     static let blankPageMaxSide = 4096
 
     /// The blank page for a sketch drawn at `viewport`: the sketch surface's
-    /// own pixel size (`w * scale` by `h * scale`, PROTOCOL.md 11.2), so the
-    /// sketch lands on it one-to-one. Nil when the viewport has no area.
+    /// own pixel size (`w * scale` by `h * scale`), so the sketch lands on it
+    /// one-to-one. Nil when the viewport has no area.
     static func blankPageSize(for viewport: CanvasViewport) -> (width: Int, height: Int)? {
         guard viewport.width > 0, viewport.height > 0, viewport.scale > 0, viewport.scale.isFinite else { return nil }
         let width = (Double(viewport.width) * viewport.scale).rounded()
         let height = (Double(viewport.height) * viewport.scale).rounded()
         return (max(1, Int(min(width, Double(blankPageMaxSide)))),
                 max(1, Int(min(height, Double(blankPageMaxSide)))))
-    }
-
-    // MARK: - sending
-
-    private func send(type: String, _ body: [String: Any], via outbound: CanvasOutbound) {
-        var object = body
-        object["type"] = type
-        outbound.sendCanvasJSON(object)
-    }
-
-    /// `RoundsMessage.encoded` is the only thing that knows how to shrink a
-    /// snapshot under the 32768-byte wire limit (ruling 3), and it produces
-    /// `{"rounds":[…]}`. The control type is spliced in after the opening
-    /// brace rather than re-encoded, so that shrinking is not undone; the
-    /// budget handed to `encoded` is reduced by exactly what the splice adds.
-    private static func roundsPayload(_ message: RoundsMessage) -> Data {
-        let prefix = Data("{\"type\":\"\(CanvasWire.rounds)\",".utf8)
-        let added = prefix.count - 1   // the prefix replaces the leading `{`
-        var payload = prefix
-        payload.append(message.encoded(limit: CanvasWire.senderJSONLimit - added).dropFirst())
-        return payload
     }
 }

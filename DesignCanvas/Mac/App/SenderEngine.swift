@@ -1,30 +1,45 @@
 // The seam between the menu-bar shell and the sender.
 //
-// The real engine (`OpenDisplaySenderEngine`) drives a ScreenCaptureKit stream of the Mac's
-// screen, an encoder and a socket, none of which a unit test can stand up — and none of which
-// compile into a hostless test bundle. So the shell only ever talks to this protocol, and the
-// tests hand it a fake (spec section 1: "behind a `SenderEngine` protocol so it is fakeable in
-// tests").
+// The real engine (`MirrorEngine`) drives a ScreenCaptureKit stream of the Mac's screen,
+// encoders and sockets, none of which a unit test can stand up. So the shell only ever talks to
+// this protocol, and the tests hand it a fake (spec section 1: "behind a `SenderEngine`
+// protocol so it is fakeable in tests").
 
 import Foundation
 
-/// One connected (or connecting) device, flattened to what the menu draws: `SenderController`'s
-/// `DeviceSession` is an `ObservableObject` full of pipeline state, and none of it belongs in a
-/// value the menu diffs.
+/// One device the engine is serving (or trying to), flattened to what the menu draws.
 struct EngineDevice: Equatable, Identifiable {
+    enum State: Equatable {
+        /// Dialing, or connected and waiting for the iPad's hello.
+        case connecting
+        /// The iPad said hello and is showing the screen.
+        case mirroring
+        /// The iPad is reachable but nothing answers: the app is not open.
+        case waitingForApp
+        /// The iPad locked; it resumes on wake.
+        case asleep
+        /// Not attached and not advertised right now.
+        case unreachable
+        /// Another Mac took this iPad over.
+        case inUseElsewhere
+        /// The iPad's app speaks a different wire version.
+        case needsUpdate
+    }
+
     let id: String
     let name: String
-    let status: String
+    let state: State
     let onUSB: Bool
+
+    var connected: Bool { state == .mirroring }
 }
 
-/// One device the sender can see but is not serving: a Bonjour service on the LAN, or a cabled
-/// device the user has disconnected. `id` is the controller's own device-row id, which is what
+/// One device the engine can see but is not serving: a Bonjour service on the LAN, or a cabled
+/// device the user has disconnected. `id` is the engine's id for it, which is what
 /// `SenderEngine.connect(id:)` takes back.
 ///
-/// This exists because `SenderController` auto-connects USB devices and *remembered* WiFi ones
-/// only, and a WiFi device is remembered only once the user has connected to it from a UI. With
-/// no such UI, a WiFi iPad could never be started at all (I1, PRD D1).
+/// The engine connects USB devices and iPads the user connected before on its own; anything else
+/// waits here for a click (I1, PRD D1).
 struct DiscoveredDevice: Equatable, Identifiable {
     let id: String
     let name: String
@@ -34,9 +49,9 @@ struct DiscoveredDevice: Equatable, Identifiable {
 
 @MainActor
 protocol SenderEngine: AnyObject {
-    /// The devices the sender is serving right now.
+    /// The devices the engine is serving, or trying to.
     var devices: [EngineDevice] { get }
-    /// Devices the sender can see but is not serving — the ones the menu offers a Connect for.
+    /// Devices the engine can see but is not serving — the ones the menu offers a Connect for.
     var discovered: [DiscoveredDevice] { get }
     /// Called whenever either list changes, so the menu can republish without polling.
     var onDevicesChanged: (() -> Void)? { get set }
@@ -53,7 +68,7 @@ protocol SenderEngine: AnyObject {
     func stop()
 
     /// Dial one `discovered` device, as a deliberate user action: that is also what makes the
-    /// sender remember a WiFi device, so it auto-reconnects on later launches.
+    /// engine trust it, so it reconnects on its own from then on, over WiFi too.
     func connect(id: String)
     /// Stop serving one `devices` entry (its `id`), and stop auto-connecting it.
     func disconnect(id: String)
