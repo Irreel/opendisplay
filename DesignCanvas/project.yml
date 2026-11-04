@@ -105,6 +105,8 @@ targets:
         CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
         UILaunchScreen: {}
         UIRequiresFullScreen: true
+        # Light appearance only for now: the dark one isn't maintained.
+        UIUserInterfaceStyle: Light
         NSLocalNetworkUsageDescription: Design Canvas advertises itself on the local network so your Mac can connect over WiFi.
         NSBonjourServices: ["_designcanvas._tcp"]
         UISupportedInterfaceOrientations:
