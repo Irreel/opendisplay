@@ -328,7 +328,7 @@ final class DaemonClientTests: XCTestCase {
     }
 
     /// M6: one entry this build cannot read must not cost the device the whole
-    /// list — the same rule PROTOCOL.md section 6 applies to unknown types.
+    /// list — the same rule the wire applies to unknown types.
     func test_rounds_skipsAnUnreadableEntry_andReturnsTheRest() async throws {
         let roundsJSON = """
         {"rounds":[

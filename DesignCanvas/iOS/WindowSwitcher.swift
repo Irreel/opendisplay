@@ -1,8 +1,8 @@
 // What is on screen, under the session pill (Figma v3.1): the Mac's own screen
 // or the whiteboard (B1). Tapping it opens the window menu (`MorphMenu`, M7):
 // the icon travels into the row for what is on screen, and the chevron fades.
-// The Mac's row is the Mac's own name, from its ping (PROTOCOL.md 11.3); a
-// Mac that does not send one is "Your Mac".
+// The Mac's row is the Mac's own name, from its hello; a Mac that sends none
+// is "Your Mac".
 
 import SwiftUI
 
@@ -12,7 +12,7 @@ struct WindowSwitcher: View {
     let surface: CanvasSurface
     /// The Mac's own name, when it sent one.
     var macName: String?
-    /// The Mac can take a whiteboard sketch (B3).
+    /// A Mac is connected to take a whiteboard sketch (B3).
     let whiteboardAvailable: Bool
     /// Not while a sketch is on its way (B6).
     let canSwitch: Bool
@@ -115,7 +115,7 @@ struct WindowSwitcher: View {
         case .blank:
             return whiteboardAvailable
                 ? "A blank page, always ready to draw"
-                : "Needs a newer Design Canvas on the Mac"
+                : "Needs your Mac connected"
         }
     }
 

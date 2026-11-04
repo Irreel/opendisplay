@@ -29,7 +29,7 @@ struct MenuBarView: View {
 
     // MARK: - Derived state
 
-    private var iPadConnected: Bool { !model.devices.isEmpty }
+    private var iPadConnected: Bool { model.devices.contains(where: \.connected) }
 
     private var startBlocker: StartBlocker? {
         model.serverEntry == nil ? .noServerBuild : nil

@@ -12,8 +12,8 @@ import XCTest
 /// setting it directly; `pollOnce()` stamps its own launch clock on the false->true edge, so this
 /// exercises the same timeout logic `startSession()` uses in production (see `AppModel.pollOnce`).
 
-/// Stands in for `OpenDisplaySenderEngine`, which can't be compiled into a hostless bundle (it
-/// names `SenderController`/`MacSender`). Records everything the app pushes at it.
+/// Stands in for `MirrorEngine`, which captures the screen and dials real devices. Records
+/// everything the app pushes at it.
 @MainActor
 final class FakeSenderEngine: SenderEngine {
     var devices: [EngineDevice] = []
@@ -21,6 +21,10 @@ final class FakeSenderEngine: SenderEngine {
     var onDevicesChanged: (() -> Void)?
     var pendingUploads = 0
     var isCapturing = false
+    var pairingPrompt: PairingPrompt?
+    var pairedDevices: [PairedPeer] = []
+    private(set) var pairingAnswers: [(id: String, accept: Bool)] = []
+    private(set) var forgotten: [String] = []
 
     private(set) var startCount = 0
     private(set) var stopCount = 0
@@ -33,9 +37,10 @@ final class FakeSenderEngine: SenderEngine {
     func setChannelState(_ state: ChannelState) { channelStates.append(state) }
     func connect(id: String) { connected.append(id) }
     func disconnect(id: String) { disconnected.append(id) }
+    func answerPairing(id: String, accept: Bool) { pairingAnswers.append((id, accept)) }
+    func forgetPairedDevice(id: String) { forgotten.append(id) }
 
-    /// What the real engine does when `SenderController`'s sessions or its
-    /// discovery change.
+    /// What the real engine does when its links or what it can see change.
     func publish(_ devices: [EngineDevice], discovered: [DiscoveredDevice] = []) {
         self.devices = devices
         self.discovered = discovered
@@ -836,7 +841,7 @@ final class AppModelTests: XCTestCase {
         let (model, _, engine) = makeEngineModel()
         XCTAssertEqual(model.devices, [])
 
-        let device = EngineDevice(id: "usb:abc", name: "Zhao's iPad", status: "Streaming", onUSB: true)
+        let device = EngineDevice(id: "link-1", name: "Zhao's iPad", state: .mirroring, onUSB: true)
         engine.publish([device])
         XCTAssertEqual(model.devices, [device])
 
@@ -844,19 +849,18 @@ final class AppModelTests: XCTestCase {
         XCTAssertEqual(model.devices, [], "a device going away republishes too")
     }
 
-    /// I1: `SenderController` auto-connects USB devices and *remembered* WiFi
-    /// ones, and a device is only remembered once the user connected to it from
-    /// a UI. Design Canvas had no such UI, so a WiFi iPad could never be
-    /// started from this app at all — against PRD D1.
+    /// I1: the engine connects USB devices and iPads the user connected
+    /// before on its own; a WiFi iPad seen for the first time waits for a
+    /// Connect in the menu (PRD D1).
     func testDiscoveredDevicesRepublish() {
         let (model, _, engine) = makeEngineModel()
         XCTAssertEqual(model.discoveredDevices, [])
 
-        let waiting = DiscoveredDevice(id: "service:Zhao's iPad", name: "Zhao's iPad", transport: "WiFi")
+        let waiting = DiscoveredDevice(id: "wifi:Zhao's iPad", name: "Zhao's iPad", transport: "WiFi")
         engine.publish([], discovered: [waiting])
         XCTAssertEqual(model.discoveredDevices, [waiting])
 
-        let connected = EngineDevice(id: "wifi:Zhao's iPad", name: "Zhao's iPad", status: "Streaming", onUSB: false)
+        let connected = EngineDevice(id: "link-2", name: "Zhao's iPad", state: .mirroring, onUSB: false)
         engine.publish([connected], discovered: [])
         XCTAssertEqual(model.devices, [connected])
         XCTAssertEqual(model.discoveredDevices, [], "a device being served is no longer offered a Connect")
@@ -865,10 +869,10 @@ final class AppModelTests: XCTestCase {
     func testConnectAndDisconnectForwardToTheEngine() {
         let (model, _, engine) = makeEngineModel()
 
-        model.connectDevice(id: "service:Zhao's iPad")
-        model.disconnectDevice(id: "wifi:Zhao's iPad")
+        model.connectDevice(id: "wifi:Zhao's iPad")
+        model.disconnectDevice(id: "link-2")
 
-        XCTAssertEqual(engine.connected, ["service:Zhao's iPad"])
-        XCTAssertEqual(engine.disconnected, ["wifi:Zhao's iPad"])
+        XCTAssertEqual(engine.connected, ["wifi:Zhao's iPad"])
+        XCTAssertEqual(engine.disconnected, ["link-2"])
     }
 }

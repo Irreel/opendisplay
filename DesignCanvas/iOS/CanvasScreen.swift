@@ -29,7 +29,7 @@ import UIKit
 
 struct CanvasScreen: View {
 
-    @ObservedObject var receiverModel: ReceiverModel
+    @ObservedObject var receiverModel: ReceiverController
     @ObservedObject var canvas: CanvasModel
 
     @StateObject private var sketch = SketchCanvasController()
@@ -73,7 +73,7 @@ struct CanvasScreen: View {
     @AppStorage("canvasToolPanelEdge") private var storedPanelEdge = PanelEdge.bottom.rawValue
     @Environment(\.scenePhase) private var scenePhase
 
-    private var receiver: StreamReceiver { receiverModel.receiver }
+    private var receiver: CanvasReceiver { receiverModel.receiver }
 
     private var isStreaming: Bool {
         receiver.connected && receiver.videoSize != .zero
@@ -86,6 +86,35 @@ struct CanvasScreen: View {
         case .freezing, .drawing: return true
         case .live, .sending, .retry: return false
         }
+    }
+
+    /// The code, what to check, and what pairing will do to the Mac being
+    /// mirrored now: pairing switches to the new Mac at once.
+    static func pairingMessage(_ request: CanvasReceiver.PairingRequest) -> String {
+        var text = "Code \(request.code)\n\nCheck that your Mac shows the same code, then tap Pair on both. If the codes differ, cancel."
+        if request.replacesASession {
+            let current = request.replacesMacName.map { "\u{201C}\($0)\u{201D}" } ?? "the Mac it is mirroring"
+            text += "\n\nPairing switches this \(deviceKind) to it from \(current)\(request.replacesOverCable ? " on the cable" : "")."
+        }
+        return text
+    }
+
+    /// The asking Mac's name is only what it calls itself, so it is quoted
+    /// as a claim, and a name that copies the cabled Mac's is called out.
+    static func switchMessage(_ request: CanvasReceiver.SwitchRequest) -> String {
+        let current = request.currentMacName.map { "\u{201C}\($0)\u{201D}" } ?? "the Mac"
+        let cable = request.currentOverCable
+        guard let asking = request.macName else {
+            return "A Mac on this WiFi wants to mirror to this \(deviceKind) instead of \(current)\(cable ? " on the cable" : ""). Only switch if you were expecting it."
+        }
+        if asking == request.currentMacName {
+            return cable
+                ? "A Mac on this WiFi using the same name as the one on the cable (\(current)) wants to mirror to this \(deviceKind). If you didn\u{2019}t expect this, keep the cable."
+                : "A Mac on this WiFi using the same name as the one you\u{2019}re mirroring (\(current)) wants to mirror to this \(deviceKind). If you didn\u{2019}t expect this, don\u{2019}t switch."
+        }
+        return cable
+            ? "A Mac calling itself \u{201C}\(asking)\u{201D} wants to mirror to this \(deviceKind) over WiFi, instead of \(current) on the cable. Only switch if you were expecting it."
+            : "A Mac calling itself \u{201C}\(asking)\u{201D} wants to mirror to this \(deviceKind), instead of \(current). Only switch if you were expecting it."
     }
 
     /// The blank page is up in place of the mirror.
@@ -135,9 +164,7 @@ struct CanvasScreen: View {
         // screen owns and hands back on every entry, and fading a removal out
         // would leave it in two hierarchies at once.
         .sheet(isPresented: $showConnection) {
-            ConnectionDetailView(receiver: receiver, model: canvas,
-                                 port: DesignCanvasiPad.port,
-                                 serviceType: DesignCanvasiPad.serviceType)
+            ConnectionDetailView(receiver: receiver, model: canvas)
         }
         // The only way out of RETRY other than a reconnect (M10), and it
         // throws away a sketch the designer has finished: ask first.
@@ -158,6 +185,29 @@ struct CanvasScreen: View {
             Button("Discard", role: .destructive) { canvas.discard() }
         } message: {
             Text("It hasn\u{2019}t reached Claude Code yet. If you discard it, it won\u{2019}t be sent and can\u{2019}t be brought back.")
+        }
+        // Pairing a Mac, the first time it connects: both screens show the
+        // same code, and the user confirms on both (numeric comparison).
+        .alert("Pair with \u{201C}\(receiver.pairingRequest?.macName ?? "this Mac")\u{201D}?", isPresented: Binding(
+            get: { receiver.pairingRequest != nil },
+            set: { _ in }), presenting: receiver.pairingRequest) { request in
+            Button("Cancel", role: .cancel) { receiver.answerPairing(id: request.id, accept: false) }
+            Button("Pair") { receiver.answerPairing(id: request.id, accept: true) }
+        } message: { request in
+            Text(Self.pairingMessage(request))
+        }
+        // A Mac asking over WiFi to take over from the one on the cable. The
+        // iPad cannot tell who is asking, so the person holding it decides;
+        // no answer keeps the cable.
+        .alert("Switch Macs?", isPresented: Binding(
+            get: { receiver.switchRequest != nil },
+            set: { _ in }), presenting: receiver.switchRequest) { request in
+            Button(request.currentOverCable ? "Keep the Cable" : "Don\u{2019}t Switch", role: .cancel) {
+                receiver.answerSwitchRequest(id: request.id, switchTo: false)
+            }
+            Button("Switch") { receiver.answerSwitchRequest(id: request.id, switchTo: true) }
+        } message: { request in
+            Text(Self.switchMessage(request))
         }
         // The freeze deadline only needs a clock while the freeze is
         // outstanding.
@@ -204,8 +254,8 @@ struct CanvasScreen: View {
             default: break
             }
         }
-        // The same lock, app-switch and terminate handling OpenDisplay's
-        // receiver uses: a device lock ends the session, an app switch keeps it.
+        // A device lock ends the session, an app switch keeps it, and quitting
+        // says goodbye (`ReceiverController`).
         .onReceive(NotificationCenter.default.publisher(
             for: UIApplication.protectedDataWillBecomeUnavailableNotification)) { _ in
             receiverModel.deviceWillLock()
@@ -253,14 +303,12 @@ struct CanvasScreen: View {
         }
         .onAppear {
             viewSize = size
-            receiver.setOrientation(portrait: size.height > size.width)
         }
         .onChange(of: size) { newSize in
             viewSize = newSize
-            receiver.setOrientation(portrait: newSize.height > newSize.width)
-            // The Mac rebuilds its display for the new dimensions, so the frame
-            // this sketch was frozen on is gone. The strokes stay in the canvas
-            // for the next entry (PRD G6).
+            // The picture is laid out anew, so the strokes no longer sit on
+            // what they were drawn over. They stay in the canvas for the next
+            // entry (PRD G6).
             if isInDrawMode { canvas.rotated() }
             zoom.reset()
         }
@@ -557,7 +605,7 @@ struct CanvasScreen: View {
 
                     WindowSwitcher(surface: canvas.surface,
                                    macName: canvas.macName,
-                                   whiteboardAvailable: canvas.macSupportsBlank,
+                                   whiteboardAvailable: canvas.whiteboardAvailable,
                                    canSwitch: canvas.drawState == .live || isInDrawMode,
                                    menuWidth: min(340, size.width - 2 * TopBarLayout.margin),
                                    isOpen: $showWindows,
@@ -859,16 +907,15 @@ private struct NoticeBanner: View {
     }
 }
 
-/// Nothing to mirror yet — the two facts OpenDisplay's idle screen shows,
-/// without its artwork (custom icons are deferred, plan ruling 9), and the
-/// setup steps that get a Mac to connect (`SetupGuideCard`). This screen is all
+/// Nothing to mirror yet — the receiver's status, and the setup steps that get
+/// a Mac to connect (`SetupGuideCard`). This screen is all
 /// the iPad says about a Mac that is not there, so the way to the details and
 /// the log is on it. The status comes first and the steps follow in one centred
 /// column, in either orientation. The steps run past the bottom of the screen,
 /// so the first view is the status and the start of the steps, and the rest is
 /// a scroll away.
 private struct WaitingForMacView: View {
-    @ObservedObject var receiver: StreamReceiver
+    @ObservedObject var receiver: CanvasReceiver
     let onConnectionDetails: () -> Void
 
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass

@@ -47,12 +47,25 @@ struct DetailsView: View {
                     Text("None connected").foregroundColor(.secondary)
                 }
                 ForEach(model.devices) { device in
-                    LabeledContent(device.name, value: "\(device.status) \u{00B7} \(device.onUSB ? "USB" : "WiFi") \u{00B7} \(device.id)")
+                    LabeledContent(device.name, value: "\(MenuPresentation.deviceRow(device).word) \u{00B7} \(device.onUSB ? "USB" : "WiFi") \u{00B7} \(device.id)")
                 }
                 ForEach(model.discoveredDevices) { device in
                     LabeledContent(device.name, value: "Discovered \u{00B7} \(device.transport) \u{00B7} \(device.id)")
                 }
                 LabeledContent("Sketches waiting to send", value: String(model.pendingUploads))
+            }
+            Section("Paired iPads") {
+                if model.pairedDevices.isEmpty {
+                    Text("None yet. An iPad pairs the first time it connects: both screens show a code to confirm.")
+                        .foregroundColor(.secondary)
+                }
+                ForEach(model.pairedDevices) { peer in
+                    HStack {
+                        LabeledContent(peer.name ?? "iPad",
+                                       value: "paired \(peer.pairedAt.formatted(date: .abbreviated, time: .omitted))")
+                        Button("Forget") { model.forgetPairedDevice(id: peer.id) }
+                    }
+                }
             }
             if let warning = model.configWarning {
                 Section("Last error") {
@@ -90,10 +103,9 @@ struct DetailsView: View {
             }
             Section("Logs") {
                 Button("Open Logs Folder") {
-                    let logs = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Logs")
-                    NSWorkspace.shared.open(logs.appendingPathComponent("OpenDisplay"))
+                    NSWorkspace.shared.open(Log.fileURL.deletingLastPathComponent())
                 }
-                Text("App: ~/Library/Logs/OpenDisplay/opendisplay.log \u{00B7} Daemon: ~/Library/Logs/DesignCanvas/server.log")
+                Text("App: ~/Library/Logs/DesignCanvas/designcanvas.log \u{00B7} Daemon: ~/Library/Logs/DesignCanvas/server.log")
                     .font(.caption2)
                     .foregroundColor(.secondary)
             }

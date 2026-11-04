@@ -94,7 +94,7 @@ final class DaemonSupervisor {
 /// The environment the daemon child is spawned with.
 ///
 /// ai.cst.2 set `SERVER_HOST=0.0.0.0` here so the iPad could reach the daemon over the LAN.
-/// Design Canvas carries the annotation on the OpenDisplay connection instead, so the daemon
+/// Design Canvas carries the annotation on its own Mac-iPad link instead, so the daemon
 /// binds `127.0.0.1` and ignores `SERVER_HOST` entirely. Stripping an inherited value is belt
 /// and braces on top of that: it makes "nothing this app launches can be told to listen on the
 /// LAN" a property of the launcher, testable without a daemon.

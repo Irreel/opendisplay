@@ -74,14 +74,12 @@ final class SessionsWireTests: XCTestCase {
         XCTAssertEqual(fromDaemon?.id, "dc-a")
     }
 
-    func testAnOversizeListStaysUnderTheSenderLimitAndKeepsTheTarget() throws {
+    func testAnOversizeListIsCutAndKeepsTheTarget() throws {
         let long = String(repeating: "x", count: 400)
         let many = (0..<60).map { entry("dc-\($0)", folder: long, title: long, branch: long) }
         let message = SessionsMessage(sessions: many, target: "dc-59")
-        var object = message.json
-        object["type"] = CanvasWire.sessions
-        let data = try JSONSerialization.data(withJSONObject: object)
-        XCTAssertLessThan(data.count, CanvasWire.senderJSONLimit, "D23: never mistaken for video")
+        let object = message.json
+        XCTAssertNotNil(WireCodec.message(CanvasWire.sessions, object), "D23: it always fits a frame")
 
         let parsed = try XCTUnwrap(SessionsMessage(json: object))
         XCTAssertEqual(parsed.sessions.count, CanvasWire.sessionsMaxEntries)
@@ -100,26 +98,15 @@ final class SessionsWireTests: XCTestCase {
     func testAnnotationCarriesItsSessionOnlyWhenItHasOne() {
         let png = Data([1, 2, 3])
         let viewport = CanvasViewport(width: 10, height: 10, scale: 2)
-        let plain = AnnotationMessage(sketchPNG: png, zoomRect: .full, viewport: viewport, note: nil, t: 1)
-        XCTAssertNil(plain.json[CanvasWire.annotationSessionKey], "an annotation with no session is byte-for-byte what it always was")
+        let plain = AnnotationMessage(sketchPNG: png, viewport: viewport, note: nil, t: 1)
+        XCTAssertNil(plain.json[CanvasWire.annotationSessionKey], "an annotation with no session carries no key")
 
-        let bound = AnnotationMessage(sketchPNG: png, zoomRect: .full, viewport: viewport, note: nil, t: 1, session: "dc-a")
+        let bound = AnnotationMessage(sketchPNG: png, viewport: viewport, note: nil, t: 1, session: "dc-a")
         XCTAssertEqual(bound.json[CanvasWire.annotationSessionKey] as? String, "dc-a")
-        XCTAssertEqual(AnnotationMessage(json: bound.json), bound)
+        XCTAssertEqual(AnnotationMessage(json: bound.json, attachment: png), bound)
         var blanked = bound.json
         blanked[CanvasWire.annotationSessionKey] = ""
-        XCTAssertNil(AnnotationMessage(json: blanked)?.session)
-    }
-
-    func testTheReceiverRoutesSessionsInboundAndNeverSelectSession() {
-        var state = CanvasReceiverState()
-        state.handleWelcome(["canvas": true])
-        XCTAssertEqual(state.route(type: "sessions"), .canvasMessage(type: "sessions"))
-        XCTAssertEqual(state.route(type: "selectSession"), CanvasReceiverState.Routed.none, "that one only ever goes to the Mac")
-
-        var plain = CanvasReceiverState()
-        plain.handleWelcome([:])
-        XCTAssertEqual(plain.route(type: "sessions"), CanvasReceiverState.Routed.none, "a plain OpenDisplay Mac has no canvas path")
+        XCTAssertNil(AnnotationMessage(json: blanked, attachment: png)?.session)
     }
 }
 
@@ -128,13 +115,14 @@ final class SessionsWireTests: XCTestCase {
 final class SessionsEngineTests: XCTestCase {
 
     private func makeSession(daemon: FakeDaemon, status: CanvasStatus) -> CanvasSession {
-        CanvasSession(deviceName: "Studio iPad", daemon: daemon, status: status,
+        CanvasSession(installID: "install-A", deviceName: "Studio iPad", daemon: daemon, status: status,
+                      frames: FakeFrames(),
                       workQueue: DispatchQueue(label: "test.sessions.work", qos: .utility),
                       sleep: { _ in await Task.yield() })
     }
 
     private func hello(_ session: CanvasSession, _ outbound: FakeOutbound) {
-        session.canvasPeerDidHello(CanvasPeer(installID: "install-A", deviceKind: "ipad"), outbound: outbound)
+        session.attach(outbound)
     }
 
     private let two = SessionsMessage(sessions: [entry("dc-a", folder: "acme-web"), entry("dc-b", folder: "docs")], target: "dc-b")
@@ -158,13 +146,13 @@ final class SessionsEngineTests: XCTestCase {
         XCTAssertEqual(SessionsMessage(json: sent), .empty, "an iPad that had a list must be told it is gone")
     }
 
-    func testThePingNamesTheTargetsFolderAndNothingWithoutATarget() {
+    func testTheStatusNamesTheTargetsFolderAndNothingWithoutATarget() {
         let status = CanvasStatus()
-        XCTAssertNil(status.pingFields[CanvasWire.pingProjectKey])
+        XCTAssertNil(status.statusMessage.project)
         status.sessions = two
-        XCTAssertEqual(status.pingFields[CanvasWire.pingProjectKey], "docs", "where the next sketch actually goes")
+        XCTAssertEqual(status.statusMessage.project, "docs", "where the next sketch actually goes")
         status.sessions = SessionsMessage(sessions: two.sessions, target: nil)
-        XCTAssertNil(status.pingFields[CanvasWire.pingProjectKey], "nobody chosen: no folder to name (XG8)")
+        XCTAssertNil(status.statusMessage.project, "nobody chosen: no folder to name (XG8)")
     }
 
     func testSelectSessionAsksTheDaemonAsTheIPad() {
@@ -173,15 +161,14 @@ final class SessionsEngineTests: XCTestCase {
         let session = makeSession(daemon: daemon, status: CanvasStatus())
         hello(session, outbound)
 
-        var message = SelectSessionMessage(id: "dc-a", t: 1).json
-        message["type"] = CanvasWire.selectSession
-        session.canvasDidReceive(type: CanvasWire.selectSession, object: message, outbound: outbound)
+        session.receive(type: CanvasWire.selectSession, object: SelectSessionMessage(id: "dc-a", t: 1).json,
+                        attachment: Data())
 
         guard waitUntil("the target to be set", { daemon.targetCalls.count == 1 }) else { return }
         XCTAssertEqual(daemon.targetCalls[0].instance, "dc-a")
         XCTAssertTrue(daemon.targetCalls[0].fromIPad)
 
-        session.canvasDidReceive(type: CanvasWire.selectSession, object: ["type": CanvasWire.selectSession], outbound: outbound)
+        session.receive(type: CanvasWire.selectSession, object: [:], attachment: Data())
         XCTAssertEqual(daemon.targetCalls.count, 1, "an unparseable choice changes nothing")
     }
 
@@ -194,18 +181,17 @@ final class SessionsEngineTests: XCTestCase {
         let sketch = TestImages.pngData(TestImages.rectOnTransparentCGImage(
             width: 40, height: 30, rect: CGRect(x: 0, y: 0, width: 40, height: 6), fill: TestImages.RGBA(255, 0, 0)))
         func send(session id: String?, t: Double) {
-            var object = AnnotationMessage(sketchPNG: sketch, zoomRect: .full,
+            let object = AnnotationMessage(sketchPNG: sketch,
                                            viewport: CanvasViewport(width: 20, height: 15, scale: 2),
                                            note: nil, t: t, base: .blank, session: id).json
-            object["type"] = CanvasWire.annotation
-            session.canvasDidReceive(type: CanvasWire.annotation, object: object, outbound: outbound)
+            session.receive(type: CanvasWire.annotation, object: object, attachment: sketch)
         }
         send(session: "dc-a", t: 1)
         send(session: nil, t: 2)
 
         guard waitUntil("both annotations to be uploaded", { daemon.annotationCalls.count == 2 }) else { return }
         XCTAssertEqual(daemon.annotationCalls[0].session, "dc-a", "X23: bound to what the iPad showed at Done")
-        XCTAssertNil(daemon.annotationCalls[1].session, "an older iPad names none; the daemon uses the target at arrival")
+        XCTAssertNil(daemon.annotationCalls[1].session, "an iPad with no target to show names none; the daemon uses the target at arrival")
     }
 
     func testDaemonSnapshotDecodesAndKeepsWhatOnlyTheMacUses() {
@@ -228,8 +214,8 @@ final class SessionsEngineTests: XCTestCase {
     func testTheHubRelaysEachChangeToEveryIPadOnce() async throws {
         let daemon = FakeDaemon()
         let status = CanvasStatus()
-        let hub = CanvasHub(daemon: daemon, status: status)
-        let session = hub.makeSession(deviceName: "Studio iPad")
+        let hub = CanvasHub(daemon: daemon, status: status, frames: FakeFrames())
+        let session = hub.store.session(installID: "install-A", deviceName: "Studio iPad")
         let outbound = FakeOutbound()
         hello(session, outbound)
         XCTAssertEqual(outbound.objects(ofType: CanvasWire.sessions).count, 1, "the hello's own copy")
@@ -254,13 +240,16 @@ final class SessionsEngineTests: XCTestCase {
 
 private final class SessionsFakeReceiver: CanvasReceiving {
     var isConnected = true
-    var supportsCanvas = true
+    /// Each message with its `type` in it, as on the wire.
     private(set) var sent: [[String: Any]] = []
     private var completions: [(Bool) -> Void] = []
 
-    func currentCaptureMs() -> Int64? { 4_242 }
+    func currentFrame() -> UInt64? { 4_242 }
     func setFrozen(_ frozen: Bool) {}
-    func sendCanvas(_ message: [String: Any], completion: @escaping (Bool) -> Void) {
+    func send(_ type: String, _ object: [String: Any], attachment: Data,
+              completion: @escaping (Bool) -> Void) {
+        var message = object
+        message["type"] = type
         sent.append(message)
         completions.append(completion)
     }
@@ -283,7 +272,7 @@ final class SessionsModelTests: XCTestCase {
     private func drawingModel() -> CanvasModel {
         let model = CanvasModel(receiver: receiver, nowMs: { 1_700_000_000_000 }, uptime: { 100 })
         model.enterDrawMode(viewport: viewport)
-        model.canvasMessage(type: CanvasWire.frozen, object: FrozenMessage(ok: true).json)
+        model.canvasMessage(type: CanvasWire.frozen, object: FrozenMessage(frame: 4_242, ok: true).json)
         model.strokesChanged(count: 1)
         return model
     }
@@ -295,13 +284,13 @@ final class SessionsModelTests: XCTestCase {
     private let two = SessionsMessage(sessions: [entry("dc-a", folder: "acme-web"), entry("dc-b", folder: "docs")], target: "dc-a")
 
     func testWithNoSessionsMessageNothingChanges() {
-        // A Mac that predates the session list never sends one.
+        // Before the Mac has sent a list, the sketch goes without a session.
         let model = drawingModel()
         XCTAssertTrue(model.canSend)
         model.done(sketchPNG: sketch)
         let sent = receiver.messages(ofType: CanvasWire.annotation)
         XCTAssertEqual(sent.count, 1)
-        XCTAssertNil(sent[0][CanvasWire.annotationSessionKey], "the annotation is what it always was")
+        XCTAssertNil(sent[0][CanvasWire.annotationSessionKey], "no session to name")
         XCTAssertFalse(model.waitingAtMac)
     }
 
@@ -322,7 +311,7 @@ final class SessionsModelTests: XCTestCase {
 
         // Reconnected; meanwhile the target moved to the other session.
         deliver(SessionsMessage(sessions: two.sessions, target: "dc-b"), to: model)
-        model.welcomeReceived(canvas: true)
+        model.macHelloReceived(name: nil)
         let annotations = receiver.messages(ofType: CanvasWire.annotation)
         XCTAssertEqual(annotations.count, 2)
         XCTAssertEqual(annotations[1][CanvasWire.annotationSessionKey] as? String, "dc-a", "X23: a sketch already sent stays where it was sent")

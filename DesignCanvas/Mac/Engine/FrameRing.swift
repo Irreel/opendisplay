@@ -1,20 +1,28 @@
 import CoreVideo
 import Foundation
 
-/// A ring of clean, pre-encode frames keyed by ScreenCaptureKit capture
-/// timestamp, so a Draw Mode freeze can look up the exact frame the iPad
-/// froze on.
+/// The clean, pre-encode frames recently sent to any iPad, keyed by frame
+/// number, so a Draw Mode freeze can find the exact frame the iPad froze on.
 ///
-/// Not thread-safe: owned by one queue. Stores deep copies (see
-/// `deepCopy(_:)`) so ScreenCaptureKit's buffer pool is never starved by
-/// frames this ring is holding onto.
+/// Only frames handed to an encoder are kept: those are the only ones an iPad
+/// can be looking at. One ring for the whole Mac, because every iPad mirrors
+/// the same screen. Not thread-safe: `CleanFrameStore` wraps it in a lock.
+/// Stores deep copies (see `deepCopy(_:)`) so ScreenCaptureKit's buffer pool
+/// is never starved by frames this ring is holding onto.
+/// A clean frame as the ring keeps it.
+struct CleanFrame {
+    let pixelBuffer: CVPixelBuffer
+    /// When it was captured: what the daemon records as the capture's time.
+    let capturedAt: Date
+}
+
 struct FrameRing {
     static let defaultCapacity = 16
-    static let defaultToleranceMs: Int64 = 34
 
     private struct Entry {
         let pixelBuffer: CVPixelBuffer
-        let captureMs: Int64
+        let frame: UInt64
+        let capturedAt: Date
     }
 
     private let capacity: Int
@@ -27,93 +35,118 @@ struct FrameRing {
 
     var count: Int { entries.count }
 
-    /// Deep-copies `pixelBuffer` and stores it under `captureMs`, evicting
-    /// the oldest entry once `capacity` is exceeded. Silently drops the
-    /// frame if the copy fails (an unsupported pixel format, or allocation
-    /// failure) rather than storing a buffer that could alias the source.
-    mutating func append(_ pixelBuffer: CVPixelBuffer, captureMs: Int64) {
-        guard let copy = FrameRing.deepCopy(pixelBuffer) else { return }
-        entries.append(Entry(pixelBuffer: copy, captureMs: captureMs))
+    func contains(_ frame: UInt64) -> Bool {
+        entries.contains { $0.frame == frame }
+    }
+
+    /// Deep-copies `pixelBuffer` and stores it under `frame`, evicting the
+    /// oldest entry once `capacity` is exceeded. A frame already held is not
+    /// copied again: several iPads encode the same capture. Silently drops
+    /// the frame if the copy fails (an unsupported pixel format, or
+    /// allocation failure) rather than storing a buffer that could alias the
+    /// source.
+    mutating func append(_ pixelBuffer: CVPixelBuffer, frame: UInt64, capturedAt: Date) {
+        guard !contains(frame), let copy = FrameRing.deepCopy(pixelBuffer) else { return }
+        appendCopied(copy, frame: frame, capturedAt: capturedAt)
+    }
+
+    /// Stores a buffer that is already a private copy.
+    mutating func appendCopied(_ copy: CVPixelBuffer, frame: UInt64, capturedAt: Date) {
+        guard !contains(frame) else { return }
+        entries.append(Entry(pixelBuffer: copy, frame: frame, capturedAt: capturedAt))
         while entries.count > capacity {
             entries.removeFirst()
         }
     }
 
-    /// The entry whose `captureMs` is closest to `captureMs`. An exact match
-    /// always wins (its delta of 0 is the smallest possible). Ties pick the
-    /// older frame, which falls out naturally here because `entries` is
-    /// oldest-first and only a strictly smaller delta replaces the current
-    /// best. Returns nil when the closest entry is still farther than
-    /// `toleranceMs`, or the ring is empty.
-    func frame(at captureMs: Int64, toleranceMs: Int64 = FrameRing.defaultToleranceMs) -> (pixelBuffer: CVPixelBuffer, captureMs: Int64)? {
-        var best: Entry?
-        var bestDelta: Int64 = .max
-        for entry in entries {
-            let delta = abs(entry.captureMs - captureMs)
-            if delta < bestDelta {
-                bestDelta = delta
-                best = entry
-            }
-        }
-        guard let best, bestDelta <= toleranceMs else { return nil }
-        return (best.pixelBuffer, best.captureMs)
+    /// The frame stored under exactly this number, or nil when it was never
+    /// stored or has been evicted.
+    func frame(_ frame: UInt64) -> CleanFrame? {
+        entries.last { $0.frame == frame }.map { CleanFrame(pixelBuffer: $0.pixelBuffer, capturedAt: $0.capturedAt) }
     }
 
-    mutating func removeAll() {
-        entries.removeAll()
-    }
-
-    /// Deep-copies a `kCVPixelFormatType_32BGRA` or
-    /// `kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange` buffer (what
-    /// ScreenCaptureKit delivers in this app) plane by plane, row by row,
-    /// honouring each buffer's own bytes-per-row (source and destination
-    /// strides can differ). The destination is created with
-    /// `kCVPixelBufferIOSurfacePropertiesKey` so VideoToolbox can read it
-    /// back out (see `Compositor.cgImage(from:)`). Returns nil for any other
-    /// pixel format, or if allocation fails.
+    /// Allocates a fresh buffer of the same size and pixel format and copies
+    /// every plane row by row (strides can differ between the two buffers).
     static func deepCopy(_ source: CVPixelBuffer) -> CVPixelBuffer? {
         let width = CVPixelBufferGetWidth(source)
         let height = CVPixelBufferGetHeight(source)
-        let pixelFormat = CVPixelBufferGetPixelFormatType(source)
-        guard pixelFormat == kCVPixelFormatType_32BGRA
-            || pixelFormat == kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange else { return nil }
-
-        var destination: CVPixelBuffer?
+        let format = CVPixelBufferGetPixelFormatType(source)
         let attributes: [CFString: Any] = [kCVPixelBufferIOSurfacePropertiesKey: [:] as CFDictionary]
-        let status = CVPixelBufferCreate(kCFAllocatorDefault, width, height, pixelFormat, attributes as CFDictionary, &destination)
-        guard status == kCVReturnSuccess, let destination else { return nil }
+        var copy: CVPixelBuffer?
+        guard CVPixelBufferCreate(kCFAllocatorDefault, width, height, format,
+                                  attributes as CFDictionary, &copy) == kCVReturnSuccess,
+              let copy else { return nil }
 
         CVPixelBufferLockBaseAddress(source, .readOnly)
-        CVPixelBufferLockBaseAddress(destination, [])
+        CVPixelBufferLockBaseAddress(copy, [])
         defer {
+            CVPixelBufferUnlockBaseAddress(copy, [])
             CVPixelBufferUnlockBaseAddress(source, .readOnly)
-            CVPixelBufferUnlockBaseAddress(destination, [])
         }
 
         if CVPixelBufferIsPlanar(source) {
-            let planeCount = CVPixelBufferGetPlaneCount(source)
-            for plane in 0..<planeCount {
-                guard let srcBase = CVPixelBufferGetBaseAddressOfPlane(source, plane),
-                      let dstBase = CVPixelBufferGetBaseAddressOfPlane(destination, plane) else { return nil }
-                let srcBytesPerRow = CVPixelBufferGetBytesPerRowOfPlane(source, plane)
-                let dstBytesPerRow = CVPixelBufferGetBytesPerRowOfPlane(destination, plane)
-                let planeHeight = CVPixelBufferGetHeightOfPlane(source, plane)
-                let copyBytes = min(srcBytesPerRow, dstBytesPerRow)
-                for row in 0..<planeHeight {
-                    memcpy(dstBase.advanced(by: row * dstBytesPerRow), srcBase.advanced(by: row * srcBytesPerRow), copyBytes)
-                }
+            let planes = CVPixelBufferGetPlaneCount(source)
+            guard planes == CVPixelBufferGetPlaneCount(copy) else { return nil }
+            for plane in 0..<planes {
+                guard let src = CVPixelBufferGetBaseAddressOfPlane(source, plane),
+                      let dst = CVPixelBufferGetBaseAddressOfPlane(copy, plane) else { return nil }
+                copyRows(from: src, srcStride: CVPixelBufferGetBytesPerRowOfPlane(source, plane),
+                         to: dst, dstStride: CVPixelBufferGetBytesPerRowOfPlane(copy, plane),
+                         rows: CVPixelBufferGetHeightOfPlane(source, plane))
             }
         } else {
-            guard let srcBase = CVPixelBufferGetBaseAddress(source),
-                  let dstBase = CVPixelBufferGetBaseAddress(destination) else { return nil }
-            let srcBytesPerRow = CVPixelBufferGetBytesPerRow(source)
-            let dstBytesPerRow = CVPixelBufferGetBytesPerRow(destination)
-            let copyBytes = min(srcBytesPerRow, dstBytesPerRow)
-            for row in 0..<height {
-                memcpy(dstBase.advanced(by: row * dstBytesPerRow), srcBase.advanced(by: row * srcBytesPerRow), copyBytes)
-            }
+            guard let src = CVPixelBufferGetBaseAddress(source),
+                  let dst = CVPixelBufferGetBaseAddress(copy) else { return nil }
+            copyRows(from: src, srcStride: CVPixelBufferGetBytesPerRow(source),
+                     to: dst, dstStride: CVPixelBufferGetBytesPerRow(copy), rows: height)
         }
+        return copy
+    }
 
-        return destination
+    private static func copyRows(from src: UnsafeMutableRawPointer, srcStride: Int,
+                                 to dst: UnsafeMutableRawPointer, dstStride: Int, rows: Int) {
+        let rowBytes = min(srcStride, dstStride)
+        if srcStride == dstStride {
+            memcpy(dst, src, srcStride * rows)
+            return
+        }
+        for row in 0..<rows {
+            memcpy(dst + row * dstStride, src + row * srcStride, rowBytes)
+        }
+    }
+}
+
+/// What a canvas session needs from the capture: the clean frame an iPad
+/// froze on.
+protocol CleanFrameSource: AnyObject {
+    func cleanFrame(_ frame: UInt64) -> CleanFrame?
+}
+
+/// The ring, shared by the links that fill it and the sessions that read it.
+/// Thread-safe; the lock is never held across anything but the ring itself.
+final class CleanFrameStore: CleanFrameSource {
+    private let lock = NSLock()
+    private var ring: FrameRing
+
+    init(capacity: Int = FrameRing.defaultCapacity) {
+        ring = FrameRing(capacity: capacity)
+    }
+
+    func keep(_ pixelBuffer: CVPixelBuffer, frame: UInt64, capturedAt: Date) {
+        lock.lock()
+        let known = ring.contains(frame)
+        lock.unlock()
+        guard !known else { return }
+        // The copy happens outside the lock; only the insert is inside it.
+        guard let copy = FrameRing.deepCopy(pixelBuffer) else { return }
+        lock.lock()
+        ring.appendCopied(copy, frame: frame, capturedAt: capturedAt)
+        lock.unlock()
+    }
+
+    func cleanFrame(_ frame: UInt64) -> CleanFrame? {
+        lock.lock()
+        defer { lock.unlock() }
+        return ring.frame(frame)
     }
 }

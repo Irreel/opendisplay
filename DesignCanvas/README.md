@@ -1,20 +1,23 @@
 # Design Canvas
 
-Design Canvas turns a live OpenDisplay mirror into a sketch-and-reply loop
-with Claude Code: draw on the iPad while it mirrors your Mac, and the
+Design Canvas turns a live mirror of your Mac's screen into a
+sketch-and-reply loop with Claude Code: draw on the iPad while it mirrors your Mac, and the
 sketch is pushed straight into a running Claude Code session as an
 annotated screenshot; the agent's outcome (applied, failed, or a question)
 shows back up on the iPad.
 
-It is a separate pair of apps — a Mac menu-bar app and an iPad app — built
-on top of OpenDisplay's mirroring code, plus a small local Node daemon and
-a Claude Code mod, a plugin that runs inside the Claude Code session. No input is ever forwarded
-from the iPad: it is a display and a sketchpad, never a remote control.
+It is a pair of apps — a Mac menu-bar app and an iPad app — with their own
+Mac-to-iPad link, plus a small local Node daemon and a Claude Code mod, a
+plugin that runs inside the Claude Code session. No input is ever forwarded
+from the iPad: it is a display and a sketchpad, never a remote control. The
+apps build on their own from this folder; their streaming started out as
+OpenDisplay's mirroring code, and nothing of OpenDisplay is compiled into
+them.
 
 **Status:** the Node half (daemon, mod, the whole round lifecycle) has an
 automated end-to-end test that needs no devices — see
 [`server/scripts/e2e-round.mjs`](server/scripts/e2e-round.mjs) and
-`pnpm --dir DesignCanvas/server test:e2e` below. Everything that needs a
+`pnpm --dir server test:e2e` below. Everything that needs a
 real Mac and iPad is checked by hand with
 [`spec/device-checklist.md`](spec/device-checklist.md).
 
@@ -31,42 +34,60 @@ the reply-compliance baseline; the app no longer uses it.
 ```
 DesignCanvas/
   README.md                 This file.
+  project.yml, generate.sh   The Xcode project's spec and the script that
+                              generates DesignCanvas.xcodeproj from it.
   spec/                      PRD, technical spec, TODOs, the implementation
                               plan, the device checklist, the reply-compliance
-                              eval — see below. The blank canvas surface has
-                              its own pair, PRD-BlankCanvas.md and
+                              eval, and wire-protocol.md, the normative
+                              description of everything that crosses the
+                              Mac-iPad link. The blank canvas surface has its
+                              own pair, PRD-BlankCanvas.md and
                               technical_doc-BlankCanvas.md (2026-10-03).
-  Shared/                    Foundation-only wire types and pure logic,
-                              compiled into the Mac app, the iPad app, and
+  Shared/                    Foundation-only code compiled into both apps and
                               the hostless test bundle.
-    CanvasMessages.swift        Wire structs (FreezeMessage, AnnotationMessage,
-                                 AgentReplyMessage, RoundsMessage, ...) and the
-                                 CanvasWire constants — see PROTOCOL.md section 11.
+    WireFrame.swift             Frames on the socket: [length][kind][body],
+                                 messages as JSON plus a binary attachment.
+    VideoPacket.swift           One encoded video frame and its frame number.
+    LinkMessages.swift          hello, status, bye: what keeps a link up.
+    CanvasMessages.swift        The CanvasWire constants and the canvas
+                                 messages (freeze, annotation, rounds, ...).
     DrawModeStateMachine.swift  The iPad's Draw Mode state machine, as a pure
                                  struct.
+    Log.swift                   The log both apps write.
   Mac/
-    Engine/                    The in-process engine: FrameRing, Compositor,
-                                DaemonClient, CanvasSession, CanvasHub,
-                                UploadPipeline, SSEParser. Hostless-testable;
-                                no live socket in any of it.
+    Stream/                    The Mac's end of the link: ScreenCapture (the
+                                main display, captured once for every iPad),
+                                VideoEncoder, MirrorLink (one per iPad, across
+                                reconnects), MirrorEngine (which iPads to
+                                serve), DeviceWatcher and Usbmux (finding them).
+    Engine/                    The canvas engine: FrameRing, Compositor,
+                                DaemonClient, CanvasSession (one per iPad),
+                                CanvasHub, UploadPipeline, SSEParser,
+                                DeviceDirectory (who to connect),
+                                StreamGeometry. Hostless-testable.
     App/                       The menu-bar app shell: AppModel, MenuBarView,
                                 DaemonSupervisor, ClaudeLauncher,
                                 ClaudeSettingsManager, SessionStateClassifier,
                                 ProcessResetService, ProjectRecents,
-                                ScreenRecordingPermission, SenderEngine /
-                                OpenDisplaySenderEngine.
+                                ScreenRecordingPermission, SenderEngine (the
+                                seam the shell talks to).
     DesignCanvasMac.entitlements
   iOS/
-    DesignCanvasApp.swift, CanvasScreen.swift (the screen and its chrome),
+    Stream/CanvasReceiver.swift  The iPad's end of the link: listen, adopt the
+                                Mac, decode, freeze. No UIKit, so the Mac test
+                                bundle runs it.
+    DesignCanvasApp.swift, ReceiverController.swift (the scene and lock
+    lifecycle), CanvasScreen.swift (the screen and its chrome),
     CanvasVideoView.swift, SketchCanvas.swift, ControlPanel.swift (the
     tool panel), DrawingButton.swift (start and end drawing),
     ProjectPill.swift (the session pill and menu), WindowSwitcher.swift
     (the window button and menu), GlassMorph.swift (how a control grows
     into its menu), FrozenFrameIndicator.swift (the held picture's print),
     SentSketchCard.swift (the sketch seen leaving), ReplyNotificationCard.swift,
-    ConnectionStatusView.swift (connection details), SetupGuideView.swift
-    (the waiting screen's setup steps), CanvasColors.swift (the colour
-    tokens), ReceiverAdapter.swift, Assets.xcassets (the whiteboard icon)
+    ConnectionStatusView.swift (connection details), DiagnosticsLogView.swift
+    (the connection log), SetupGuideView.swift (the waiting screen's setup
+    steps), CanvasColors.swift (the colour tokens), ReceiverAdapter.swift,
+    Assets.xcassets (the whiteboard icon)
     Logic/                     CanvasModel.swift, ZoomModel.swift,
                                 PanelDock.swift, TopBarLayout.swift,
                                 BottomBarLayout.swift, ReplyNotification.swift,
@@ -74,7 +95,9 @@ DesignCanvas/
                                 the pure, testable logic behind the views
                                 above.
     DesignCanvasiOS.entitlements
-  Tests/                       The hostless XCTest bundle, `DesignCanvasTests`.
+  Tests/                       The hostless XCTest bundle, `DesignCanvasTests`,
+                                including LinkLoopbackTests: both ends of the
+                                link over a real loopback socket.
   mod/                         The Claude Code mod: one plain-JavaScript hooks
                                 module, bundled into the Mac app at build time
                                 (tools/bundle-mod.sh). Its tests run with the
@@ -85,15 +108,9 @@ DesignCanvas/
                                 for its own module map and hard rules.
 ```
 
-Design Canvas also adds a handful of small, inert-by-default hooks to
-OpenDisplay's own code, so those apps behave exactly as before unless a
-Design Canvas object is actually injected: `Mac/ControlFramePolicy.swift`,
-`Mac/SenderCanvasHooks.swift`, `Mac/SenderController.swift`,
-`Mac/CaptureMode.swift` (all new), plus
-small additions to `Mac/MacSender.swift`, `Shared/Protocol.swift`,
-`Shared/StreamReceiver.swift`, and a new `Shared/CanvasReceiverState.swift`
-and `iOS/ReceiverModel.swift`. `PROTOCOL.md` section 11 is the normative
-description of everything that crosses the wire.
+Nothing outside this folder is compiled into either app.
+[`spec/wire-protocol.md`](spec/wire-protocol.md) is the normative
+description of everything that crosses the Mac-iPad link.
 
 ## Prerequisites
 
@@ -106,21 +123,23 @@ description of everything that crosses the wire.
 
 ## Build and run
 
-The Xcode project is generated, not checked in. From the repo root:
+Everything below runs from this folder (`DesignCanvas/`). The Xcode project
+is generated, not checked in:
 
 ```sh
 ./generate.sh
 ```
 
-Regenerate this after any `project.yml` change; never edit
-`OpenSidecar.xcodeproj` directly.
+Regenerate after any `project.yml` change, or after adding or removing a
+file; never edit `DesignCanvas.xcodeproj` directly. `generate.sh` reads
+`DEVELOPMENT_TEAM` from a `.env` here or at the repo root.
 
 ### The daemon (Node)
 
 ```sh
-pnpm --dir DesignCanvas/server install
-pnpm --dir DesignCanvas/server build
-pnpm --dir DesignCanvas/server start          # designtool --http, on 127.0.0.1:47100
+pnpm --dir server install
+pnpm --dir server build
+pnpm --dir server start          # designtool --http, on 127.0.0.1:47100
 ```
 
 The Mac app supervises this process for you in normal use, from the copy
@@ -133,12 +152,12 @@ its own. A Debug build made without pnpm has no bundled server: point its
 
 ```sh
 xcodebuild build \
-  -project OpenSidecar.xcodeproj \
+  -project DesignCanvas.xcodeproj \
   -scheme DesignCanvasMac \
   -destination 'platform=macOS'
 ```
 
-Or open `OpenSidecar.xcodeproj` in Xcode and run the `DesignCanvasMac`
+Or open `DesignCanvas.xcodeproj` in Xcode and run the `DesignCanvasMac`
 scheme. It needs Screen Recording (granted from the app's menu — it is the
 *only* TCC permission it asks for; it never requests Accessibility,
 because it never injects input).
@@ -147,13 +166,15 @@ because it never injects input).
 
 ```sh
 xcodebuild build \
-  -project OpenSidecar.xcodeproj \
+  -project DesignCanvas.xcodeproj \
   -scheme DesignCanvasiOS \
   -destination 'generic/platform=iOS'
 ```
 
 Or open the project in Xcode, select the `DesignCanvasiOS` scheme and a
-real device or simulator, and run.
+real device or simulator, and run. The Mac app and the iPad app speak one
+wire version and must be built from the same checkout; a mismatched pair
+says which one to update.
 
 ## First session
 
@@ -163,17 +184,19 @@ real device or simulator, and run.
    the listener: it has no list of Macs and nothing to pick. Over **USB**,
    plugging the cable in connects on its own. Over **WiFi**, the iPad
    appears under **iPads** in the Mac app's menu — click **Connect** next
-   to it. That first click is also what makes the Mac auto-reconnect that
-   iPad on later launches; **Disconnect** stops both the session and the
-   auto-reconnect. Until a Mac connects, the iPad's waiting screen lists
+   to it. The first time, by cable or WiFi, the two pair: both screens
+   show the same six-digit code; check it matches and tap **Pair** on both.
+   From then on the Mac reconnects that iPad on its own, over either;
+   **Disconnect** stops both the session and the auto-reconnect. If the
+   iPad is already mirroring another Mac, it asks before it switches (see
+   "Security note"). Until a Mac connects, the iPad's waiting screen lists
    these steps: install the Mac app, install the Claude Code mod (step 6),
    connect the iPad.
 3. **The iPad now mirrors your Mac's screen.** Whatever is in front on the
    Mac is what the iPad shows and what a sketch is composited onto — no
    extra display appears, and there is nothing to drag anywhere (owner
    decision on PRD open question G1, 2026-09-17). With more than one
-   monitor attached, it is the first display macOS reports, normally the
-   main one. Two consequences: **everything on
+   monitor attached, it is the main display (the one with the menu bar). Two consequences: **everything on
    that screen is streamed to the iPad**, and every round sends the whole
    screen to Claude Code with your sketch over it. Zooming in is for placing
    a stroke; it does not crop what is sent. The mirror keeps the Mac's
@@ -249,19 +272,31 @@ real device or simulator, and run.
 
 ## Security note
 
-WiFi connections use OpenDisplay's existing trust-on-first-use model: a
-brand-new device needs one click (**Connect**, in the Mac app's menu) and
-is remembered from then on, after which its Bonjour `id` auto-reconnects
-with no prompt. There is no pairing code and no verification of that id, so
-**a LAN neighbour who spoofs a remembered device's Bonjour id can get
-dialed and push a sketch into your Claude Code session** — the same way any OpenDisplay peer could
-push input on a plain mirroring session, except here what lands is a
-sketch that becomes context for an agent that can edit your files.
+**The Mac and the iPad pair once, and every session is authenticated and
+encrypted**, over USB and WiFi alike. The pattern is HomeKit's and AirPlay
+2's (`spec/wire-protocol.md` section 5.7):
 
-**Prefer USB on a shared or untrusted network.** Encrypted WiFi transport
-with a real pairing step is tracked as future work in
-[`spec/TODOS.md`](spec/TODOS.md) (OpenDisplay upstream issue #16); it isn't
-built yet.
+- **Pairing.** The first time a Mac and an iPad meet, both screens show the
+  same six-digit code. Check that they match and tap **Pair** on both; if
+  they differ, cancel: something is in between. Each device then remembers
+  the other's key, in its Keychain.
+- **Every session after that** proves both keys and encrypts everything,
+  the screen included. A device that cannot prove a paired key gets nothing:
+  no picture, no sketches. A paired iPad reconnects by itself over USB or
+  WiFi; one that fails its proof on WiFi shows **Not paired** in the menu
+  rather than starting a new pairing on its own.
+- **Starting a pairing takes intent:** plugging the iPad in, or clicking
+  **Connect** for it. On the iPad, after a pairing is cancelled or times
+  out, WiFi requests are turned away for a minute without asking.
+- **Switching Macs.** While the iPad mirrors one Mac, another paired Mac
+  over WiFi never takes over silently: the iPad asks "Switch Macs?" first.
+  Plugging a cable in takes over at once.
+- **Forget** a device on either side (the Mac's Details window, the iPad's
+  Connection details) and it has to pair again.
+
+What pairing does not cover: the iPad's name and the Mac's name are only
+what each device calls itself, so compare the code, not the name. And the
+Mac app trusts everything else running on the Mac (below).
 
 The daemon listens on `127.0.0.1:47100` only, which keeps other machines
 out — but binding to loopback does **not** keep a *browser* out. A page on
@@ -282,17 +317,15 @@ files. Treat the daemon as trusting everything already running on your Mac.
 
 ## Known limits
 
-- **Mirroring streams the screen at its native pixel size.** That is what
-  keeps the picture sharp when you zoom in, but H.264 tops out around 4096×2304: a 5K
-  main display at the default quality is rejected by the encoder frame
-  after frame (the same ceiling OpenDisplay upstream issue #271 describes
-  for a 5K receiver). Until the app has a
-  quality control of its own, `defaults write com.designcanvas.mac quality
-  balanced` (75%) or `fast` (50%) brings it under the ceiling; relaunch
-  afterwards. Debug builds use the `com.designcanvas.mac.debug` domain.
-- **Mirror only.** Design Canvas has no extended display: the sender it is
-  built on can create one, but here the capture mode is fixed, and a
-  stored `mode` default or a `-mode` launch argument is ignored.
+- **Mirroring streams the screen at its native pixel size, up to what H.264
+  takes.** That keeps the picture sharp when you zoom in. A display bigger
+  than about 4096×2304 (a 5K one) is streamed scaled down to fit, keeping
+  its shape. `defaults write com.designcanvas.mac quality balanced` (75%) or
+  `fast` (50%) lowers it further for a slow WiFi; relaunch afterwards. Debug
+  builds use the `com.designcanvas.mac.debug` domain.
+- **Mirror only.** Design Canvas mirrors the main display and never creates
+  a display of its own. The screen is captured only while an iPad is
+  mirroring it.
 - **The blank canvas does not stop the mirror.** While the iPad shows its
   blank page the Mac keeps capturing and streaming the screen underneath,
   so Screen Recording is still needed and the screen still crosses the
@@ -312,10 +345,11 @@ files. Treat the daemon as trusting everything already running on your Mac.
   refuse plugins a user loads. Design Canvas then cannot connect on that
   Mac; the launch stays "Not connected" and the menu says what to look for
   in the Terminal. There is no fallback.
-- **Old Claude Code, old iPad app.** Claude Code before 2.1.287 has no
-  mods and Start refuses it. An iPad app from before the session list
-  keeps working and simply shows no session switcher and no "Waiting for
-  reply at desktop".
+- **Old Claude Code, mismatched apps.** Claude Code before 2.1.287 has no
+  mods and Start refuses it. The Mac and iPad apps must speak the same wire
+  version: a pair that does not is not connected, and says which side to
+  update. That includes any iPad or Mac app from before Design Canvas had
+  its own link, or before pairing (both 2026-11-03).
 - **The mod approves one thing on your behalf:** Claude Code reading the
   sketch for the round it is working on, from the store under
   `~/.claude/channels/design-canvas/`. Without that, the read opens a
@@ -346,33 +380,29 @@ decision and open question behind this feature.
 
 ## Verifying a change
 
-From the repo root:
+From this folder:
 
 ```sh
-# Regenerate after any project.yml change
+# Regenerate after any project.yml change or added/removed file
 ./generate.sh
 
-# OpenDisplay regression gate — must stay green for any change touching
-# Mac/, Shared/, iOS/, or project.yml
-xcodebuild test  -project OpenSidecar.xcodeproj -scheme OpenSidecarMac -destination 'platform=macOS' -derivedDataPath build CODE_SIGNING_ALLOWED=NO
-xcodebuild build -project OpenSidecar.xcodeproj -scheme OpenSidecarMacReceiver -destination 'platform=macOS' -derivedDataPath build CODE_SIGNING_ALLOWED=NO
-xcodebuild build -project OpenSidecar.xcodeproj -scheme OpenSidecariOS -destination 'generic/platform=iOS' -derivedDataPath build CODE_SIGNING_ALLOWED=NO
+# Swift tests (hostless bundle) — the DesignCanvasMac scheme also builds the Mac app
+xcodebuild test  -project DesignCanvas.xcodeproj -scheme DesignCanvasMac -destination 'platform=macOS' -derivedDataPath ../build/dc CODE_SIGNING_ALLOWED=NO
 
-# Design Canvas Swift tests (hostless bundle)
-xcodebuild test -project OpenSidecar.xcodeproj -scheme DesignCanvas -destination 'platform=macOS' -derivedDataPath build CODE_SIGNING_ALLOWED=NO
-
-# Design Canvas apps build
-xcodebuild build -project OpenSidecar.xcodeproj -scheme DesignCanvasMac -destination 'platform=macOS' -derivedDataPath build CODE_SIGNING_ALLOWED=NO
-xcodebuild build -project OpenSidecar.xcodeproj -scheme DesignCanvasiOS -destination 'generic/platform=iOS' -derivedDataPath build CODE_SIGNING_ALLOWED=NO
+# The iPad app
+xcodebuild build -project DesignCanvas.xcodeproj -scheme DesignCanvasiOS -destination 'generic/platform=iOS' -derivedDataPath ../build/dc CODE_SIGNING_ALLOWED=NO
 
 # Node
-pnpm --dir DesignCanvas/server install
-pnpm --dir DesignCanvas/server typecheck
-pnpm --dir DesignCanvas/server test           # daemon, and the Claude Code mod's tests (DesignCanvas/mod/test)
-claude plugin validate --strict DesignCanvas/mod   # what Claude Code reads from the mod
-pnpm --dir DesignCanvas/server test:channel   # the older channel: two-process topology, real MCP stdio
-pnpm --dir DesignCanvas/server test:e2e       # full round lifecycle, no devices
+pnpm --dir server install
+pnpm --dir server typecheck
+pnpm --dir server test           # daemon, and the Claude Code mod's tests (mod/test)
+claude plugin validate --strict mod   # what Claude Code reads from the mod
+pnpm --dir server test:channel   # the older channel: two-process topology, real MCP stdio
+pnpm --dir server test:e2e       # full round lifecycle, no devices
 ```
+
+The `DesignCanvas` scheme runs the tests without building either app.
+Nothing here touches the OpenDisplay apps in the rest of the repo.
 
 A harmless `IDETesting: Result bundle saving failed ... chmod: Operation
 not permitted` line after `TEST SUCCEEDED` is sandbox noise in some
@@ -380,5 +410,7 @@ environments, not a failure.
 
 ## License
 
-GPL-3.0, same as OpenDisplay. Design Canvas is a derivative work built on
-OpenDisplay's sender and receiver code; see `LICENSE` at the repo root.
+GPL-3.0, same as OpenDisplay. Design Canvas is a derivative work: parts of
+its streaming code (the usbmuxd client, the encoder settings, the receiver's
+lifecycle handling) are adapted from OpenDisplay's sender and receiver; see
+`LICENSE` at the repo root.

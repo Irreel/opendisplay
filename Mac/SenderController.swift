@@ -2,16 +2,13 @@
 //
 // Everything here is about deciding which device to dial and over which
 // transport — USB auto-connect, WiFi trust-on-first-use, dedupe, the cable
-// upgrade and its failover. None of it is specific to OpenDisplay's UI, and a
-// second product built on this sender wants all of it, so it now stands on
-// its own: no `@main`, no window, no view, no auto-update framework, and —
-// because a canvas session forwards no input — no Accessibility injector.
-//
-// What did depend on those is injected through `SenderControllerConfig`:
-// which service to browse, which port to dial, how to build an input sink,
-// how to build a canvas delegate, and what to do when the presentation
-// changes. OpenDisplay's own values live in `SenderControllerConfig.openDisplay`,
-// next to the types they name in `OpenSidecarMacApp.swift`.
+// upgrade and its failover. None of it is about OpenDisplay's UI, so it
+// stands on its own: no `@main`, no window, no view, no auto-update
+// framework. The one thing it did reach into the UI for — showing the main
+// window when the presentation changes — is injected through
+// `SenderControllerConfig`; OpenDisplay's value lives in
+// `SenderControllerConfig.openDisplay`, next to `MainWindow` in
+// `OpenSidecarMacApp.swift`.
 
 import AppKit
 import Combine
@@ -56,17 +53,7 @@ final class DeviceSession: ObservableObject, Identifiable {
     nonisolated let id: String
     let target: ConnectionTarget
     let name: String
-    // Assigned by `SenderController.connect` in the same breath as the
-    // session is created, and never again. It is not a `let` only because
-    // the canvas delegate is built from the session and has to be handed to
-    // the sender at construction — so the session must exist first. That
-    // leaves one instant where this is nil, and it is exactly the instant
-    // `canvasDelegateFactory` runs in: a delegate factory must not read it.
-    fileprivate(set) var sender: MacSender!
-    // The canvas engine's per-session object, if one was injected. Held
-    // strongly here because MacSender holds it weakly: the session is what
-    // keeps it alive for exactly as long as the pipeline it belongs to.
-    var canvasDelegate: SenderCanvasDelegate?
+    let sender: MacSender
 
     @Published var status = "Starting…"
     @Published var framesSent = 0
@@ -101,10 +88,11 @@ final class DeviceSession: ObservableObject, Identifiable {
 
     var transportLabel: String { onUSB ? "USB" : wired ? "Cable" : "WiFi" }
 
-    init(id: String, target: ConnectionTarget, name: String) {
+    init(id: String, target: ConnectionTarget, name: String, sender: MacSender) {
         self.id = id
         self.target = target
         self.name = name
+        self.sender = sender
         if case .usb(let udid) = target {
             onUSB = true
             usbUDID = udid
@@ -114,24 +102,8 @@ final class DeviceSession: ObservableObject, Identifiable {
     }
 }
 
-/// Everything `SenderController` used to know about the app around it.
-///
-/// Defaults reproduce OpenDisplay: its service type and port, no input sink,
-/// no canvas engine, and nothing to do when the presentation changes. A
-/// controller built with `SenderControllerConfig()` therefore behaves exactly
-/// as the one that shipped, minus the window it no longer knows about.
+/// What `SenderController` used to know about the app around it.
 struct SenderControllerConfig {
-    /// The service browsed for and the port dialed. Its own type because it
-    /// is the part that compiles without AppKit — see `SenderDiscoveryConfig`.
-    var discovery = SenderDiscoveryConfig()
-    /// The one capture mode this product supports. Nil leaves it to the user
-    /// (`mode` default / `-mode`, else extend), which is OpenDisplay.
-    var fixedMode: CaptureMode? = nil
-    /// How the sender turns a display it just created into an input sink.
-    /// Nil forwards no input at all, which is what a canvas session wants.
-    var inputSinkFactory: InputSinkFactory? = nil
-    /// Called on the main actor when a session is created; the returned delegate is retained by the DeviceSession.
-    var canvasDelegateFactory: (@MainActor (DeviceSession) -> SenderCanvasDelegate?)? = nil
     /// Called on the main actor whenever `presentation` changes (OpenDisplay shows its main window here).
     var onPresentationChanged: (@MainActor (AppPresentation) -> Void)? = nil
 }
@@ -155,10 +127,9 @@ final class SenderController: ObservableObject {
     // `-host x.x.x.x` / `-port n` bypass usbmuxd with a manual TCP endpoint
     // (debugging escape hatch, e.g. an iproxy or SSH tunnel).
     @Published var host = UserDefaults.standard.string(forKey: "host") ?? "127.0.0.1"
-    @Published var port: String
-    // `-mode mirror` / `-mode extend` launch argument also works — unless the
-    // product fixes the mode (`SenderControllerConfig.fixedMode`). Set in init.
-    @Published var mode: CaptureMode
+    @Published var port = UserDefaults.standard.string(forKey: "port") ?? "9000"
+    // `-mode mirror` / `-mode extend` launch argument also works.
+    @Published var mode = CaptureMode.resolve(stored: UserDefaults.standard.string(forKey: "mode"))
     @Published var quality = StreamQuality(rawValue: UserDefaults.standard.string(forKey: "quality") ?? "") ?? .best {
         didSet { UserDefaults.standard.set(quality.rawValue, forKey: "quality") }
     }
@@ -210,10 +181,6 @@ final class SenderController: ObservableObject {
 
     init(config: SenderControllerConfig) {
         self.config = config
-        port = UserDefaults.standard.string(forKey: "port")
-            ?? String(config.discovery.devicePort)
-        mode = CaptureMode.resolve(stored: UserDefaults.standard.string(forKey: "mode"),
-                                   fixed: config.fixedMode)
         startBrowsing()
         usbWatcher = UsbmuxDeviceWatcher { [weak self] devices in
             guard let self else { return }
@@ -231,7 +198,7 @@ final class SenderController: ObservableObject {
 
     private func startBrowsing() {
         // TXT records carry the receiver's install id (new receivers).
-        let browser = NWBrowser(for: .bonjourWithTXTRecord(type: config.discovery.bonjourType, domain: nil), using: .tcp)
+        let browser = NWBrowser(for: .bonjourWithTXTRecord(type: "_opensidecar._tcp", domain: nil), using: .tcp)
         browser.browseResultsChangedHandler = { [weak self] results, _ in
             DispatchQueue.main.async {
                 guard let self else { return }
@@ -514,19 +481,11 @@ final class SenderController: ObservableObject {
         }
 
         let name = label(for: target)
-        // The session is built first because the canvas delegate is built
-        // from it, and MacSender decides at construction whether this is a
-        // canvas session — so the delegate has to exist before the sender.
-        let session = DeviceSession(id: id, target: target, name: name)
-        session.canvasDelegate = config.canvasDelegateFactory?(session)
         let sender = MacSender(transport: transport, name: name, mode: mode,
                                quality: quality, displaySerial: Self.displaySerial(for: id),
                                identityOffset: identityOffset(for: id),
-                               awaitingWake: awaitingWake,
-                               inputSinkFactory: config.inputSinkFactory,
-                               canvasDelegate: session.canvasDelegate,
-                               devicePort: config.discovery.devicePort)
-        session.sender = sender
+                               awaitingWake: awaitingWake)
+        let session = DeviceSession(id: id, target: target, name: name, sender: sender)
         if case .wifi(let result) = target {
             session.wifiServiceName = serviceName(of: result)
         }

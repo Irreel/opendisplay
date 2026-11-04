@@ -1,0 +1,159 @@
+name: DesignCanvas
+# Design Canvas's own Xcode project. Everything it compiles lives under this
+# folder: nothing here reaches into the OpenDisplay apps next door, so the
+# folder can be built (and moved) on its own. Regenerate with ./generate.sh
+# after any change; never edit DesignCanvas.xcodeproj by hand.
+options:
+  createIntermediateGroups: true
+schemes:
+  # Test-only scheme: the hostless bundle, without building either app.
+  DesignCanvas:
+    build:
+      targets:
+        DesignCanvasTests: [test]
+    test:
+      targets:
+        - DesignCanvasTests
+  DesignCanvasMac:
+    build:
+      targets:
+        DesignCanvasMac: all
+    test:
+      targets:
+        - DesignCanvasTests
+  DesignCanvasiOS:
+    build:
+      targets:
+        DesignCanvasiOS: all
+# DEVELOPMENT_TEAM comes from the environment (see generate.sh / .env) so no
+# personal team ID lives in the repo. Unset = unsigned, fine for CI.
+settings:
+  base:
+    DEVELOPMENT_TEAM: ${DEVELOPMENT_TEAM}
+    CODE_SIGN_STYLE: Automatic
+    SWIFT_VERSION: "5.9"
+    MARKETING_VERSION: "0.0.0"
+    CURRENT_PROJECT_VERSION: "1"
+targets:
+  # The menu-bar app: captures the Mac's main display, streams it to the
+  # iPads it finds over USB (usbmuxd) or WiFi (Bonjour), and joins their
+  # sketches to the local daemon. It forwards no input and asks for Screen
+  # Recording only.
+  DesignCanvasMac:
+    type: application
+    platform: macOS
+    deploymentTarget: "14.0"
+    sources:
+      - Shared
+      - Mac
+    info:
+      path: Mac/Info.plist
+      properties:
+        NSPrincipalClass: NSApplication
+        CFBundleDisplayName: $(BUNDLE_DISPLAY_NAME)
+        CFBundleShortVersionString: "$(MARKETING_VERSION)"
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
+        LSUIElement: true
+        NSLocalNetworkUsageDescription: Design Canvas connects to your iPad or iPhone over the local network in WiFi mode.
+        NSBonjourServices: ["_designcanvas._tcp"]
+        NSAppleEventsUsageDescription: Design Canvas launches Claude Code by sending a command to Terminal.
+        LSApplicationCategoryType: public.app-category.developer-tools
+    # The designtool server (server/) ships inside the app at
+    # Contents/Resources/server, so the app never has to be pointed at a checkout.
+    # Needs pnpm: a Debug build without it warns and leaves the server out.
+    postBuildScripts:
+      - name: Bundle designtool server
+        script: |
+          "$SRCROOT/tools/bundle-server.sh" "$BUILT_PRODUCTS_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH/server"
+        basedOnDependencyAnalysis: false
+      # The Claude Code mod (mod/) ships at Contents/Resources/mod: Start session
+      # loads it from there, and so does a session the user starts by hand once
+      # they turn Design Canvas on for every session.
+      - name: Bundle Design Canvas mod
+        script: |
+          "$SRCROOT/tools/bundle-mod.sh" "$BUILT_PRODUCTS_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH/mod"
+        basedOnDependencyAnalysis: false
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.designcanvas.mac
+        PRODUCT_NAME: Design Canvas
+        BUNDLE_DISPLAY_NAME: Design Canvas
+        ENABLE_HARDENED_RUNTIME: YES
+        CODE_SIGN_ENTITLEMENTS: Mac/DesignCanvasMac.entitlements
+      configs:
+        # TCC keys Screen Recording on bundle id + signature, so a Debug build
+        # sharing the release id would knock out the release app's grant on
+        # every rebuild. PRODUCT_NAME is what the permission list shows.
+        Debug:
+          PRODUCT_BUNDLE_IDENTIFIER: com.designcanvas.mac.debug
+          PRODUCT_NAME: Design Canvas Dev
+          BUNDLE_DISPLAY_NAME: Design Canvas Dev
+  # The iPad (and iPhone) app: listens for the Mac, shows the mirror, and is
+  # the sketchpad. It never sends input to the Mac.
+  DesignCanvasiOS:
+    type: application
+    platform: iOS
+    deploymentTarget: "16.4"
+    sources:
+      - Shared
+      - iOS
+    info:
+      path: iOS/Info.plist
+      properties:
+        CFBundleDisplayName: Design Canvas
+        CFBundleShortVersionString: "$(MARKETING_VERSION)"
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
+        UILaunchScreen: {}
+        UIRequiresFullScreen: true
+        # Light appearance only for now: the dark one isn't maintained.
+        UIUserInterfaceStyle: Light
+        NSLocalNetworkUsageDescription: Design Canvas advertises itself on the local network so your Mac can connect over WiFi.
+        NSBonjourServices: ["_designcanvas._tcp"]
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+          - UIInterfaceOrientationPortraitUpsideDown
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.designcanvas.ipad
+        PRODUCT_NAME: Design Canvas
+        # iPad and iPhone. The bundle ID keeps its historical `ipad` so existing
+        # installs update in place rather than appearing as a second app.
+        TARGETED_DEVICE_FAMILY: "1,2"
+        CODE_SIGN_ENTITLEMENTS: iOS/DesignCanvasiOS.entitlements
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+      configs:
+        # Its own identity for local builds, so a Debug install never replaces
+        # a release one on the same iPad.
+        Debug:
+          PRODUCT_BUNDLE_IDENTIFIER: com.designcanvas.ipad.debug
+  # A hostless test bundle: the sources under test are compiled straight into
+  # it, so there is no app to inject into. Both halves of the link compile on
+  # macOS (the receiver core has no UIKit in it), which is what lets the
+  # transport be exercised over a real loopback socket.
+  DesignCanvasTests:
+    type: bundle.unit-test
+    platform: macOS
+    deploymentTarget: "14.0"
+    sources:
+      - Tests
+      - Shared
+      - Mac/Engine
+      - Mac/Stream
+      # The menu-bar shell's logic, minus what can only exist inside the app:
+      # the @main scene and the SwiftUI menu.
+      - path: Mac/App
+        excludes:
+          - DesignCanvasMacApp.swift
+          - MenuBarView.swift
+      # The iPad's pure logic and its receiver core (Foundation, Network,
+      # AVFoundation and VideoToolbox only).
+      - iOS/Logic
+      - iOS/Stream
+    settings:
+      base:
+        TEST_HOST: ""
+        BUNDLE_LOADER: ""
+        GENERATE_INFOPLIST_FILE: "YES"
+        PRODUCT_BUNDLE_IDENTIFIER: com.designcanvas.tests

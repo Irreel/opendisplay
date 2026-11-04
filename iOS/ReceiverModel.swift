@@ -1,12 +1,7 @@
 // The iOS app's view model around StreamReceiver: it owns the receiver,
 // announces the panel, and translates scene/lock lifecycle into the
-// receiver's sleep, pause and shutdown calls.
-//
-// Moved out of OpenSidecarPhoneApp.swift unchanged apart from the two init
-// parameters. Design Canvas's iPad app is a second receiver on the same
-// core, and it listens on its own port and advertises its own Bonjour type
-// (plan ruling 1 — a USB dial carries no service type, so only a different
-// port keeps the two products from dialling each other).
+// receiver's sleep, pause and shutdown calls. Moved out of
+// OpenSidecarPhoneApp.swift unchanged.
 
 import SwiftUI
 import AVFoundation
@@ -19,16 +14,13 @@ let deviceKind = UIDevice.current.userInterfaceIdiom == .pad ? "iPad" : "iPhone"
 @MainActor
 final class ReceiverModel: ObservableObject {
     let receiver: StreamReceiver
-    private let port: UInt16
     private var started = false
     private var cancellables = Set<AnyCancellable>()
 
-    init(port: UInt16 = 9000, serviceType: String = "_opensidecar._tcp") {
-        self.port = port
+    init() {
         receiver = StreamReceiver(displayLayer: AVSampleBufferDisplayLayer(),
                                   deviceKind: deviceKind,
-                                  fallbackServiceName: UIDevice.current.name,
-                                  serviceType: serviceType)
+                                  fallbackServiceName: UIDevice.current.name)
         // Announce the native panel size to the Mac.
         let native = UIScreen.main.nativeBounds.size   // portrait pixels
         receiver.setNativePanel(long: Int(max(native.width, native.height)),
@@ -45,7 +37,7 @@ final class ReceiverModel: ObservableObject {
     func start() {
         guard !started else { return }
         started = true
-        receiver.start(port: port)
+        receiver.start(port: 9000)
     }
 
     // MARK: - Lock vs app switch vs app quit
