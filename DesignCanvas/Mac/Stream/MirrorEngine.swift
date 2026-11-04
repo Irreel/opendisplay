@@ -200,11 +200,15 @@ final class MirrorEngine: SenderEngine {
 
     /// The cable always; WiFi only for an iPad the user trusted there, so a
     /// cabled session never fails over onto a service that merely claims the
-    /// iPad's name or id (anything on the LAN can advertise either).
+    /// iPad's name or id (anything on the LAN can advertise either). Over
+    /// WiFi the hello must then name the id the trust is for; only a service
+    /// the user clicked that advertised no id is taken at its word.
     private func permittedPaths(_ entry: Served, _ device: VisibleDevice) -> LinkPaths {
         let wifiTrusted = entry.clickedOverWiFi || device.installID.map { policy.trusted.contains($0) } == true
         var paths = device.paths
-        if !wifiTrusted {
+        if wifiTrusted {
+            paths.wifiInstallID = device.installID ?? entry.installID
+        } else {
             paths.wifi = nil
             paths.wifiInstallID = nil
         }

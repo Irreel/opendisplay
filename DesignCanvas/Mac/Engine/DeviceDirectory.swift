@@ -52,9 +52,10 @@ struct VisibleDevice: Equatable, Identifiable {
 enum DeviceDirectory {
     /// Folds the cabled devices and the advertised services into one entry
     /// per iPad. A USB device and a service are the same iPad when the
-    /// install id this Mac learned for that cable (from the iPad's hello)
-    /// equals the one the service advertises; when either id is unknown, a
-    /// matching name is the fallback.
+    /// install id this Mac learned for that cable (from the iPad's hello over
+    /// USB) equals the one the service advertises. Only a cable whose iPad has
+    /// never said hello falls back to a matching name: once the id is known,
+    /// a service that does not advertise it is someone else.
     static func merge(usb: [USBEntry], services: [ServiceEntry],
                       installIDByUDID: [String: String]) -> [VisibleDevice] {
         var remaining = services
@@ -62,7 +63,7 @@ enum DeviceDirectory {
         for entry in usb.sorted(by: { $0.udid < $1.udid }) {
             let known = installIDByUDID[entry.udid]
             let twinIndex = remaining.firstIndex { service in
-                if let known, let advertised = service.installID { return known == advertised }
+                if let known { return service.installID == known }
                 guard let name = entry.name else { return false }
                 return service.name == name
             }

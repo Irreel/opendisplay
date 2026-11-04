@@ -21,9 +21,9 @@ enum LinkTransport: String, Equatable {
 struct LinkPaths: Equatable {
     var usbUDID: String?
     var wifi: NWEndpoint?
-    /// The install id the WiFi service advertised. A hello over WiFi that
-    /// names another iPad is not streamed to: the id is all that ties the
-    /// service to the iPad the user trusted.
+    /// The install id a hello over WiFi must name, or nil when there is none
+    /// to hold it to (the user clicked a service that advertised no id). The
+    /// id is all that ties a service to the iPad the user trusted.
     var wifiInstallID: String?
 
     static let none = LinkPaths()
@@ -541,8 +541,8 @@ final class MirrorLink: CanvasOutbound, @unchecked Sendable {
             dropConnection("the peer's hello was not an iPad's")
             return
         }
-        if transport == .wifi, let advertised = paths.wifiInstallID, hello.installID != advertised {
-            Log.info("link \(label): the hello over WiFi names another iPad than the service advertised — not streaming to it")
+        if transport == .wifi, let expected = paths.wifiInstallID, hello.installID != expected {
+            Log.info("link \(label): the hello over WiFi does not name the iPad this Mac trusts there — not streaming to it")
             dropConnection("identity mismatch")
             return
         }

@@ -31,6 +31,16 @@ final class DeviceDirectoryTests: XCTestCase {
         XCTAssertEqual(devices[0].id, "id:ID1")
     }
 
+    /// Once the cable's iPad is known, the name is no longer evidence: a
+    /// service that does not advertise that id is another device.
+    func test_aKnownCableDoesNotPairWithAServiceThatAdvertisesNoId() {
+        let devices = DeviceDirectory.merge(usb: [USBEntry(udid: "U1", name: "Studio iPad")],
+                                            services: [service("Studio iPad", id: nil)],
+                                            installIDByUDID: ["U1": "ID1"])
+        XCTAssertEqual(devices.map(\.id), ["id:ID1", "wifi:Studio iPad"])
+        XCTAssertNil(devices[0].service)
+    }
+
     func test_differentInstallIdsAreTwoIPadsEvenWithTheSameName() {
         let devices = DeviceDirectory.merge(usb: [USBEntry(udid: "U1", name: "iPad")],
                                             services: [service("iPad", id: "ID2")],

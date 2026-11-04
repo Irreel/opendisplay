@@ -208,7 +208,7 @@ final class LinkLoopbackTests: XCTestCase {
         waitUntil("the thaw to show the newest frame", timeout: 10) { receiver.currentFrame() == 2 }
     }
 
-    /// Over WiFi the service's install id is all that ties it to the iPad the
+    /// Over WiFi the install id is all that ties a service to the iPad the
     /// user trusted, so a hello naming another iPad gets no picture.
     func test_aWiFiHelloNamingAnotherIPadIsNotStreamedTo() throws {
         let (_, port) = try startReceiver()
@@ -218,6 +218,21 @@ final class LinkLoopbackTests: XCTestCase {
         waitUntil("the link to refuse it") { delegate.phase == .retrying(.network("identity mismatch")) }
         XCTAssertTrue(delegate.hellos.isEmpty)
         XCTAssertFalse(delegate.phases.contains { if case .streaming = $0 { return true } else { return false } })
+    }
+
+    /// A hello that names no id at all fails the check too.
+    func test_aWiFiHelloWithoutTheExpectedIdIsNotStreamedTo() throws {
+        let receiver = CanvasReceiver(configuration: .init(port: 0, serviceType: nil, installID: "",
+                                                           deviceKind: "iPad", name: "Test iPad"))
+        var port: UInt16?
+        receiver.onListening = { port = $0 }
+        receiver.start()
+        receivers.append(receiver)
+        guard waitUntil("the receiver to listen", { port != nil }), let port else { return }
+        let delegate = RecordingDelegate()
+        _ = startLink(to: port, advertisedID: "INSTALL-1", delegate: delegate)
+        waitUntil("the link to refuse it") { delegate.phase == .retrying(.network("identity mismatch")) }
+        XCTAssertTrue(delegate.hellos.isEmpty)
     }
 
     func test_aWiFiHelloMatchingTheAdvertisedIdStreams() throws {
