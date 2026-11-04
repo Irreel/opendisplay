@@ -147,7 +147,7 @@ final class MenuPresentationTests: XCTestCase {
         let row = claude(.noDaemon, daemonGaveUp: true)
         XCTAssertEqual(row.word, "Stopped")
         XCTAssertEqual(row.tint, .red)
-        XCTAssertEqual(row.subline, "Stopped retrying")
+        XCTAssertEqual(row.subline, "Design Canvas's server quit each time it started")
         XCTAssertEqual(row.action, .retry)
     }
 
@@ -325,7 +325,17 @@ final class MenuPresentationTests: XCTestCase {
         )
         XCTAssertEqual(
             MenuPresentation.summary(screenRecordingGranted: true, iPadConnected: false, claude: claude(.launchTimedOut)),
-            "Check the Terminal window"
+            "Claude Code \u{2014} Not connected"
+        )
+    }
+
+    /// The header reads as the whole app's state, so a server that stopped while the iPad
+    /// mirrors must still be named as Claude Code's, never stand alone as the title.
+    func testSummaryNamesClaudeCodeWhenItsServerStopped() {
+        XCTAssertEqual(
+            MenuPresentation.summary(screenRecordingGranted: true, iPadConnected: true,
+                                     claude: claude(.noDaemon, daemonGaveUp: true)),
+            "Claude Code \u{2014} Stopped"
         )
     }
 

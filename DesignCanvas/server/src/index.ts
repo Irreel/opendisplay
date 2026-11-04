@@ -42,6 +42,17 @@ if (isChannel) {
   await runChannelSubscriber({ channel, logger });
 } else {
   // Daemon: owns the FS store and serves the HTTP API.
+  // The Mac app spawns it with a pipe on stdin and keeps the other end. However the app goes
+  // away (Quit, a crash, Xcode's Stop), that end closes, and the daemon goes with it. Without
+  // this, a daemon left behind keeps port 47100, the next app's daemon cannot bind it, and the
+  // app's supervisor gives up after three fast exits. Only when asked: a daemon started by hand
+  // from a terminal would otherwise read its stdin.
+  if (process.env['DESIGN_CANVAS_EXIT_WITH_STDIN'] === '1') {
+    const exitWithParent = (): never => process.exit(0);
+    process.stdin.on('end', exitWithParent);
+    process.stdin.on('error', exitWithParent);
+    process.stdin.resume();
+  }
   const store = new DesignCanvasStore(logger);
   const bus = new AnnotationEventBus();
   const roundsBus = new RoundsEventBus();

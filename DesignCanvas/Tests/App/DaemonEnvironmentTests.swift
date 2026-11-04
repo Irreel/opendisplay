@@ -24,4 +24,11 @@ final class DaemonEnvironmentTests: XCTestCase {
         XCTAssertEqual(env["PATH"], "/usr/bin")
         XCTAssertEqual(env["HOME"], "/Users/me")
     }
+
+    /// The daemon quits when the app's end of its stdin closes, so one left by a killed app
+    /// cannot hold the port and stop the next launch's daemon from starting.
+    func testAsksTheDaemonToExitWithTheApp() {
+        let env = DaemonEnvironment.make(base: [:], port: 47100)
+        XCTAssertEqual(env["DESIGN_CANVAS_EXIT_WITH_STDIN"], "1")
+    }
 }

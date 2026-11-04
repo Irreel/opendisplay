@@ -450,7 +450,12 @@ final class AppModel: ObservableObject {
         guard let serverEntry, FileManager.default.fileExists(atPath: serverEntry) else { return }
         let runner = NodeProcessRunner(nodePath: nodePath, serverEntry: serverEntry, port: Self.port)
         let supervisor = DaemonSupervisor(runner: runner)
-        supervisor.onGiveUp = { [weak self] in self?.daemonGaveUp = true }
+        // Said in the app's log too: the daemon's own log never hears of a start that died
+        // before it could open it, such as one that found the port already taken.
+        supervisor.onGiveUp = { [weak self] in
+            Log.info("daemon: quit each time it started \u{2014} stopped restarting it")
+            self?.daemonGaveUp = true
+        }
         supervisor.start()
         self.supervisor = supervisor
     }

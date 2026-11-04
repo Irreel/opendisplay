@@ -37,9 +37,12 @@ enum MenuPresentation {
         pendingUploads: Int,
         startBlocker: StartBlocker?
     ) -> RowPresentation {
-        // The supervisor giving up is a dead end whatever the classifier says, so it wins.
+        // The supervisor giving up is a dead end whatever the classifier says, so it wins. The
+        // sub-line says what happened rather than repeating the word: the server quit as fast as
+        // it was started, which is what an earlier copy still holding the port looks like.
         if daemonGaveUp {
-            return RowPresentation(word: "Stopped", tint: .red, subline: "Stopped retrying", action: .retry)
+            return RowPresentation(word: "Stopped", tint: .red,
+                                   subline: "Design Canvas's server quit each time it started", action: .retry)
         }
         var row = display == .ownedAttached ? connected(sessions) : base(display)
         if let blocker = startBlocker {
@@ -186,9 +189,13 @@ enum MenuPresentation {
 
     // MARK: - Summary line (spec section 6)
 
+    /// The line at the top of the popover, which reads as the state of the whole app. A red
+    /// Claude Code state still wins it, but always under the row's name: a bare sub-line such as
+    /// "Check the Terminal window" says nothing about what failed, and one about the server read
+    /// as the app's own name while the iPad mirrored fine.
     static func summary(screenRecordingGranted: Bool, iPadConnected: Bool, claude: RowPresentation) -> String {
         if !screenRecordingGranted { return "Screen Recording needed" }
-        if claude.tint == .red { return claude.subline ?? claude.word }
+        if claude.tint == .red { return "Claude Code \u{2014} \(claude.word)" }
         if !iPadConnected { return "Waiting for an iPad or iPhone" }
         if claude.word == "Connected" { return "Ready \u{2014} sketches go to Claude Code" }
         return "Claude Code \u{2014} \(claude.word)"

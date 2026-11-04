@@ -98,11 +98,17 @@ final class DaemonSupervisor {
 /// binds `127.0.0.1` and ignores `SERVER_HOST` entirely. Stripping an inherited value is belt
 /// and braces on top of that: it makes "nothing this app launches can be told to listen on the
 /// LAN" a property of the launcher, testable without a daemon.
+///
+/// `DESIGN_CANVAS_EXIT_WITH_STDIN` asks the daemon to quit when its stdin closes.
+/// `NodeProcessRunner` holds the other end of that pipe, so the daemon cannot outlive the app
+/// and keep the port from the next one, which is what made every launch after an Xcode Stop
+/// end in "Stopped".
 enum DaemonEnvironment {
     static func make(base: [String: String], port: Int) -> [String: String] {
         var env = base
         env["SERVER_PORT"] = String(port)
         env.removeValue(forKey: "SERVER_HOST")
+        env["DESIGN_CANVAS_EXIT_WITH_STDIN"] = "1"
         return env
     }
 }
@@ -114,6 +120,9 @@ final class NodeProcessRunner: ProcessRunning {
     private let serverEntry: String
     private let port: Int
     private var process: Process?
+    /// The daemon's stdin. Never written to: it is held open for as long as this app runs, and
+    /// the kernel closes it when the app exits by any route, which is the daemon's cue to quit.
+    private var stdin: Pipe?
 
     var pid: Int32? {
         guard let process, process.isRunning else { return nil }
@@ -131,22 +140,27 @@ final class NodeProcessRunner: ProcessRunning {
         p.executableURL = URL(fileURLWithPath: nodePath)
         p.arguments = [serverEntry, "--http"]
         p.environment = DaemonEnvironment.make(base: ProcessInfo.processInfo.environment, port: port)
+        let stdin = Pipe()
+        p.standardInput = stdin
         p.terminationHandler = { [weak self] proc in
             let status = proc.terminationStatus
             DispatchQueue.main.async {
                 MainActor.assumeIsolated {
                     self?.process = nil
+                    self?.stdin = nil
                     onExit(status)
                 }
             }
         }
         try? p.run()
         process = p
+        self.stdin = stdin
     }
 
     func stop() {
         process?.terminationHandler = nil
         process?.terminate()
         process = nil
+        stdin = nil
     }
 }
