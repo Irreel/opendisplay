@@ -77,18 +77,13 @@ enum MainWindow {
     }
 }
 
-/// OpenDisplay's own wiring for the shared controller: forward input through
-/// the Accessibility injector, run no canvas engine, and open the control
+/// OpenDisplay's own wiring for the shared controller: open the control
 /// window whenever the app leaves menu-bar presentation. It lives here rather
-/// than beside the controller because of what it names — `InputInjector` and
-/// `MainWindow` are exactly the two things `Mac/SenderController.swift` must
-/// not know about.
+/// than beside the controller because `MainWindow` is exactly the thing
+/// `Mac/SenderController.swift` must not know about.
 extension SenderControllerConfig {
     static var openDisplay: SenderControllerConfig {
         var config = SenderControllerConfig()
-        // OpenDisplay forwards input: hand the sender the injector for
-        // whatever display it ends up with.
-        config.inputSinkFactory = { InputInjector(displayID: $0) }
         config.onPresentationChanged = { presentation in
             // Never strand the user without UI: leaving menu-bar mode opens
             // the window immediately.

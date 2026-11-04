@@ -121,13 +121,13 @@ Every message in **both directions** is length-prefixed:
   (section 6), distinguished as described in section 4.
 * **Receiver to sender**, the payload MUST be `1` to `2^20 - 1` bytes. The
   official sender treats a length of 0 or `>= 2^20` as a protocol error and
-  **closes the link** — on every session, canvas or not: once a declared
-  length has been rejected the payload boundary is unknown, so reading on
-  would parse this frame's body as the next header. Declaring the link dead
-  and letting the redial policy (section 8.2) decide what happens next is
-  the only safe exit. A payload read that returns fewer bytes than the
-  header declared, and a clean end of stream (no error, no bytes — the peer
-  closed the socket, possibly mid-frame), take that same exit.
+  **closes the link**: once a declared length has been rejected the payload
+  boundary is unknown, so reading on would parse this frame's body as the
+  next header. Declaring the link dead and letting the redial policy
+  (section 8.2) decide what happens next is the only safe exit. A payload
+  read that returns fewer bytes than the header declared, and a clean end
+  of stream (no error, no bytes — the peer closed the socket, possibly
+  mid-frame), take that same exit.
 * **Sender to receiver**, no hard maximum is enforced, but control messages
   are constrained by the demux rule below and video frames SHOULD stay in
   the low megabytes (a keyframe of a large panel).
@@ -570,8 +570,7 @@ inside its peer's window.
 Silence is not the only way a link ends: the official sender also declares
 it dead at once for a control frame whose declared length it rejects, a
 payload read shorter than that length, or a clean end of stream (section
-3) — on every session, canvas or not. None of those waits for the 5 s
-watchdog.
+3). None of those waits for the 5 s watchdog.
 
 Reconnection policy is the dialing sender's business, not the protocol's.
 For the record, the official sender: redials ~1 s after a failure, gives
@@ -644,9 +643,6 @@ Mechanics at a glance (the policy behind them lives in COMPATIBILITY.md):
   and degrade below it.
 * **Breaking changes are two-phase** (support both, saturate, then raise
   the floor and drop the old path). Never silent.
-* **Design Canvas is a worked example.** Section 11 documents a real
-  additive extension — five new message types plus two new `ping` fields —
-  that ships with no `pv` bump at all, per the rule above.
 
 ### State of the wire
 
@@ -657,214 +653,6 @@ Mechanics at a glance (the policy behind them lives in COMPATIBILITY.md):
 | 3 | `pencil`, `proximity`; below pv 3 the receiver degrades stylus to `touch` |
 | 3 (additive) | `hello.cursorPort` and the UDP cursor side channel (6.3); optional, no bump |
 | 4 (reserved) | Typed frame header replacing the section 4 demux heuristic (two-phase migration) |
-
-## 11. Design Canvas extension (additive, no `pv` bump)
-
-Design Canvas (`DesignCanvas/`) is a separate pair of apps built on this
-protocol's sender and receiver code: a Mac menu-bar app and an iPad app
-that turn a live mirror into a sketch-and-reply loop with a coding agent.
-It adds five new control message types, two new `ping` fields, and a wider
-receiver-to-sender frame cap. All of it is additive per sections 6 and 10:
-new types and new optional fields that an implementation predating them
-MUST already ignore, so none of it needs a `pv` bump. **An OpenDisplay
-sender or receiver that predates this section, or that never advertises
-`canvas`, ignores every byte of it and keeps working exactly as before; a
-Design Canvas peer talking to a plain OpenDisplay peer never sends any of
-it.**
-
-### 11.1 Capability gate
-
-Every message in this section is exchanged only on a connection whose
-`welcome` carried the additive `canvas: true` field (`welcome`'s `pv` and
-`min` fields, section 6.2, are unchanged). A receiver MUST NOT send
-`freeze` or `annotation` unless the sender's most recent `welcome` set
-`canvas: true`; a sender MUST NOT send `frozen`, `agentReply`, or `rounds`
-unless it has itself sent `welcome.canvas: true` on that connection. Any of
-these five types arriving where the local end never announced or received
-`canvas` is treated as an unknown `type`, per section 6 — logged at most
-once, never fatal.
-
-### 11.2 New control messages
-
-| `type` | Direction | Fields | Purpose |
-|---|---|---|---|
-| `freeze` | receiver to sender | `captureMs`, `zoomRect`, `t` | Enter Draw Mode: hold the frame captured at `captureMs` |
-| `frozen` | sender to receiver | `ok` | Whether that frame was still available |
-| `annotation` | receiver to sender | `sketch`, `zoomRect`, `viewport`, `note`?, `base`?, `t` | The finished sketch (strokes only, no background) |
-| `agentReply` | sender to receiver | `annotationId`, `status`, `message`?, `prUrl`?, `t` | One round's live status, or the agent's outcome |
-| `rounds` | sender to receiver | `rounds[]` | Snapshot of the last 20 rounds for this device |
-| `sessions` | sender to receiver | `sessions[]`, `target`? | The Claude Code sessions the sender is connected to, and which one gets the next sketch |
-| `selectSession` | receiver to sender | `id`, `t` | Make that session the target |
-
-`annotation` also gains an optional `session` field (below).
-
-Field types, exactly as implemented (`DesignCanvas/Shared/CanvasMessages.swift`):
-
-* **`freeze`** (receiver to sender): `captureMs` (integer, milliseconds —
-  the same clock as the video telemetry prefix's `cap`, section 5.1);
-  `zoomRect` (object `{x, y, w, h}`, numbers, normalized 0..1, top-left
-  origin — the part of the frame the sketch covers: the full frame from a
-  current receiver, which zooms freely in Draw Mode and exports the sketch
-  over the whole picture, or the region an older receiver was zoomed into
-  when Draw Mode began);
-  `t` (number, milliseconds since the Unix epoch on the receiver's clock,
-  as in `touch.t`).
-* **`frozen`** (sender to receiver): `ok` (bool). `true` when the sender
-  still held a frame for `captureMs`; `false` only when it did not.
-* **`annotation`** (receiver to sender): `sketch` (string, base64-encoded
-  PNG, transparent — the drawn strokes only; the sender composites this
-  over its own clean frame, so no background image crosses the wire);
-  `zoomRect` (object, as above); `viewport` (object `{w, h, scale}`: `w`
-  and `h` integers, `scale` a number). **`viewport` describes the sketch
-  surface, not the device**: `w` and `h` are the size in points of the rect
-  the `sketch` PNG covers and is stretched back onto — on a current
-  receiver the whole picture as fitted to the screen, whatever the zoom
-  was while drawing; on an older one the part of it that was on screen —
-  and `scale` is the screen scale that PNG was rendered at, so `w * scale`
-  by `h * scale` is its pixel size. On a receiver that letterboxes the
-  video that is smaller than the panel. `note` (string, optional — the
-  user's typed note); `base` (string, optional — the only defined value is
-  `blank`); `t` (number, as above). With `base` absent, or any value the
-  sender does not know, the sender composites the sketch over the frame
-  its last `freeze` held, as described above. With `base: "blank"` there
-  is no frame: the sketch was drawn on a blank page the receiver rendered
-  itself, no `freeze` precedes it, `zoomRect` is the full rect, and the
-  sender composites the sketch over an opaque white image of `w * scale`
-  by `h * scale` pixels taken from `viewport`. A receiver MUST NOT send
-  `base: "blank"` unless the sender has advertised `ping.blank` on that
-  connection (section 11.3): a sender that predates the field would look
-  for a held frame, find none, and drop the annotation unacknowledged.
-* **`agentReply`** (sender to receiver): `annotationId` (string); `status`
-  (string, one of `queued`, `sent`, `applied`, `failed`, `needs_input`);
-  `message` (string, optional, at most 2048 UTF-8 bytes — the sender
-  truncates it to that limit, cut on a Character boundary with nothing
-  appended, immediately before building this message); `prUrl` (string,
-  optional); `t` (number, as above).
-* **`rounds`** (sender to receiver): `rounds` (array, newest first; each
-  entry an object with `annotationId` (string), `createdAt` (string, ISO
-  8601), `status` (string, as in `agentReply`), `message` (string,
-  optional, also at most 2048 UTF-8 bytes on arrival — the same limit as
-  `agentReply.message` above, independent of the further 256-byte shrink
-  in section 11.4), `prUrl` (string, optional), `note` (string,
-  optional)). Sent after every `hello`, including a rotation re-`hello`,
-  so a reconnecting receiver is stateless and a status change that
-  landed while it was disconnected still shows up.
-* **`sessions`** (sender to receiver): `sessions` (array, at most 20
-  entries; each an object with `id` (string, opaque), `folder` (string,
-  at most 60 characters: the session's project folder name), `title`
-  (string, optional, at most 80 characters), `branch` (string, optional,
-  at most 80 characters), `startedAt` (string, ISO 8601), `lastReplyAt`
-  (string, optional, ISO 8601), `state` (string, one of `idle`, `busy`,
-  `waiting`; a receiver reads a value it does not know as `busy`));
-  `target` (string, optional: the `id` of the session the next sketch
-  goes to). Sent after every `hello` and whenever the list, a session's
-  state, or the target changes; each one replaces the last. An empty
-  `sessions` means none is connected. `target` absent with one session
-  listed means that session; absent with several means the user has to
-  choose, and a receiver SHOULD NOT send an `annotation` until a
-  `sessions` with a `target` arrives. `state: "waiting"` on the target
-  means the agent is stopped on a permission prompt at the sender's
-  machine; nothing about the prompt itself is sent. A sender that
-  predates this message never sends it, and a receiver that has never
-  received one behaves as before.
-* **`selectSession`** (receiver to sender): `id` (string, an `id` from
-  the last `sessions`); `t` (number, as above). The sender answers with a
-  fresh `sessions`, which is the only confirmation; a receiver does not
-  assume the choice took. An unknown `id` is ignored.
-* **`annotation.session`** (string, optional): the `sessions.target` the
-  receiver was showing when the sketch was finished. The round is
-  delivered to that session even if the target changes afterwards, and
-  a resend after a link loss carries the same value. Absent, the sender
-  uses its target at the moment the annotation arrives. If the named
-  session has ended by then, the round is recorded as `failed`.
-
-### 11.3 `ping` additions
-
-`ping` (sender to receiver, section 6.2) gains four additive string fields,
-sent only on a canvas session:
-
-* `channel` — one of `attached`, `detached`, `existing`, `none`: the
-  sender's verdict on its agent-channel hop, the same one its own menu
-  shows. `attached` means a channel process this sender launched is
-  subscribed; `existing` means one it did not launch is (a session the
-  user started by hand); `detached` means the local daemon is up with no
-  channel; `none` means no usable daemon. A receiver that does not know a
-  value reads it as `none`.
-  Since the sender reaches its agent through sessions (`sessions`,
-  section 11.2), `attached` means at least one session is connected to
-  this sender's daemon and `existing` is no longer sent; a receiver must
-  still accept it from an older sender.
-* `project` — the target session's project folder name; with no session
-  connected, the folder selected in the sender's menu; absent when there
-  is neither.
-* `blank` — `"1"` when the sender accepts `annotation.base: "blank"`
-  (section 11.2); absent when it does not. A receiver treats absence as
-  "not supported" and does not offer its blank surface.
-* `macName` — the sender's own name as its Sharing settings give it, at
-  most 60 characters, so the receiver can say which Mac it mirrors.
-  Absent when the sender has none to give; a receiver keeps the last one
-  it was told for the rest of the connection and otherwise names the Mac
-  generically.
-
-`channel` and `project` are informational, exactly like the sender's other
-`ping` health fields, and follow the same rule as everything else on the wire: an
-unknown field on a known type MUST be ignored.
-
-### 11.4 Frame size policy
-
-Section 3 caps a receiver-to-sender payload at `1` to `2^20 - 1` bytes. On
-a canvas session that cap widens to `1` to `2^24 - 1` bytes (16 MiB,
-16777216), so one `annotation` sketch fits in a single frame. The payload
-is read in 256 KiB (262144-byte) chunks rather than one pass, and every
-chunk that lands refreshes the liveness timestamp the 5 s watchdog
-(section 8.2) checks — so a slow upload's watchdog never redials out from
-under it merely because no single read occupied 5 s on its own. A frame
-whose declared length is `0` or `>= 2^24` closes the link outright (the
-same "declare death, let redial policy decide" path as any other fatal
-receive error): the payload boundary is unknown once a declared length is
-rejected, so re-arming the read would misparse the next frame as this
-one's body. A plain OpenDisplay session (no `canvas: true` in that
-connection's `welcome`) keeps the unmodified 1 MiB cap from section 3.
-
-Canvas messages sent sender to receiver (`frozen`, `agentReply`, `rounds`)
-are ordinary control frames and MUST satisfy the existing section 4 demux
-rule unchanged: a sender MUST NOT emit one that is 32768 bytes or longer.
-The official sender enforces this by refusing — and logging, never
-crashing or retrying — any canvas JSON payload of 32768 bytes or more
-before it is ever queued for the wire, the same refusal point that guards
-every other outbound control message. A `rounds` snapshot that would not
-otherwise fit is shrunk before sending, in steps: first the full
-snapshot; if that is still too large, every entry's `message` (already at
-most 2048 bytes per section 11.2) and `note` (which carries no cap of its
-own before this point) are both cut to 256 bytes; if it still does not
-fit, the oldest rounds (the tail, since `rounds` is newest-first) are
-dropped one at a time until it does. This 256-byte cut is a last-resort
-shrink under size pressure — tighter than `message`'s existing 2048-byte
-limit, and the first and only limit a `rounds` entry's `note` is ever
-given.
-
-### 11.5 No input on a canvas session
-
-A canvas session carries no input messages in either direction: the
-receiver never sends `touch`, `scroll`, `pencil`, or `proximity` (its
-pinch-to-zoom is view-only, applied to its own decoded video, never sent
-anywhere), and a canvas-mode sender drops any of those four types on
-arrival without acting on them, before the latency accounting an
-OpenDisplay session applies to them. This is a deliberate
-application-level choice, not a wire restriction — the message types and
-their fields (section 6.1) are unchanged and remain fully valid on a
-plain OpenDisplay session.
-
-### 11.6 Discovery and port
-
-A Design Canvas receiver listens on TCP port **9100**, not 9000, and
-advertises Bonjour type `_designcanvas._tcp` (with a UDP cursor listener,
-when offered, on 9101, per the `port + 1` convention of section 6.3) — a
-separate port and service type from OpenDisplay's, so an OpenDisplay
-sender and a Design Canvas receiver never dial each other, on WiFi or
-USB. Everything else in sections 1–9 (framing, Bonjour TXT keys, the USB
-binding, video, clock sync, liveness) applies to a Design Canvas
-connection exactly as written.
 
 ---
 
@@ -922,3 +710,4 @@ This file is versioned by git; the authoritative change log is
 | 2026-09-17 | Additive: Design Canvas extension (section 11) — `freeze`/`frozen`/`annotation`/`agentReply`/`rounds`, `ping.channel`/`ping.project`, the 16 MiB canvas frame cap |
 | 2026-10-03 | Additive: Design Canvas blank canvas surface — `annotation.base`, `ping.blank` (section 11.2, 11.3) |
 | 2026-11-03 | Additive: `ping.macName`, the Design Canvas sender's own name (section 11.3) |
+| 2026-11-03 | Removed: the Design Canvas extension (section 11). Design Canvas no longer speaks this protocol, so none of its messages, `ping` fields or its 16 MiB frame cap are part of the OpenDisplay wire |
