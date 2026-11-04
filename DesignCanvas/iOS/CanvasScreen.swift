@@ -92,13 +92,18 @@ struct CanvasScreen: View {
     /// as a claim, and a name that copies the cabled Mac's is called out.
     static func switchMessage(_ request: CanvasReceiver.SwitchRequest) -> String {
         let current = request.currentMacName.map { "\u{201C}\($0)\u{201D}" } ?? "the Mac"
+        let cable = request.currentOverCable
         guard let asking = request.macName else {
-            return "A Mac on this WiFi wants to mirror to this \(deviceKind) instead of \(current) on the cable. Only switch if you were expecting it."
+            return "A Mac on this WiFi wants to mirror to this \(deviceKind) instead of \(current)\(cable ? " on the cable" : ""). Only switch if you were expecting it."
         }
         if asking == request.currentMacName {
-            return "A Mac on this WiFi using the same name as the one on the cable (\(current)) wants to mirror to this \(deviceKind). If you didn\u{2019}t expect this, keep the cable."
+            return cable
+                ? "A Mac on this WiFi using the same name as the one on the cable (\(current)) wants to mirror to this \(deviceKind). If you didn\u{2019}t expect this, keep the cable."
+                : "A Mac on this WiFi using the same name as the one you\u{2019}re mirroring (\(current)) wants to mirror to this \(deviceKind). If you didn\u{2019}t expect this, don\u{2019}t switch."
         }
-        return "A Mac calling itself \u{201C}\(asking)\u{201D} wants to mirror to this \(deviceKind) over WiFi, instead of \(current) on the cable. Only switch if you were expecting it."
+        return cable
+            ? "A Mac calling itself \u{201C}\(asking)\u{201D} wants to mirror to this \(deviceKind) over WiFi, instead of \(current) on the cable. Only switch if you were expecting it."
+            : "A Mac calling itself \u{201C}\(asking)\u{201D} wants to mirror to this \(deviceKind), instead of \(current). Only switch if you were expecting it."
     }
 
     /// The blank page is up in place of the mirror.
@@ -176,7 +181,9 @@ struct CanvasScreen: View {
         .alert("Switch Macs?", isPresented: Binding(
             get: { receiver.switchRequest != nil },
             set: { _ in }), presenting: receiver.switchRequest) { request in
-            Button("Keep the Cable", role: .cancel) { receiver.answerSwitchRequest(id: request.id, switchTo: false) }
+            Button(request.currentOverCable ? "Keep the Cable" : "Don\u{2019}t Switch", role: .cancel) {
+                receiver.answerSwitchRequest(id: request.id, switchTo: false)
+            }
             Button("Switch") { receiver.answerSwitchRequest(id: request.id, switchTo: true) }
         } message: { request in
             Text(Self.switchMessage(request))

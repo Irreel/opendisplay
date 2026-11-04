@@ -19,8 +19,10 @@ struct HelloMessage: Equatable {
     /// The sender's own name: the Mac's from Sharing settings, the iPad's as
     /// its user set it. Shown by the other side; at most 60 characters.
     var name: String?
-    /// iPad only: its install id, which keys everything the Mac remembers
-    /// about it (its rounds, a frame it froze, whether it is trusted).
+    /// The sender's install id. The iPad's keys everything the Mac remembers
+    /// about it (its rounds, a frame it froze, whether it is trusted); the
+    /// Mac's tells the iPad that a new connection is the same Mac coming back,
+    /// which it adopts without asking (section 5.6).
     var installID: String?
     /// iPad only: "iPad" or "iPhone", for copy that names the device.
     var device: String?

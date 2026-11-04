@@ -40,15 +40,23 @@ final class CanvasReceiver: ObservableObject {
         var transportOf: (NWConnection) -> String = CanvasReceiver.transport(of:)
     }
 
-    /// A Mac asking over WiFi to take over from the one on the cable. The iPad
-    /// asks its user rather than deciding: nothing on the link proves who is
-    /// asking, and a cable is the one thing a LAN neighbour cannot fake.
+    /// Another Mac asking over WiFi to take over from the one this iPad
+    /// mirrors. The iPad asks its user rather than deciding: nothing on the
+    /// link proves who is asking.
     struct SwitchRequest: Equatable, Identifiable {
         let id = UUID()
         /// The Mac asking, as it names itself.
         let macName: String?
-        /// The cabled Mac it would replace.
+        /// The Mac it would replace.
         let currentMacName: String?
+        /// That Mac is on the cable, which the prompt says.
+        let currentOverCable: Bool
+    }
+
+    /// What a Mac saying hello gets while another is the session.
+    enum Admission: Equatable {
+        case adopt
+        case ask
     }
 
     @Published private(set) var status = "Starting…"
@@ -414,7 +422,9 @@ final class CanvasReceiver: ObservableObject {
                       : "\(hello.name ?? "Your Mac") has an older Design Canvas — update it there")
             return
         }
-        if let current = session, !Self.mayReplace(current: current.transport, with: peer.transport) {
+        if let current = session,
+           Self.admission(currentTransport: current.transport, currentMacID: current.hello?.installID,
+                          newcomerTransport: peer.transport, newcomerMacID: hello.installID) == .ask {
             // One question at a time: a second Mac asking meanwhile is told
             // the iPad is in use. So is one asking soon after the user said
             // no: an unauthenticated peer must not be able to repeat the
@@ -429,8 +439,9 @@ final class CanvasReceiver: ObservableObject {
                 refuse(peer)
                 return
             }
-            Log.info("receiver: \(hello.name ?? "a Mac") asked over WiFi while a cabled Mac is connected — asking the user")
-            let request = SwitchRequest(macName: hello.name, currentMacName: current.hello?.name)
+            Log.info("receiver: \(hello.name ?? "a Mac") asked over WiFi while \(current.transport == "USB" ? "a cabled" : "another") Mac is connected — asking the user")
+            let request = SwitchRequest(macName: hello.name, currentMacName: current.hello?.name,
+                                        currentOverCable: current.transport == "USB")
             peer.heldHello = hello
             peer.askedAt = Date()
             peer.requestID = request.id
@@ -484,13 +495,18 @@ final class CanvasReceiver: ObservableObject {
         }
     }
 
-    /// Whether a newcomer may take the session from the connection it has.
+    /// Whether a newcomer takes the session at once or the user is asked.
     /// Nothing on the link is authenticated yet, and anything on the LAN can
-    /// dial the iPad and say hello as a Mac; a cable at least is physical. So
-    /// a WiFi hello never evicts a session over USB. The real fix is a pairing
-    /// step (spec/TODOS.md, encrypted WiFi transport).
-    static func mayReplace(current: String, with newcomer: String) -> Bool {
-        !(current == "USB" && newcomer != "USB")
+    /// dial the iPad and say hello as a Mac. A cable is physical, so plugging
+    /// one in takes over; the Mac already being mirrored, coming back on a
+    /// new connection, is let straight back in; any other Mac over WiFi waits
+    /// for the user. The real fix is a pairing step (spec/TODOS.md, encrypted
+    /// WiFi transport).
+    static func admission(currentTransport: String, currentMacID: String?,
+                          newcomerTransport: String, newcomerMacID: String?) -> Admission {
+        if newcomerTransport == "USB" { return .adopt }
+        if let newcomerMacID, newcomerMacID == currentMacID { return .adopt }
+        return .ask
     }
 
     /// Make `peer` the session, replacing any other.

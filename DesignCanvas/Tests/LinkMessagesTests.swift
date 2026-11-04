@@ -46,13 +46,21 @@ final class LinkMessagesTests: XCTestCase {
         XCTAssertNil(StatusMessage(json: [:]))
     }
 
-    /// A LAN neighbour can say hello as a Mac; it must not take a cabled
-    /// session. USB may still take over from WiFi (plugging in).
-    func test_aWiFiHelloNeverEvictsACabledSession() {
-        XCTAssertFalse(CanvasReceiver.mayReplace(current: "USB", with: "WiFi"))
-        XCTAssertTrue(CanvasReceiver.mayReplace(current: "WiFi", with: "USB"))
-        XCTAssertTrue(CanvasReceiver.mayReplace(current: "WiFi", with: "WiFi"))
-        XCTAssertTrue(CanvasReceiver.mayReplace(current: "USB", with: "USB"))
+    /// A LAN neighbour can say hello as a Mac, so another Mac over WiFi
+    /// waits for the user whatever the session runs on. Plugging a cable in
+    /// takes over, and the Mac being mirrored comes back without a question.
+    func test_whoTakesTheSessionAtOnceAndWhoIsAskedAbout() {
+        func admit(_ current: String, _ currentID: String?, _ newcomer: String, _ newcomerID: String?) -> CanvasReceiver.Admission {
+            CanvasReceiver.admission(currentTransport: current, currentMacID: currentID,
+                                     newcomerTransport: newcomer, newcomerMacID: newcomerID)
+        }
+        XCTAssertEqual(admit("USB", "MAC-A", "WiFi", "MAC-B"), .ask)
+        XCTAssertEqual(admit("WiFi", "MAC-A", "WiFi", "MAC-B"), .ask)
+        XCTAssertEqual(admit("WiFi", "MAC-A", "WiFi", nil), .ask)
+        XCTAssertEqual(admit("WiFi", nil, "WiFi", nil), .ask)
+        XCTAssertEqual(admit("WiFi", "MAC-A", "WiFi", "MAC-A"), .adopt)
+        XCTAssertEqual(admit("USB", "MAC-A", "WiFi", "MAC-A"), .adopt)
+        XCTAssertEqual(admit("WiFi", "MAC-A", "USB", "MAC-B"), .adopt)
     }
 
     func test_byeRoundTripsAndAnUnknownReasonIsQuit() {

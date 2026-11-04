@@ -139,11 +139,11 @@ final class MirrorLink: CanvasOutbound, @unchecked Sendable {
     private var needsKeyframe = true
     private var encodeFailures = LogThrottle(interval: 5)
 
-    init(id: String = UUID().uuidString, queue: DispatchQueue, macName: String?,
+    init(id: String = UUID().uuidString, queue: DispatchQueue, macName: String?, macID: String? = nil,
          frames: CleanFrameStore, quality: StreamQuality = .stored, port: UInt16 = CanvasWire.port) {
         self.id = id
         self.queue = queue
-        self.hello = HelloMessage(version: CanvasWire.version, role: .mac, name: macName)
+        self.hello = HelloMessage(version: CanvasWire.version, role: .mac, name: macName, installID: macID)
         self.frames = frames
         self.quality = quality
         self.port = port

@@ -84,24 +84,23 @@ A receiver that has no parameter sets yet, or cannot decode a frame, sends
 ### 5.1 `hello` (both ways)
 
 The Mac sends it as soon as its connection is up. The iPad treats every new
-connection as a candidate until its `hello` arrives, then adopts it (replacing
-any other session) and answers with its own.
+connection as a candidate until its `hello` arrives, then adopts it and
+answers with its own — or, while it already mirrors a Mac, adopts it or asks
+its user first (section 5.6).
 
 | field | type | |
 |---|---|---|
 | `v` | number | the sender's wire version |
 | `role` | `"mac"` or `"ipad"` | |
-| `name` | string, optional, ≤ 60 characters | the sender's name, for display |
-| `id` | string | iPad only: its install id |
+| `name` | string, optional, ≤ 60 characters | the sender's name, for display only: a claim, never proof |
+| `id` | string | the sender's install id |
 | `device` | `"iPad"` or `"iPhone"` | iPad only |
 
 If `v` differs from its own, the receiving side sends `bye` with reason
 `version` and closes. Over WiFi the Mac streams only to an iPad whose `id`
-is the one its Bonjour service advertised. A `hello` over WiFi does not by itself replace a session that
-runs over USB: the iPad holds it, sends `asking` (section 5.6) and asks its
-user whether to switch. Nothing on the link is authenticated, and a cable is
-the one thing a LAN neighbour cannot fake. The Mac starts streaming when the iPad's `hello`
-arrives. A candidate that sends no `hello` within 6 s is dropped.
+is the one its Bonjour service advertised. The Mac starts streaming when the
+iPad's `hello` arrives. A candidate that sends no `hello` within 6 s is
+dropped.
 
 ### 5.2 `ping`, `pong` (both ways)
 
@@ -120,8 +119,8 @@ changed, the Mac re-encodes the newest frame it has.
 Sent just before closing on purpose. `reason`: `sleep` (the iPad locked; it
 comes back on wake), `quit` (the app is quitting or the user disconnected),
 `version` (section 5.1), `replaced` (the iPad adopted a newer connection),
-`inUse` (the iPad's user kept its cabled Mac, or another request was already
-open; section 5.6). An unknown reason
+`inUse` (the iPad's user kept the Mac it mirrors, or another request was
+already open; section 5.6). An unknown reason
 reads as `quit`. A Mac told `replaced` or `inUse` stops dialing that iPad
 until something changes (it is replugged, re-advertised, or the user connects
 it), so two Macs never take one iPad back and forth.
@@ -136,19 +135,30 @@ whenever it changes, never on a timer.
 | `channel` | `attached`, `detached`, `existing`, `none` | an unknown value reads as `none` |
 | `project` | string, optional | the target session's folder; absent when there is no target |
 
-### 5.6 `asking` (iPad to Mac)
+### 5.6 Another Mac while one is mirrored, and `asking` (iPad to Mac)
 
-No fields. The iPad is mirroring a Mac over its cable, and this Mac's
-`hello` arrived over WiFi: the iPad is asking its user whether to switch.
-Until it answers, the iPad keeps the connection as a candidate and answers
-its `ping`s, and the Mac stops timing its handshake out after 6 s and waits
-up to 45 s. The answer is the iPad's `hello` (switch: the cabled Mac is sent
-`bye` reason `replaced`) or `bye` reason `inUse` (keep the cable). With no
-answer from the user within 30 s the iPad keeps the cable. One request is
-open at a time; another Mac asking meanwhile is sent `bye` reason `inUse` at
-once, and so is any Mac asking within 60 s of a request that ended without a
-switch (the user kept the cable, it timed out, or the asking Mac left). The iPad shows the asking Mac's `name` only as a
-claim, with control and formatting characters removed.
+Nothing on the link is authenticated, and anything on the LAN can dial the
+iPad and say `hello` as a Mac. So while the iPad mirrors a Mac, a newcomer's
+`hello` is handled like this:
+
+- over USB: adopted at once (a cable is physical; plugging one in is intent);
+- with the same `id` as the Mac being mirrored: adopted at once (that Mac
+  coming back on a new connection);
+- otherwise (another Mac, over WiFi): held, and the iPad asks its user
+  whether to switch, saying whether the current Mac is on the cable.
+
+`asking` has no fields and tells the held Mac it is waiting on that
+question. Until the answer, the iPad keeps the connection as a candidate and
+answers its `ping`s, and the Mac stops timing its handshake out after 6 s and
+waits up to 45 s. The answer is the iPad's `hello` (switch: the Mac it
+replaces is sent `bye` reason `replaced`) or `bye` reason `inUse` (don't
+switch). With no answer from the user within 30 s the iPad keeps the current
+Mac. One request is open at a time; another Mac asking meanwhile is sent `bye`
+reason `inUse` at once, and so is any Mac asking within 60 s of a request that
+ended without a switch (the user said no, it timed out, or the asking Mac
+left). The iPad shows the asking Mac's `name` only as a claim, quoted, with
+control and formatting characters removed, and says so when it copies the
+current Mac's name.
 
 ## 6. Canvas messages
 

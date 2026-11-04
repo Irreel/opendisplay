@@ -25,6 +25,15 @@ final class MirrorEngine: SenderEngine {
     private let router: StreamRouter
     private let watcher = DeviceWatcher()
     private let macName: String?
+    /// This Mac's install id, sent in every hello so an iPad recognises it
+    /// reconnecting and does not ask whether to switch to it.
+    private let macID: String = {
+        let key = "macInstallID"
+        if let existing = UserDefaults.standard.string(forKey: key) { return existing }
+        let fresh = UUID().uuidString
+        UserDefaults.standard.set(fresh, forKey: key)
+        return fresh
+    }()
     private var started = false
 
     /// One per iPad the engine means to serve.
@@ -190,7 +199,7 @@ final class MirrorEngine: SenderEngine {
     }
 
     private func serve(_ device: VisibleDevice, clickedOverWiFi: Bool = false) {
-        let link = router.makeLink(macName: macName)
+        let link = router.makeLink(macName: macName, macID: macID)
         let entry = Served(link: link, installID: device.installID, udid: device.usb?.udid,
                            serviceName: device.service?.name, clickedOverWiFi: clickedOverWiFi)
         served.append(entry)
@@ -327,8 +336,8 @@ final class StreamRouter: MirrorLinkDelegate {
         capture.onStoppedByUser = { [weak self] in self?.onCaptureStoppedByUser?() }
     }
 
-    func makeLink(macName: String?) -> MirrorLink {
-        let link = MirrorLink(queue: queue, macName: macName, frames: frames)
+    func makeLink(macName: String?, macID: String) -> MirrorLink {
+        let link = MirrorLink(queue: queue, macName: macName, macID: macID, frames: frames)
         link.delegate = self
         return link
     }

@@ -78,9 +78,11 @@ final class LinkLoopbackTests: XCTestCase {
         return (receiver, port)
     }
 
-    private func startLink(to port: UInt16, macName: String = "Test Mac", advertisedID: String? = nil,
+    private func startLink(to port: UInt16, macName: String = "Test Mac", macID: String? = nil,
+                           advertisedID: String? = nil,
                            delegate: RecordingDelegate, frames: CleanFrameStore = CleanFrameStore()) -> MirrorLink {
-        let link = MirrorLink(queue: queue, macName: macName, frames: frames, quality: .fast)
+        let link = MirrorLink(queue: queue, macName: macName, macID: macID ?? "ID-\(macName)",
+                              frames: frames, quality: .fast)
         link.delegate = delegate
         links.append(link)
         let endpoint = NWEndpoint.hostPort(host: "127.0.0.1", port: NWEndpoint.Port(rawValue: port)!)
@@ -345,6 +347,43 @@ final class LinkLoopbackTests: XCTestCase {
         XCTAssertNil(receiver.switchRequest)
     }
 
+    // MARK: - Switching on WiFi
+
+    /// Two Macs on WiFi: the second is asked about too.
+    func test_anotherMacOverWiFiIsAskedAbout_andSwitchGivesItTheIPad() throws {
+        let (receiver, port) = try startReceiver(transportOf: { _ in "WiFi" })
+        let first = RecordingDelegate()
+        _ = startLink(to: port, macName: "First Mac", delegate: first)
+        guard waitUntil("the first Mac", { isStreaming(first.phase) && receiver.macName == "First Mac" }) else { return }
+
+        let second = RecordingDelegate()
+        _ = startLink(to: port, macName: "Second Mac", delegate: second)
+        waitUntil("the second Mac to wait") { second.phase == .awaitingApproval(.wifi) }
+        let request = try XCTUnwrap(receiver.switchRequest)
+        XCTAssertEqual(request.macName, "Second Mac")
+        XCTAssertEqual(request.currentMacName, "First Mac")
+        XCTAssertFalse(request.currentOverCable)
+
+        receiver.answerSwitchRequest(id: request.id, switchTo: true)
+        waitUntil("the second Mac to stream") { isStreaming(second.phase) }
+        waitUntil("the first Mac to stand aside") { first.phase == .yielded }
+    }
+
+    /// The Mac being mirrored, back on a new connection (a WiFi blip, its
+    /// watchdog), is let straight in: it is not another Mac.
+    func test_theSameMacReconnectingOverWiFiIsNotAskedAbout() throws {
+        let (receiver, port) = try startReceiver(transportOf: { _ in "WiFi" })
+        let before = RecordingDelegate()
+        _ = startLink(to: port, macName: "Zhao's Mac", macID: "MAC-1", delegate: before)
+        guard waitUntil("the Mac", { isStreaming(before.phase) && receiver.connected }) else { return }
+
+        let again = RecordingDelegate()
+        _ = startLink(to: port, macName: "Zhao's Mac", macID: "MAC-1", delegate: again)
+        waitUntil("the reconnect to stream") { isStreaming(again.phase) }
+        XCTAssertFalse(again.phases.contains(.awaitingApproval(.wifi)))
+        XCTAssertNil(receiver.switchRequest)
+    }
+
     // MARK: - Leaving
 
     func test_quittingTheAppSaysBye_andTheMacWaitsForItToReturn() throws {
@@ -358,9 +397,10 @@ final class LinkLoopbackTests: XCTestCase {
         waitUntil("the link to wait for the app") { delegate.phase == .retrying(.appNotOpen) }
     }
 
-    /// One iPad, two Macs: the newer hello wins, and the Mac it replaced stops
-    /// dialing instead of taking the iPad straight back.
-    func test_aSecondMacTakesOver_andTheFirstStandsAside() throws {
+    /// One iPad, two Macs, the second on the cable: plugging in takes over,
+    /// and the Mac it replaced stops dialing instead of taking the iPad
+    /// straight back. (The loopback reads as the cable by default.)
+    func test_aSecondMacOnTheCableTakesOver_andTheFirstStandsAside() throws {
         let (receiver, port) = try startReceiver()
         let first = RecordingDelegate()
         _ = startLink(to: port, macName: "First Mac", delegate: first)
