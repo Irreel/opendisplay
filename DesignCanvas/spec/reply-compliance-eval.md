@@ -81,6 +81,28 @@ Summary of any failures and what was found investigating them:
 
 ---
 
+## Spike run on the mod prototype (2026-10-05)
+
+Not a run of the protocol above, and it does not fill in the results
+table: there was no iPad, no Mac app, and the delivery path was a
+prototype of the planned Claude Code mod, not the channel. It is recorded
+here because it is the first count of any kind against this eval's bar.
+Details are in `technical_doc-ClaudeMods.md` section 10.
+
+- Setup: Claude Code v2.1.289, Opus 5.5, auto permission mode; a scratch
+  daemon on its own port and store; a twelve-line HTML and CSS project;
+  ten synthetic sketches (a drawn mock of the page with a red circle on
+  the target, plus a note) posted 45 s apart.
+- Delivery: the mod claimed each round and started one turn for it with
+  the notification text of `technical_doc.md` section 5.3, tool name
+  changed to `mcp__design-canvas__reply`.
+- Result: **10 / 10 replied**, all `applied`, all on the first turn with
+  no reminder, 6 to 11 s after the turn started. All ten edits were
+  correct.
+- What it does not show: the channel's own rate (no baseline was run),
+  behaviour on real screens, or anything about permission prompts (auto
+  mode answered them).
+
 ## Related, not this eval
 
 - **G10 (batched turns).** Whether two sketches sent while Claude Code is

@@ -10,13 +10,12 @@ import Foundation
 /// that is what "sent" means on the device (ruling 5) — so from then on the
 /// round is the Mac's to deliver, and the daemon may be down for minutes
 /// (PRD D5, technical_doc section 11: "Annotation held in the engine, retried
-/// with backoff"). A sender session, meanwhile, dies the moment the device
-/// disconnects.
+/// with backoff").
 ///
 /// So the drain task holds the pipeline strongly for exactly as long as jobs
 /// remain, and the pipeline goes away with its last job. What it does *not*
-/// hold is the session, its frame ring (full-size deep copies of up to 16
-/// frames) or the link: a job carries only its own frozen frame and sketch.
+/// hold is the session, the frame ring or the link: a job carries only its
+/// own frozen frame and sketch.
 final class UploadPipeline {
 
     /// A frozen frame waiting for its sketch.
@@ -24,8 +23,8 @@ final class UploadPipeline {
         let image: CGImage
         let width: Int
         let height: Int
-        /// When this frame was captured — the ring entry's own millisecond, not
-        /// when the freeze was handled. It is what the daemon stores as the
+        /// When this frame was captured — the ring entry's own time, not when
+        /// the freeze was handled. It is what the daemon stores as the
         /// capture's `createdAt` and therefore the "Captured at" the channel
         /// reports to the model (M2).
         let capturedAt: Date
@@ -34,12 +33,10 @@ final class UploadPipeline {
         private var storedCaptureID: String?
 
         /// Set by the capture job, read (and cleared, on `.captureNotFound`)
-        /// by the annotation job. Usually both run on the same serial
-        /// pipeline, which hands the capture job out first — but a capture
-        /// parked across a link drop (`CanvasCaptureParkingLot`) is posted by
-        /// one session's pipeline and consumed by the next session's, so the
-        /// two accesses are not always on the same queue. Once per freeze and
-        /// once per annotation, so the lock costs nothing that matters.
+        /// by the annotation job. Both run on the same serial pipeline, which
+        /// hands the capture job out first; the lock keeps that an
+        /// implementation detail rather than a requirement. Once per freeze
+        /// and once per annotation, so it costs nothing that matters.
         var captureID: String? {
             get {
                 lock.lock()
@@ -61,15 +58,27 @@ final class UploadPipeline {
         }
     }
 
-    /// Everything an `annotation` needs once the sender's queue is released.
+    /// What a sketch is flattened over.
+    enum Base {
+        /// The frame the iPad froze on.
+        case frame(FreezeCapture)
+        /// The blank canvas surface: a white page of this many pixels. Only
+        /// the size is carried — the page itself is allocated on the work
+        /// queue, never on the stream queue.
+        case blank(width: Int, height: Int)
+    }
+
+    /// Everything an `annotation` needs once the stream queue is released.
     struct AnnotationJob {
-        let capture: FreezeCapture
+        let base: Base
         let sketchPNG: Data
         let zoomRect: NormalizedRect
         let viewport: CanvasViewport
         let note: String?
         let deviceID: String
         let createdAt: Date
+        /// The session the iPad chose at Done, when it chose one (X23).
+        var session: String? = nil
     }
 
     private enum Job {
@@ -239,8 +248,26 @@ final class UploadPipeline {
     /// down for a while is not hammered afresh by every queued round; it is
     /// reset the moment an upload lands.
     private func runAnnotation(_ job: AnnotationJob, backoff: inout BackoffPolicy) async {
+        // A blank round has no frame time, so its page is stamped with the
+        // moment the sketch arrived. It carries no capture id, so the loop
+        // below posts it as the round's capture.
+        let capture: FreezeCapture
+        let surface: CanvasSurface
+        switch job.base {
+        case .frame(let frozen):
+            capture = frozen
+            surface = .mirror
+        case .blank(let width, let height):
+            guard let page = await onWorkQueue({ Compositor.blankImage(width: width, height: height) }) else {
+                Log.info("canvas: dropping annotation — a \(width)x\(height) blank page could not be made")
+                return
+            }
+            capture = FreezeCapture(image: page, capturedAt: job.createdAt)
+            surface = .blank
+        }
+
         let composited = await onWorkQueue(catching: {
-            try Compositor.composite(base: job.capture.image, sketchPNG: job.sketchPNG, zoomRect: job.zoomRect)
+            try Compositor.composite(base: capture.image, sketchPNG: job.sketchPNG, zoomRect: job.zoomRect)
         })
         guard case .success(let composite) = composited else {
             Log.info("canvas: dropping annotation — the sketch could not be composited")
@@ -254,17 +281,17 @@ final class UploadPipeline {
             // the daemon has since lost it — one posted here from the
             // composite's own copy of the untouched frame.
             let captureID: String
-            if let posted = job.capture.captureID {
+            if let posted = capture.captureID {
                 captureID = posted
             } else {
                 do {
                     captureID = try await daemon.postCapture(
                         png: composite.screenshotPNG,
-                        width: job.capture.width,
-                        height: job.capture.height,
-                        capturedAt: job.capture.capturedAt
+                        width: capture.width,
+                        height: capture.height,
+                        capturedAt: capture.capturedAt
                     )
-                    job.capture.captureID = captureID
+                    capture.captureID = captureID
                 } catch where Self.isNonRetryable(error) {
                     Log.info("canvas: dropping annotation — the daemon refused the capture (\(error))")
                     return
@@ -287,7 +314,9 @@ final class UploadPipeline {
                 note: job.note,
                 deviceID: job.deviceID,
                 deviceName: deviceName,
-                createdAt: job.createdAt
+                createdAt: job.createdAt,
+                base: surface,
+                session: job.session
             )
             do {
                 let annotationID = try await daemon.postAnnotation(upload)
@@ -299,7 +328,7 @@ final class UploadPipeline {
                 // again and try once more straight away, before falling back
                 // to the ordinary backoff path.
                 repostedAfterMissingCapture = true
-                job.capture.captureID = nil
+                capture.captureID = nil
                 Log.info("canvas: the daemon has no such capture; re-posting it")
             } catch where Self.isNonRetryable(error) {
                 Log.info("canvas: dropping annotation — the daemon refused it (\(error))")
@@ -314,7 +343,7 @@ final class UploadPipeline {
     // MARK: - hopping to the work queue
 
     /// Runs CPU-bound image work on `workQueue` and comes back with the
-    /// result, so neither the sender's queue nor the drainer's cooperative
+    /// result, so neither the stream queue nor the drainer's cooperative
     /// thread carries a PNG encode or a composite.
     private func onWorkQueue<T>(_ body: @escaping () -> T) async -> T {
         let queue = workQueue

@@ -11,7 +11,7 @@ Spec: `DesignCanvas/spec/technical_doc.md`.
 
 ## Loopback only
 
-Every endpoint answers `403 {"error":"forbidden"}` to a non-loopback peer (`127.0.0.1` / `::1` / `::ffff:127.0.0.1` only). There is no LAN-bind mode, no CORS, and no pairing: Design Canvas's iPad app never talks to this daemon directly (it goes through the OpenDisplay wire to the Mac app, which is the only loopback client).
+Every endpoint answers `403 {"error":"forbidden"}` to a non-loopback peer (`127.0.0.1` / `::1` / `::ffff:127.0.0.1` only). There is no LAN-bind mode, no CORS, and no pairing: Design Canvas's iPad app never talks to this daemon directly (it goes through its own link to the Mac app, which is the only loopback client).
 
 ## Module structure
 

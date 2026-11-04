@@ -234,4 +234,29 @@ final class CompositorTests: XCTestCase {
             line: line
         )
     }
+
+
+    // MARK: - blankImage (the blank canvas surface's base)
+
+    func test_blankImage_isOpaqueWhiteAtTheAskedSize() throws {
+        let image = try XCTUnwrap(Compositor.blankImage(width: 12, height: 7))
+        XCTAssertEqual(image.width, 12)
+        XCTAssertEqual(image.height, 7)
+        XCTAssertEqual(TestImages.pixel(in: image, x: 0, y: 0), TestImages.RGBA(255, 255, 255))
+        XCTAssertEqual(TestImages.pixel(in: image, x: 11, y: 6), TestImages.RGBA(255, 255, 255))
+    }
+
+    func test_blankImage_refusesAnEmptyPage() {
+        XCTAssertNil(Compositor.blankImage(width: 0, height: 10))
+        XCTAssertNil(Compositor.blankImage(width: 10, height: -1))
+    }
+
+    func test_sketchOverBlankImage_showsStrokesOnWhite() throws {
+        let base = try XCTUnwrap(Compositor.blankImage(width: 40, height: 30))
+        let sketch = TestImages.pngData(TestImages.rectOnTransparentCGImage(
+            width: 40, height: 30, rect: CGRect(x: 0, y: 0, width: 40, height: 6), fill: TestImages.RGBA(255, 0, 0)))
+        let result = try Compositor.composite(base: base, sketchPNG: sketch, zoomRect: .full)
+        XCTAssertEqual(TestImages.pixel(inPNG: result.compositePNG, x: 5, y: 2), TestImages.RGBA(255, 0, 0))
+        XCTAssertEqual(TestImages.pixel(inPNG: result.compositePNG, x: 5, y: 20), TestImages.RGBA(255, 255, 255))
+    }
 }

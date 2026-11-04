@@ -1,8 +1,8 @@
 # PRD: Design Canvas
 
-**Status:** Draft v0.7, 2026-09-22 (v0.6 was 2026-09-18, after the first hardware sessions; v0.5 was 2026-09-16, after the engineering review). v0.7 adds the Mac-app information architecture from the board after the second dogfooding round. v0.6 recorded the decision on G1: the iPad mirrors the Mac's own screen, and there is no extended display. Product requirements only; the technical specification is in `technical_doc.md`.
+**Status:** Draft v0.13, 2026-11-03 (v0.12 was earlier the same day; v0.11 was 2026-10-28; v0.10 was 2026-10-13; v0.9 was 2026-10-09; v0.8 was 2026-10-03; v0.7 was 2026-09-22; v0.6 was 2026-09-18, after the first hardware sessions; v0.5 was 2026-09-16, after the engineering review). v0.13 records that Design Canvas has its own Mac-iPad link and no longer builds on OpenDisplay's code (goal 7, the flow's setup, D1, C1, section 8); asking before another Mac takes the iPad is in the README's security note and `wire-protocol.md` section 5.6. v0.12 records the v3.1 interface (owner, 2026-11-02 and 2026-11-03, in the Figma file below): the session pill and a window button at the top left, the held picture shown as a print on paper that fills the screen and zooms as one with it, with no label, the note and Send in one pill at the top right, a round drawing button at the bottom left that starts and ends drawing, and a tool panel that is out only while drawing, with Clear all; ending without sending gives the sketch up, after asking (section 6; M1, M6, P1, P3 to P5; G6 decided). v0.11 keeps the project pill in the Draw Mode top bar and adds the "Frozen" label beside Cancel (owner, 2026-10-28; section 6). v0.10 records the redesign of the iPad interface (owner, 2026-10-13, in the Figma file below): a project pill and its session list replace the connection status panel, one floating panel that can be docked to any screen edge holds the controls, Send replaces Done, and a notification replaces the list of agent replies (section 6; P1 to P4, M2, M5, M8; G18 decided). v0.9 lets the designer zoom and pan inside Draw Mode and makes every mirror round the whole frame (owner, 2026-10-09, after device testing; C2, M5, section 9). v0.8 scopes the mirror requirements to the mirror surface, now that the iPad also has a blank canvas surface; that surface is specified in its own document, `PRD-BlankCanvas.md`, and nothing about it is repeated here. v0.7 added the Mac-app information architecture from the board after the second dogfooding round. v0.6 recorded the decision on G1: the iPad mirrors the Mac's own screen, and there is no extended display. Product requirements only; the technical specification is in `technical_doc.md`.
 **Owner:** AntheaZ
-**Sources:** [FigJam board "Design Canvas"](https://www.figma.com/board/eMxEcxvPAeNtaoWbsKaa6S/Design-Canvas?node-id=0-1); the ai.cst.2 repo (the earlier build we dogfooded and pivoted from); OpenDisplay.
+**Sources:** [FigJam board "Design Canvas"](https://www.figma.com/board/eMxEcxvPAeNtaoWbsKaa6S/Design-Canvas?node-id=0-1); [Figma file "Design Canvas Design"](https://www.figma.com/design/N7DN83jg1SrZV9Gx4SIMlq/Design-Canvas-Design) (the iPad design system and screens, 2026-10-13); the ai.cst.2 repo (the earlier build we dogfooded and pivoted from); OpenDisplay.
 
 ## 1. One-liner
 
@@ -26,11 +26,11 @@ Design Canvas removes capture by mirroring the Mac live, keeps ai.cst.2's agent 
 
 1. Zero-capture loop. The designer never takes or transfers a screenshot.
 2. Native drawing with Apple Pencil: pen, eraser, undo, color, region zoom.
-3. One tap ("Done") sends the sketch plus optional text into the running Claude Code session. No prompt typed on the Mac.
+3. One tap ("Send") sends the sketch plus optional text into the running Claude Code session. No prompt typed on the Mac.
 4. Claude Code's outcome (applied, failed, needs input, PR link) shows on the iPad.
 5. The fix is visible on the same iPad without leaving the app.
-6. Connection health for both hops (iPad to Mac, Mac to Claude Code) is visible at a glance.
-7. One pairing, the one OpenDisplay already has.
+6. Connection health for both hops (iPad to Mac, Mac to Claude Code) is visible at a glance: the iPad shows a waiting screen while it has no Mac, and names the Claude Code session the next sketch goes to.
+7. One pairing: the iPad connects to the Mac by cable or with one click, and the first time both screens show a code to confirm (Design Canvas's own link since 2026-11-03).
 
 **Non-goals (MVP)**
 
@@ -45,43 +45,53 @@ Design Canvas removes capture by mirroring the Mac live, keeps ai.cst.2's agent 
 
 **Primary user:** a product designer who ships code with Claude Code and reviews features running locally on their Mac.
 
-**Amy:** opens the Design Canvas menu-bar app, picks her project, taps Start session. A terminal opens with Claude Code attached. Her iPad, already paired from OpenDisplay, mirrors the preview. She zooms into the header, enters draw mode, circles a misaligned icon, draws an arrow, types "align with the title baseline", taps Done. Claude Code reads the sketch, edits the source, replies "applied" with a PR link. The mirror updates, Amy sees the fix and the status on her iPad, and starts the next round.
+**Amy:** opens the Design Canvas menu-bar app, picks her project, taps Start session. A terminal opens with Claude Code attached. Her iPad, already connected to the Mac, mirrors the preview. She zooms into the header, enters draw mode, circles a misaligned icon, draws an arrow, types "align with the title baseline", taps Send. Claude Code reads the sketch, edits the source, replies "applied" with a PR link. The mirror updates, Amy sees the fix and a notification saying it was applied on her iPad, and starts the next round.
 
 ## 5. Flow
 
-**Setup, once.** Install both apps. Pair over OpenDisplay (Bonjour or USB, no code). Pick the project in the menu-bar app. Tap Start session; the app launches Claude Code with the Design Canvas channel attached.
+**Setup, once.** Install both apps. Connect the iPad (a cable, or one click on WiFi) and confirm the code both screens show. Pick the project in the menu-bar app. Tap Start session; the app launches Claude Code with the Design Canvas channel attached.
 
 **Each round.**
 
 1. The iPad mirrors the Mac.
 2. Pinch to zoom into a region.
-3. Enter Draw Mode. The iPad freezes on the current frame at the current zoom; the Mac captures a clean still of the same moment. If zoomed in, the sketch is sent as that cropped region.
-4. Draw. Optionally type a note.
-5. Tap Done. Draw Mode exits, sync resumes, the sketch is sent.
+3. Enter Draw Mode. The iPad freezes on the current frame; the Mac captures a clean still of the same moment.
+4. Draw with the Pencil or one finger. Two fingers zoom and pan the frozen frame at any time, to work on a detail and come back out. Optionally type a note.
+5. Tap Send. Draw Mode exits, sync resumes, and the sketch is sent over the whole frame, whatever the zoom was.
 6. Claude Code receives it, edits the source, replies with a status.
-7. The live mirror shows the change; the round shows its status on the iPad.
+7. The live mirror shows the change; a notification on the iPad says what Claude Code did with the round.
 
 ## 6. Information architecture
 
-From the board (re-read 2026-09-22). Stack is drawn but deprioritized for the MVP. The Mac-app tree is new on the board since the second dogfooding round; the iPad tree is unchanged.
+The Mac-app tree is from the board (re-read 2026-09-22), new there since the second dogfooding round. The iPad tree was redesigned on 2026-10-13 in the style of Apple Freeform and again as v3.1 on 2026-11-02 and 2026-11-03; the screens and the design system are in the [Figma file](https://www.figma.com/design/N7DN83jg1SrZV9Gx4SIMlq/Design-Canvas-Design), and the same interface runs on an iPhone, where what no longer fits in one row takes the next. Stack is drawn on the board but deprioritized for the MVP.
 
 **iPad**
 
 ```
-Canvas (finger gesture to zoom in and out)
-Panel
- ├─ Connection Status
- │    ├─ iPad to Mac, Mac to Claude Code: working or not
- │    ├─ Project: connected project folder name, or "unselected"
- │    └─ tap ──▶ modal with connection parameters and detailed error messages
- ├─ Draw Mode
- │    ├─ Drawing tool panel: pen, eraser, undo, color
- │    ├─ Text prompt entry (optional)
- │    └─ "Done": exits Draw Mode, sends to Claude Code, resumes sync
- └─ Stack (deprioritized)
-      ├─ Thumbnails of saved sketches; failed sends marked with a badge
-      └─ "Done"
-Agent replies (status per round: queued, sent, applied, failed, needs input, PR link)
+Waiting screen: fills the iPad while no Mac is connected, with the setup guide
+Canvas: the live mirror or the whiteboard (two fingers zoom and pan); while drawing on the mirror,
+        the held picture is a print on paper that fills the screen
+Top left
+ ├─ Session pill: the Claude Code session the next sketch goes to, or "Choose a session"
+ │    └─ tap ──▶ session menu
+ │         ├─ each session: folder, Ready / Busy / Waiting for reply at desktop, a tick on the target
+ │         ├─ with no session: how to start one
+ │         └─ "Connection details…" ──▶ connection parameters, errors and the log
+ └─ Window button, under the pill
+      └─ tap ──▶ window menu: the Mac, by its own name, or the whiteboard
+Top right
+ ├─ While drawing: the prompt pill, an optional note and Send
+ ├─ Between sketches: "Sketch kept — will resend", with a way to give it up
+ └─ Reply notification: applied, failed or needs input, with a PR link when present
+Bottom left, on the mirror: the drawing button, round, with no words
+ ├─ Pencil: start drawing; the picture is held as a print
+ └─ Cross: end drawing; with ink on the page it asks "End without sending?" first
+Tool panel: out only while drawing, at the bottom centre unless dragged to another edge
+ └─ undo, redo, pen, eraser, five inks (one swatch on an iPhone, which opens the Ink Picker), Clear all
+Notice, at the bottom: why Draw Mode ended or a sketch was not sent
+Stack (deprioritized)
+ ├─ Thumbnails of saved sketches; failed sends marked with a badge
+ └─ "Send"
 ```
 
 **Mac app (menu bar)**
@@ -98,13 +108,13 @@ The three Mac items map onto existing requirements: connection status onto D7 (s
 
 ## 7. Requirements
 
-IDs are referenced from the technical doc.
+IDs are referenced from the technical doc. C1, C2, M1, M7 and D9 describe the mirror surface; the blank canvas surface (2026-10-03) has its own requirements, B1 to B8, in `PRD-BlankCanvas.md`. Every other row applies to both surfaces.
 
 **Mac**
 
 | ID | Requirement |
 |---|---|
-| D1 | Mirror the Mac's main display to the iPad over USB or WiFi (OpenDisplay's mirror capture). No extra display is created, and there is no extended-display mode |
+| D1 | Mirror the Mac's main display to the iPad over USB or WiFi (Design Canvas's own link since 2026-11-03; OpenDisplay's mirror capture before that). No extra display is created, and there is no extended-display mode |
 | D2 | Menu-bar app keeps the local service running while open |
 | D3 | Menu-bar app picks the project, configures it, and launches Claude Code with the channel; never force-kills Claude Code |
 | D4 | Store every sketch and its clean capture locally; nothing leaves the Mac except into the user's Claude Code session |
@@ -112,37 +122,39 @@ IDs are referenced from the technical doc.
 | D6 | Accept one reply per sketch from Claude Code and show it on the iPad |
 | D7 | Show session state honestly: no session, this app's session, or a session it did not start |
 | D8 | Log every request, push, reply, and state change as the user's audit trail |
-| D9 | On Draw Mode entry, keep the exact frame the iPad froze, in clean pre-encode pixels, as the base for the sketch |
+| D9 | On the mirror surface, on Draw Mode entry, keep the exact frame the iPad froze, in clean pre-encode pixels, as the base for the sketch |
 | D10 | Tag each sketch with the iPad that sent it |
 
 **iPad**
 
 | ID | Requirement |
 |---|---|
-| C1 | Live mirror (OpenDisplay) |
-| C2 | Finger pinch-zoom and pan, view-only |
-| M1 | Entering Draw Mode freezes the frame and pauses sync at once |
-| M2 | Pen, eraser, undo, color |
+| C1 | Live mirror. The iPad's other surface, the blank canvas, is in `PRD-BlankCanvas.md` |
+| C2 | Finger pinch-zoom and pan, view-only. It works in Draw Mode too (2026-10-09): there two fingers always zoom and pan, one finger or the Pencil draws, and every stroke stays on the part of the frame it was drawn on |
+| M1 | On the mirror surface, entering Draw Mode freezes the frame and pauses sync at once. The held picture becomes a print: it shrinks a little into paper that fills the screen, so nothing on it is covered, and picture, ink and paper zoom and pan as one. No label says it; VoiceOver is told (2026-11-03; on 2026-11-02 a border laid over the picture and a "Mirroring paused" label) |
+| M2 | Pen, eraser, undo, redo, five ink colours (redo added 2026-10-13) |
 | M3 | In Draw Mode nothing is forwarded to the Mac |
 | M4 | Optional text note |
-| M5 | Done sends immediately and resumes sync |
-| M6 | A way to leave Draw Mode without sending |
+| M5 | Send sends immediately and resumes sync. A mirror round is always the whole frame with the sketch over it, whatever the zoom (2026-10-09) |
+| M6 | A way to leave Draw Mode without sending: End drawing. The sketch is not kept, so with ink on the page it asks first. Clear all in the tool panel erases every stroke and can be undone (2026-11-02; was: Cancel kept the strokes for the next entry) |
 | M7 | If the Mac reports no frame for the freeze, leave Draw Mode with a message and keep the strokes |
-| M8 | Agent replies: each round shows queued, sent, applied, failed, or needs input, with a PR link when present |
-| P1 | Connection status shows both hops and the connected project folder name, or "unselected" |
-| P2 | Tapping status opens details and errors |
-| P3 | Entry to Draw Mode |
+| M8 | When a round reaches an outcome (applied, failed, or needs input) the iPad announces it in a notification, with a PR link when present. An applied round's notification leaves on its own; the others stay until dismissed. There is no list of rounds (2026-10-13): the record of a session is the Claude Code session |
+| P1 | The session pill names the Claude Code session the next sketch goes to, and reads "Choose a session" when there is none or one must be picked; tapping it lists every connected session with its state. The iPad-to-Mac hop has no indicator of its own: while it is down, a waiting screen fills the iPad (2026-10-13) |
+| P2 | "Connection details…" at the end of the session list opens the connection parameters, errors and the connection log |
+| P3 | Entry to Draw Mode from the drawing button, a round button with no words at the bottom left that also ends it, disabled while there is no Claude Code session to send to (2026-11-03; was: from the panel). The whiteboard has no such button: it is always ready to draw (`PRD-BlankCanvas.md`, B9) |
+| P4 | The tool panel is out only while drawing (2026-11-02). It can be moved to any screen edge by dragging it, and stays there across modes and launches. Its grabber shows only while it is being dragged, inside the panel on the side that faces into the screen, and the panel does not grow for it (2026-10-13; changed 2026-11-03) |
+| P5 | The window button under the session pill switches between the Mac's screen, named as the Mac names itself, and the whiteboard. With ink on the page it asks first, since the sketch is not kept (2026-11-02) |
 
 ## 8. What is reused and what is new
 
 | | Reused | New for Design Canvas |
 |---|---|---|
-| From OpenDisplay | Main-display mirroring over USB and WiFi, pairing, discovery, cursor (OpenDisplay's extended virtual display is not used) | Freeze frame, view-only region zoom, local drawing mode, five small control messages |
+| From OpenDisplay | Its design: the iPad listens and the Mac dials, USB through usbmuxd and WiFi through Bonjour, H.264 in real time. Since 2026-11-03 Design Canvas has its own implementation of it, sharing no code at build time (OpenDisplay's extended virtual display was never used) | Freeze frame, view-only region zoom, local drawing mode, its own Mac-iPad wire (`wire-protocol.md`) |
 | From ai.cst.2 | Menu-bar app, local service, Claude Code Channel push, PencilKit drawing, sketch store, project setup | Clean capture at Draw Mode entry, reply from Claude Code, one pairing instead of two |
 
 Dropped from ai.cst.2: on-demand hotkey capture, the browser extension, the iPad queue view, the separate 6-digit pairing.
 
-Design Canvas ships as its own Mac app and iPad app, built on OpenDisplay's code rather than as a mode inside OpenDisplay, and stays GPL-3.0 like OpenDisplay. Input forwarding is dropped entirely, so the Mac app needs only the Screen Recording permission.
+Design Canvas ships as its own Mac app and iPad app rather than as a mode inside OpenDisplay. It started on OpenDisplay's code, has built on its own since 2026-11-03, and stays GPL-3.0 like OpenDisplay. Input forwarding is dropped entirely, so the Mac app needs only the Screen Recording permission.
 
 ## 9. Open questions
 
@@ -150,13 +162,16 @@ Numbering is shared with the technical doc. Decided items live there.
 
 Decided since v0.5: **G1, what is mirrored** (owner, 2026-09-17, after the first hardware sessions). The iPad mirrors the Mac's main display, whatever is in front; the extra virtual display OpenDisplay defaults to is not offered, not even as an option. Details and consequences are in the technical doc, section 1.
 
+Decided since v0.9: **G18, visual design** (owner, 2026-10-13). The iPad follows Apple Freeform: light glass capsules over the canvas, one floating panel, a project pill. The design system, its tokens and every screen are in the Figma file named under Sources. The colour tokens meet WCAG 2.2 AA contrast on the light surfaces: text uses darker versions of the system orange, red, blue and green, and secondary text is the secondary label at 78%.
+
+Decided since v0.8: **zoom in Draw Mode** (owner, 2026-10-09, after device testing, where a designer in Draw Mode could not zoom in to place a stroke). Zoom is no longer locked while drawing. Two fingers always zoom and pan; one finger or the Pencil draws. A mirror round is always the whole frame with the sketch over it, so zooming in, before or during Draw Mode, no longer crops what is sent. Consequences are in the technical doc, section 3, and under G13 below.
+
 - **G5. Queued rounds.** Without Stack, should the iPad at least show a count of rounds waiting for Claude Code?
-- **G6. Draw Mode edges.** Mostly settled in the technical spec's state machine: cancel keeps strokes, Done is disabled with no strokes, rotation and disconnect keep strokes for resend. Still open: redo and clear-all in the tool panel.
+- **G6. Draw Mode edges.** Decided (owner, 2026-11-02): End drawing gives the sketch up, asking first when there is ink; Send is disabled with no strokes; rotation and disconnect keep strokes for resend. Redo is in the panel since 2026-10-13 and Clear all since 2026-11-02.
 - **G9. Preview refresh.** The loop assumes the dev server hot-reloads. With no input forwarding, a preview that needs a manual reload means walking to the Mac.
 - **G11. Note entry.** The keyboard covers the canvas. Consider a compact field or entering the note after the sketch.
 - **G12. Tool set.** Arrows, rectangles, and text labels are common in design review and not in the MVP list.
-- **G13. Redaction.** Screenshots of unreleased work go into the agent session. Decide whether a per-project redaction toggle is needed. Since G1 this matters more: the whole main display is streamed to the iPad, and a round sent without zooming in captures the entire screen, not only a preview placed on a separate display.
-- **G18. Visual design.** The board's "Design tokens" and "sketches" sections are empty.
+- **G13. Redaction.** Screenshots of unreleased work go into the agent session. Decide whether a per-project redaction toggle is needed. Since G1 this matters more: the whole main display is streamed to the iPad, and a round captures the entire screen, not only a preview placed on a separate display. Since 2026-10-09 that is every mirror round: zooming in no longer crops what is sent, so the zoom is not a way to keep something out of a round. A round drawn on the blank canvas surface (2026-10-03) carries no screen content, though the screen is still streamed to the iPad underneath it (`PRD-BlankCanvas.md`, BG1).
 - **G19. Permission prompts.** Claude Code asks for approval in the terminal. From the iPad that looks like a hang. The MVP mitigation is to keep the terminal visible on the mirrored screen, which since G1 is the Mac's main display, where the terminal opens anyway; the real fix is in future versions.
 - **G22. Session limits.** Relaunching the menu-bar app orphans a running session; manually started Claude Code sessions are unsupported. Acceptable for alpha, must be documented.
 
@@ -181,8 +196,8 @@ Not phased. Roughly in the order they are likely to matter.
 
 | Metric | Target |
 |---|---|
-| Done tap to sketch delivered to Claude Code | Under 1 s |
-| Done tap to visible change on the iPad | Under 15 s median |
+| Send tap to sketch delivered to Claude Code | Under 1 s |
+| Send tap to visible change on the iPad | Under 15 s median |
 | Rounds that receive a reply | Near 100%, measured by the reply-compliance eval |
 | Install to first change made without typing it | Under 5 minutes |
 | Rounds applied without "needs input" | Trend up |

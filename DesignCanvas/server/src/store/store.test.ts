@@ -227,3 +227,24 @@ test('a v2 annotation record reads with device, zoomRect, and reply defaults', a
   assert.equal(annotation?.meta.note.text, 'legacy note');
   assert.equal((annotation?.meta as { sourceLabel?: string }).sourceLabel, undefined);
 });
+
+test('a blank-canvas annotation keeps its base in the record; a mirror one has no base key', async () => {
+  const store = await tempStore();
+  const input = {
+    composite: Buffer.from('composite'),
+    sketch: Buffer.from('sketch'),
+    viewport: { w: 100, h: 200 },
+    zoomRect: null,
+    device: { id: 'device-1', name: 'iPad' },
+  };
+  const blankCapture = await store.createCapture({ screenshot: Buffer.from('page'), viewport: { w: 100, h: 200 } });
+  const blank = await store.createAnnotation({ ...input, sourceCaptureId: blankCapture.id, base: 'blank' });
+  assert.equal(blank.base, 'blank');
+  assert.equal((await store.getAnnotation(blank.id))?.meta.base, 'blank');
+
+  const mirrorCapture = await store.createCapture({ screenshot: Buffer.from('shot'), viewport: { w: 100, h: 200 } });
+  const mirror = await store.createAnnotation({ ...input, sourceCaptureId: mirrorCapture.id });
+  const stored = await store.getAnnotation(mirror.id);
+  assert.equal(stored?.meta.base, undefined);
+  assert.equal('base' in (stored?.meta ?? {}), false);
+});

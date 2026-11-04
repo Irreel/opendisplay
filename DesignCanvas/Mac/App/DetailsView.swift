@@ -11,8 +11,11 @@ struct DetailsView: View {
         Form {
             Section("Session") {
                 LabeledContent("State", value: model.sessionState.display.statusText)
-                if model.sessionState.secondSubscriber {
-                    Text("Two channel connections detected").foregroundColor(.orange)
+                ForEach(model.sessions.sessions, id: \.entry.id) { session in
+                    LabeledContent(
+                        session.entry.folder + (session.entry.id == model.sessions.target ? " (target)" : ""),
+                        value: "\(session.entry.state.rawValue) \u{00B7} \(session.cwd)"
+                    )
                 }
                 if model.daemonGaveUp {
                     Text("Daemon stopped retrying \u{2014} port may be in use").foregroundColor(.orange)
@@ -27,8 +30,7 @@ struct DetailsView: View {
                     LabeledContent("Port", value: h.port.map(String.init) ?? "\u{2014}")
                     LabeledContent("Instance", value: h.instanceId ?? "\u{2014}")
                     LabeledContent("Started", value: h.startedAt ?? "\u{2014}")
-                    LabeledContent("Channels", value: String(h.channelCount ?? (h.channelAttached ? 1 : 0)))
-                    LabeledContent("Channel attached", value: h.channelAttachedAt ?? "\u{2014}")
+                    LabeledContent("Sessions", value: String(h.sessionCount ?? 0))
                 case .refused:
                     LabeledContent("Probe", value: "Connection refused (nothing listening)")
                 case .timedOut:
@@ -40,17 +42,30 @@ struct DetailsView: View {
                 }
                 LabeledContent("Owned by this app", value: model.sessionState.daemon == .owned ? "Yes" : "No")
             }
-            Section("iPads") {
+            Section("Devices") {
                 if model.devices.isEmpty {
                     Text("None connected").foregroundColor(.secondary)
                 }
                 ForEach(model.devices) { device in
-                    LabeledContent(device.name, value: "\(device.status) \u{00B7} \(device.onUSB ? "USB" : "WiFi") \u{00B7} \(device.id)")
+                    LabeledContent(device.name, value: "\(MenuPresentation.deviceRow(device).word) \u{00B7} \(device.onUSB ? "USB" : "WiFi") \u{00B7} \(device.id)")
                 }
                 ForEach(model.discoveredDevices) { device in
                     LabeledContent(device.name, value: "Discovered \u{00B7} \(device.transport) \u{00B7} \(device.id)")
                 }
                 LabeledContent("Sketches waiting to send", value: String(model.pendingUploads))
+            }
+            Section("Paired iPads") {
+                if model.pairedDevices.isEmpty {
+                    Text("None yet. An iPad pairs the first time it connects: both screens show a code to confirm.")
+                        .foregroundColor(.secondary)
+                }
+                ForEach(model.pairedDevices) { peer in
+                    HStack {
+                        LabeledContent(peer.name ?? "iPad",
+                                       value: "paired \(peer.pairedAt.formatted(date: .abbreviated, time: .omitted))")
+                        Button("Forget") { model.forgetPairedDevice(id: peer.id) }
+                    }
+                }
             }
             if let warning = model.configWarning {
                 Section("Last error") {
@@ -58,7 +73,7 @@ struct DetailsView: View {
                 }
             }
             Section("Reset") {
-                Text("Stops Design Canvas helper processes. May detach an existing Claude Code channel. Never quits Claude Code or edits your files.")
+                Text("Stops Design Canvas helper processes and restarts the local daemon. Running Claude Code sessions reconnect by themselves within a second or two. Never quits Claude Code or edits your files.")
                     .font(.caption)
                     .foregroundColor(.secondary)
                 HStack {
@@ -82,16 +97,15 @@ struct DetailsView: View {
                 }
             }
             Section("Session end") {
-                Text("Disconnect only stops this app tracking the session. Claude Code keeps running; quit it in its Terminal to end the session.")
+                Text("A session stays connected for as long as Claude Code runs. Quit it in its Terminal to end the session.")
                     .font(.caption)
                     .foregroundColor(.secondary)
             }
             Section("Logs") {
                 Button("Open Logs Folder") {
-                    let logs = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Logs")
-                    NSWorkspace.shared.open(logs.appendingPathComponent("OpenDisplay"))
+                    NSWorkspace.shared.open(Log.fileURL.deletingLastPathComponent())
                 }
-                Text("App: ~/Library/Logs/OpenDisplay/opendisplay.log \u{00B7} Daemon: ~/Library/Logs/DesignCanvas/server.log")
+                Text("App: ~/Library/Logs/DesignCanvas/designcanvas.log \u{00B7} Daemon: ~/Library/Logs/DesignCanvas/server.log")
                     .font(.caption2)
                     .foregroundColor(.secondary)
             }

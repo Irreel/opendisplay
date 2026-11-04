@@ -18,6 +18,20 @@ export const CAPTURE_TTL_MS = 6 * 60 * 60 * 1000;
 /** How often the daemon runs that sweep (also once at startup). */
 export const CAPTURE_SWEEP_MS = 60 * 60 * 1000;
 
+/**
+ * A session (a Claude Code process with the Design Canvas mod loaded) polls once a
+ * second. One that has been silent this long is gone: a closed terminal, a kill.
+ */
+export const SESSION_STALE_MS = 15_000;
+/**
+ * After the daemon starts, sessions that were connected to the previous daemon are
+ * still re-registering (each on its next 1 s tick). Nothing is failed and the
+ * default target stays open to revision until this has passed.
+ */
+export const SESSION_SETTLE_MS = 5_000;
+/** How often the daemon looks for sessions that stopped polling. */
+export const SESSION_SWEEP_MS = 2_000;
+
 export const REPLY_STATUSES = ['applied', 'failed', 'needs_input'] as const;
 export type ReplyStatus = (typeof REPLY_STATUSES)[number];
 export const REPLY_MESSAGE_MAX_BYTES = 2048;
@@ -41,6 +55,13 @@ export function isAllowedPrUrl(value: string): boolean {
   }
   return (url.protocol === 'http:' || url.protocol === 'https:') && url.hostname.length > 0;
 }
+/**
+ * Why a reply was written by the mod rather than by Claude: the round's turn ended
+ * with no outcome after one reminder, the session ended first, or the user stopped
+ * the turn. Absent on Claude's own reply.
+ */
+export const REPLY_REASONS = ['no_reply', 'session_ended', 'interrupted'] as const;
+export type ReplyReason = (typeof REPLY_REASONS)[number];
 export const ROUNDS_LIMIT = 20;
 export type RoundStatus = 'queued' | 'sent' | 'applied' | 'failed' | 'needs_input';
 
@@ -51,6 +72,9 @@ export const HTTP_PATHS = {
   annotationStream: '/v1/annotations/stream',
   rounds: '/v1/rounds',
   roundsStream: '/v1/rounds/stream',
+  sessions: '/v1/sessions',
+  sessionsStream: '/v1/sessions/stream',
+  sessionsTarget: '/v1/sessions/target',
 } as const;
 
 export interface Viewport {
@@ -87,6 +111,14 @@ export interface AnnotationReply {
   message: string | null;
   prUrl: string | null;
   at: string;
+  reason?: ReplyReason;
+}
+
+/** The session a round is bound to: it is delivered there and nowhere else. */
+export interface AnnotationSession {
+  instance: string;
+  sessionId: string;
+  folder: string;
 }
 
 export interface AnnotationMeta {
@@ -108,7 +140,20 @@ export interface AnnotationMeta {
   sourceCaptureId: string;
   device: AnnotationDevice;
   reply: AnnotationReply | null;
+  /**
+   * What the sketch was drawn on. Absent for a round on the mirror surface (a frozen
+   * frame of the Mac's screen), which is every record written before the field existed.
+   * `blank` for a freehand sketch on the iPad's blank canvas: its source capture is a
+   * white page, and no screen content is part of the round.
+   */
+  base?: AnnotationBase;
+  /** Absent until the round is bound: at upload when a target exists, else at first claim. */
+  session?: AnnotationSession;
+  /** When the mod sent its one reminder for a turn that ended with no outcome. */
+  remindedAt?: string;
 }
+
+export type AnnotationBase = 'blank';
 
 export interface HealthResponse {
   status: 'ok';
@@ -128,6 +173,36 @@ export interface HealthResponse {
   channelCount?: number;
   /** ISO time the oldest current subscriber attached; null/absent when none. */
   channelAttachedAt?: string | null;
+  /** Claude Code sessions connected through the mod. */
+  sessionCount?: number;
+}
+
+export const SESSION_STATES = ['idle', 'busy', 'waiting'] as const;
+/** `waiting`: Claude Code has a permission dialog open at the Mac. */
+export type SessionState = (typeof SESSION_STATES)[number];
+
+/** One connected Claude Code session, as the Mac app and the iPad list it. */
+export interface SessionInfo {
+  /** The mod's own id for this process. Stable across `/clear`, unlike `sessionId`. */
+  instance: string;
+  sessionId: string;
+  cwd: string;
+  /** Last path component of the repo root, or of `cwd` outside a repo. */
+  folder: string;
+  branch?: string;
+  title?: string;
+  startedAt: string;
+  lastReplyAt?: string;
+  state: SessionState;
+  modVersion?: string;
+  /** The nonce the Mac app put in the environment of a session it launched. */
+  launch?: string;
+}
+
+export interface SessionsSnapshot {
+  sessions: SessionInfo[];
+  /** Null with several sessions means the user has to pick. */
+  target: string | null;
 }
 
 export interface AnnotationUploadResponse {

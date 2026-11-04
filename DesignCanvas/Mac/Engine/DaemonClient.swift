@@ -13,6 +13,63 @@ struct DaemonHealth: Decodable, Equatable {
     let port: Int?
     let channelCount: Int?
     let channelAttachedAt: String?
+    /// Claude Code sessions connected through the mod. Absent from a daemon
+    /// that predates the mod.
+    let sessionCount: Int?
+
+    init(
+        status: String, version: String, channelAttached: Bool, pid: Int?, instanceId: String?,
+        startedAt: String?, serverEntry: String?, port: Int?, channelCount: Int?,
+        channelAttachedAt: String?, sessionCount: Int? = nil
+    ) {
+        self.status = status
+        self.version = version
+        self.channelAttached = channelAttached
+        self.pid = pid
+        self.instanceId = instanceId
+        self.startedAt = startedAt
+        self.serverEntry = serverEntry
+        self.port = port
+        self.channelCount = channelCount
+        self.channelAttachedAt = channelAttachedAt
+        self.sessionCount = sessionCount
+    }
+}
+
+/// One session in the daemon's list, with the two fields only the Mac app
+/// uses on top of what the iPad is told.
+struct DaemonSession: Equatable {
+    var entry: CanvasSessionEntry
+    var cwd: String
+    /// The nonce this app put in the environment of a session it launched.
+    var launch: String?
+}
+
+/// `GET /v1/sessions`, and each event of its stream.
+struct DaemonSessions: Equatable {
+    var sessions: [DaemonSession]
+    var target: String?
+
+    static let empty = DaemonSessions(sessions: [], target: nil)
+
+    /// What goes on to the iPad.
+    var message: SessionsMessage {
+        SessionsMessage(sessions: sessions.map { $0.entry }, target: target)
+    }
+
+    init(sessions: [DaemonSession], target: String?) {
+        self.sessions = sessions
+        self.target = target
+    }
+
+    init?(json: [String: Any]) {
+        guard let entries = json["sessions"] as? [[String: Any]] else { return nil }
+        self.sessions = entries.compactMap { item in
+            guard let entry = CanvasSessionEntry(json: item) else { return nil }
+            return DaemonSession(entry: entry, cwd: item["cwd"] as? String ?? "", launch: item["launch"] as? String)
+        }
+        self.target = json["target"] as? String
+    }
 }
 
 /// Every outcome `probe()` can report. Never throws: a caller (health
@@ -27,23 +84,9 @@ enum HealthProbeResult: Equatable {
     case foreignResponse
 }
 
-extension ChannelState {
-    /// A channel process is attached only once the daemon reports at least
-    /// one live SSE subscriber; any other outcome (unhealthy, foreign,
-    /// unreachable) can't distinguish "no channel" from "no daemon", so both
-    /// collapse to `.none`.
-    init(probe: HealthProbeResult) {
-        switch probe {
-        case .healthy(let health):
-            self = (health.channelCount ?? 0) > 0 ? .attached : .detached
-        case .refused, .timedOut, .badStatus, .foreignResponse:
-            self = .none
-        }
-    }
-}
-
 /// Everything needed to build one `POST /v1/annotations` upload. Field names
-/// mirror the daemon's meta JSON keys (see `task-6-report.md`), not the wire
+/// mirror the daemon's meta JSON keys (`parseAnnotationUpload` in
+/// `DesignCanvas/server/src/http/server.ts`), not the wire
 /// `AnnotationMessage` from the iPad, since a zoom rect / viewport / note
 /// value must survive whatever the engine did with the incoming annotation
 /// before it reaches the daemon.
@@ -57,6 +100,12 @@ struct AnnotationUpload: Equatable {
     var deviceID: String
     var deviceName: String
     var createdAt: Date
+    /// `.blank` for a sketch drawn on the blank canvas surface. The daemon's
+    /// meta carries `"base": "blank"` for it and no `base` key otherwise.
+    var base: CanvasSurface = .mirror
+    /// The session instance the iPad chose at Done (X23). Nil lets the daemon
+    /// use the target as it stands when the upload arrives.
+    var session: String?
 }
 
 /// One `round.updated` SSE event, tagged with the device it belongs to (the
@@ -97,13 +146,28 @@ protocol DaemonAPI: AnyObject {
     /// Reconnects forever with backoff until the stream is cancelled (see
     /// `DaemonClient.roundUpdates()`).
     func roundUpdates() -> AsyncStream<RoundStreamEvent>
+    /// The connected Claude Code sessions and the target.
+    func sessions() async throws -> DaemonSessions
+    /// Every change to that list, starting with where it stands; reconnects
+    /// forever like `roundUpdates()`. A lost connection yields `.empty`, since
+    /// a daemon that is gone has no sessions to send a sketch to.
+    func sessionUpdates() -> AsyncStream<DaemonSessions>
+    /// Makes `instance` the target. `fromIPad` is recorded in the daemon's log.
+    func setTarget(instance: String, fromIPad: Bool) async throws
+}
+
+/// Defaults, so a test double that has nothing to say about sessions need not.
+extension DaemonAPI {
+    func sessions() async throws -> DaemonSessions { .empty }
+    func sessionUpdates() -> AsyncStream<DaemonSessions> { AsyncStream { $0.finish() } }
+    func setTarget(instance: String, fromIPad: Bool) async throws {}
 }
 
 /// The Mac engine's one client for the local Node daemon at
 /// `http://127.0.0.1:47100`: health, capture/annotation uploads, the rounds
 /// list, and the rounds SSE stream. Every request/response shape here must
-/// match the daemon exactly — see `task-6-report.md`'s route table and
-/// `DesignCanvas/server/src/http/server.ts`/`shared.ts`.
+/// match the daemon exactly — see the route table in
+/// `DesignCanvas/server/src/http/server.ts` and the types in `shared.ts`.
 final class DaemonClient: DaemonAPI {
     private let baseURL: URL
     private let session: URLSession
@@ -203,6 +267,12 @@ final class DaemonClient: DaemonAPI {
         ]
         if let note = upload.note?.trimmingCharacters(in: .whitespacesAndNewlines), !note.isEmpty {
             meta["note"] = ["text": note]
+        }
+        if upload.base == .blank {
+            meta["base"] = upload.base.rawValue
+        }
+        if let session = upload.session {
+            meta["session"] = session
         }
         // Meta/device/zoomRect are all JSON-serializable literals built above, so this cannot fail.
         let metaData = (try? JSONSerialization.data(withJSONObject: meta)) ?? Data()
@@ -312,6 +382,85 @@ final class DaemonClient: DaemonAPI {
                         Log.info("DaemonClient: rounds stream connection failed: \(error)")
                     }
                     if Task.isCancelled { break }
+                    await sleep(backoff.next())
+                }
+                continuation.finish()
+            }
+            continuation.onTermination = { _ in task.cancel() }
+        }
+    }
+
+    // MARK: - sessions
+
+    func sessions() async throws -> DaemonSessions {
+        var request = URLRequest(url: baseURL.appendingPathComponent("v1/sessions"))
+        request.timeoutInterval = 1.5
+        let (data, response) = try await session.data(for: request)
+        guard let http = response as? HTTPURLResponse else { throw DaemonClientError.undecodable }
+        guard http.statusCode == 200 else { throw DaemonClientError.badStatus(http.statusCode) }
+        guard let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              let sessions = DaemonSessions(json: object) else { throw DaemonClientError.undecodable }
+        return sessions
+    }
+
+    func setTarget(instance: String, fromIPad: Bool) async throws {
+        var request = URLRequest(url: baseURL.appendingPathComponent("v1/sessions/target"))
+        request.httpMethod = "PUT"
+        request.timeoutInterval = 3
+        request.setValue("application/json", forHTTPHeaderField: "content-type")
+        request.httpBody = try JSONSerialization.data(withJSONObject: [
+            "instance": instance,
+            "by": fromIPad ? "ipad" : "mac",
+        ])
+        let (_, response) = try await session.data(for: request)
+        guard let http = response as? HTTPURLResponse else { throw DaemonClientError.undecodable }
+        guard http.statusCode == 200 else { throw DaemonClientError.badStatus(http.statusCode) }
+    }
+
+    /// Same shape as `roundUpdates()`: one long-lived SSE connection, backoff
+    /// between attempts. The daemon sends the current list first on every
+    /// connection, so there is no separate snapshot to fetch.
+    func sessionUpdates() -> AsyncStream<DaemonSessions> {
+        let baseURL = self.baseURL
+        let session = self.session
+        let sleep = self.sleep
+
+        return AsyncStream { continuation in
+            let task = Task {
+                var backoff = BackoffPolicy()
+                while !Task.isCancelled {
+                    var parser = SSEParser()
+                    var receivedFirstByte = false
+                    do {
+                        var request = URLRequest(url: baseURL.appendingPathComponent("v1/sessions/stream"))
+                        request.timeoutInterval = 3_600
+                        let (byteStream, response) = try await session.bytes(for: request)
+                        guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
+                            let status = (response as? HTTPURLResponse)?.statusCode ?? -1
+                            throw DaemonClientError.badStatus(status)
+                        }
+                        for try await byte in byteStream {
+                            if Task.isCancelled { break }
+                            if !receivedFirstByte {
+                                receivedFirstByte = true
+                                backoff.reset()
+                            }
+                            for event in parser.feed(Data([byte])) where event.event == "sessions.updated" {
+                                if let data = event.data.data(using: .utf8),
+                                   let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+                                   let sessions = DaemonSessions(json: object) {
+                                    continuation.yield(sessions)
+                                }
+                            }
+                        }
+                    } catch {
+                        if Task.isCancelled { break }
+                        Log.info("DaemonClient: sessions stream connection failed: \(error)")
+                    }
+                    if Task.isCancelled { break }
+                    // The daemon is gone, and its sessions with it as far as a sketch
+                    // is concerned: say so rather than leave a stale list on the iPad.
+                    continuation.yield(.empty)
                     await sleep(backoff.next())
                 }
                 continuation.finish()

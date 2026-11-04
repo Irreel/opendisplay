@@ -8,14 +8,14 @@ final class MenuPresentationTests: XCTestCase {
     private func claude(
         _ display: DisplayState,
         daemonGaveUp: Bool = false,
-        secondSubscriber: Bool = false,
+        sessions: SessionsMessage = .empty,
         pendingUploads: Int = 0,
         startBlocker: StartBlocker? = nil
     ) -> RowPresentation {
         MenuPresentation.claudeCodeRow(
             display: display,
             daemonGaveUp: daemonGaveUp,
-            secondSubscriber: secondSubscriber,
+            sessions: sessions,
             pendingUploads: pendingUploads,
             startBlocker: startBlocker
         )
@@ -50,14 +50,69 @@ final class MenuPresentationTests: XCTestCase {
         XCTAssertEqual(row.tint, .red)
         XCTAssertEqual(row.subline, "Check the Terminal window")
         XCTAssertEqual(row.action, .retry)
+        let help = MenuPresentation.launchHelp(.launchTimedOut)
+        XCTAssertTrue(help?.contains("trust the folder") ?? false, "X10: the trust question, whose default is no")
+        XCTAssertTrue(help?.contains("organization") ?? false, "X10: the block an organisation can set")
+        XCTAssertNil(MenuPresentation.launchHelp(.launchPending))
+        XCTAssertNil(MenuPresentation.launchHelp(.ownedAttached))
     }
 
-    func testConnectedOffersDisconnect() {
+    private func entry(_ id: String, folder: String, title: String? = nil, branch: String? = nil,
+                       lastReplyAt: String? = nil, state: CanvasSessionState = .idle) -> CanvasSessionEntry {
+        CanvasSessionEntry(id: id, folder: folder, title: title, branch: branch,
+                           startedAt: "2026-10-05T10:00:00.000Z", lastReplyAt: lastReplyAt, state: state)
+    }
+
+    func testConnectedOffersANewSessionNotADisconnect() {
         let row = claude(.ownedAttached)
         XCTAssertEqual(row.word, "Connected")
         XCTAssertEqual(row.tint, .green)
         XCTAssertNil(row.subline)
-        XCTAssertEqual(row.action, .disconnect)
+        XCTAssertEqual(row.action, .newSession, "a session ends in its Terminal; the app can only start another")
+    }
+
+    func testConnectedWithATargetHasNoSubline() {
+        let one = SessionsMessage(sessions: [entry("a", folder: "acme-web")], target: "a")
+        XCTAssertNil(claude(.ownedAttached, sessions: one).subline)
+
+        let two = SessionsMessage(sessions: [entry("a", folder: "acme-web"), entry("b", folder: "docs")], target: "b")
+        let row = claude(.ownedAttached, sessions: two)
+        XCTAssertEqual(row.word, "Connected")
+        XCTAssertNil(row.subline, "the session list ticks the target; the row doesn't repeat it")
+    }
+
+    func testSeveralSessionsAndNoTargetAsksForAPick() {
+        let pick = SessionsMessage(sessions: [entry("a", folder: "acme-web"), entry("b", folder: "docs")], target: nil)
+        let row = claude(.ownedAttached, sessions: pick)
+        XCTAssertEqual(row.word, "Choose one")
+        XCTAssertEqual(row.tint, .orange)
+        XCTAssertEqual(row.subline, "Pick which session gets sketches")
+    }
+
+    func testAWaitingTargetSaysSoOnTheMacToo() {
+        let waiting = SessionsMessage(sessions: [entry("a", folder: "acme-web", state: .waiting)], target: "a")
+        XCTAssertEqual(claude(.ownedAttached, sessions: waiting).subline, "Claude Code is waiting for you in the Terminal")
+    }
+
+    func testANewSessionButtonWaitsForAServerBuildButKeepsItsSubline() {
+        let waiting = SessionsMessage(sessions: [entry("a", folder: "acme-web", state: .waiting)], target: "a")
+        let row = claude(.ownedAttached, sessions: waiting, startBlocker: .noServerBuild)
+        XCTAssertEqual(row.action, .newSession)
+        XCTAssertFalse(row.actionEnabled)
+        XCTAssertEqual(row.subline, "Claude Code is waiting for you in the Terminal")
+    }
+
+    func testSessionDetailTellsTwoSessionsInOneFolderApart() {
+        let clock: (String) -> String? = { $0.hasPrefix("2026-10-05T10:00") ? "10:00" : "10:42" }
+        XCTAssertEqual(
+            MenuPresentation.sessionDetail(entry("a", folder: "acme", title: "fix header", branch: "main", lastReplyAt: "2026-10-05T10:42:00Z"), clock: clock),
+            "fix header \u{00B7} main \u{00B7} replied 10:42"
+        )
+        XCTAssertEqual(
+            MenuPresentation.sessionDetail(entry("b", folder: "acme", branch: "feat/nav"), clock: clock),
+            "Started 10:00 \u{00B7} feat/nav", "no title: the start time stands in (X25)"
+        )
+        XCTAssertEqual(MenuPresentation.sessionDetail(entry("c", folder: "acme"), clock: { _ in nil }), "")
     }
 
     func testPendingSketchesBecomeTheSubline() {
@@ -67,9 +122,9 @@ final class MenuPresentationTests: XCTestCase {
 
     func testExistingSessionPointsToDetails() {
         let row = claude(.existingSessionDetected)
-        XCTAssertEqual(row.word, "Another session")
+        XCTAssertEqual(row.word, "Connected elsewhere")
         XCTAssertEqual(row.tint, .orange)
-        XCTAssertEqual(row.subline, "A Claude Code session this app didn't start is attached")
+        XCTAssertEqual(row.subline, "Claude Code is connected to another copy of Design Canvas")
         XCTAssertEqual(row.action, .details)
     }
 
@@ -92,23 +147,30 @@ final class MenuPresentationTests: XCTestCase {
         let row = claude(.noDaemon, daemonGaveUp: true)
         XCTAssertEqual(row.word, "Stopped")
         XCTAssertEqual(row.tint, .red)
-        XCTAssertEqual(row.subline, "Stopped retrying")
+        XCTAssertEqual(row.subline, "Design Canvas's server quit each time it started")
         XCTAssertEqual(row.action, .retry)
     }
 
-    func testSecondSubscriberWarnsButKeepsTheAction() {
-        let row = claude(.ownedAttached, secondSubscriber: true, pendingUploads: 2)
+    func testAConnectedTargetShowsThePendingCount() {
+        let one = SessionsMessage(sessions: [entry("a", folder: "acme-web")], target: "a")
+        let row = claude(.ownedAttached, sessions: one, pendingUploads: 2)
         XCTAssertEqual(row.word, "Connected")
-        XCTAssertEqual(row.subline, "Two sessions are attached; sketches may go to either")
-        XCTAssertEqual(row.action, .disconnect)
+        XCTAssertEqual(row.subline, "2 sketches waiting to send")
     }
 
     func testStartBlockerDisablesStartAndSaysWhy() {
-        let noProject = claude(.daemonOnly, startBlocker: .noProject)
-        XCTAssertEqual(noProject.action, .start)
-        XCTAssertFalse(noProject.actionEnabled)
-        XCTAssertEqual(noProject.subline, "Choose a project first")
-        XCTAssertEqual(claude(.daemonOnly, startBlocker: .noServerBuild).subline, "Set the server build in Settings")
+        let noServer = claude(.daemonOnly, startBlocker: .noServerBuild)
+        XCTAssertEqual(noServer.action, .start)
+        XCTAssertFalse(noServer.actionEnabled)
+        XCTAssertEqual(noServer.subline, "Set the server build in Settings")
+    }
+
+    /// XG8: Start asks for the folder itself, so not having picked one blocks nothing.
+    func testStartIsOfferedWithNoBlocker() {
+        let row = claude(.daemonOnly)
+        XCTAssertEqual(row.action, .start)
+        XCTAssertTrue(row.actionEnabled)
+        XCTAssertNil(row.subline)
     }
 
     func testEveryDisplayStateStaysDistinguishable() {
@@ -132,15 +194,94 @@ final class MenuPresentationTests: XCTestCase {
         let row = MenuPresentation.iPadPlaceholder(screenRecordingGranted: true)
         XCTAssertEqual(row.word, "Not connected")
         XCTAssertEqual(row.tint, .secondary)
-        XCTAssertEqual(row.subline, "Open Design Canvas on the iPad")
+        XCTAssertEqual(row.subline, "Open Design Canvas on the iPad or iPhone")
         XCTAssertNil(row.action)
     }
 
-    func testConnectedDeviceKeepsTheEngineStatus() {
-        let row = MenuPresentation.deviceRow(EngineDevice(id: "d1", name: "Amy's iPad", status: "Streaming", onUSB: true))
-        XCTAssertEqual(row.word, "Streaming")
+    // Each engine state reads as one short word, so the device name is never the thing that
+    // truncates in a 320-point popover; what the user has to do goes underneath.
+
+    private func row(_ state: EngineDevice.State) -> RowPresentation {
+        MenuPresentation.deviceRow(EngineDevice(id: "d1", name: "Amy's iPad", state: state, onUSB: true))
+    }
+
+    func testAMirroringDeviceIsGreen() {
+        let row = row(.mirroring)
+        XCTAssertEqual(row.word, "Mirroring")
         XCTAssertEqual(row.tint, .green)
+        XCTAssertNil(row.subline)
         XCTAssertEqual(row.action, .disconnect)
+    }
+
+    func testAConnectingDeviceSaysSo() {
+        let row = row(.connecting)
+        XCTAssertEqual(row.word, "Connecting\u{2026}")
+        XCTAssertEqual(row.tint, .orange)
+        XCTAssertNil(row.subline)
+    }
+
+    func testADeviceAskingItsUserSaysWhereToAnswer() {
+        let row = row(.awaitingApproval)
+        XCTAssertEqual(row.word, "Asking\u{2026}")
+        XCTAssertEqual(row.tint, .orange)
+        XCTAssertEqual(row.subline, "Tap Switch on the iPad to mirror this Mac")
+    }
+
+    func testPairingSaysWhereToLook_andNotPairedOffersAnotherTry() {
+        let pairing = row(.pairing)
+        XCTAssertEqual(pairing.word, "Pairing\u{2026}")
+        XCTAssertEqual(pairing.subline, "Check the code on the iPad and on this Mac")
+        let notPaired = row(.notPaired)
+        XCTAssertEqual(notPaired.word, "Not paired")
+        XCTAssertEqual(notPaired.action, .connect)
+    }
+
+    func testAFoundDeviceGetsTheNextStepUnderneath() {
+        let row = row(.waitingForApp)
+        XCTAssertEqual(row.word, "Found")
+        XCTAssertEqual(row.subline, "Open Design Canvas on the iPad or iPhone")
+        XCTAssertEqual(row.action, .disconnect)
+    }
+
+    func testAnAsleepDeviceSaysItResumesOnWake() {
+        let row = row(.asleep)
+        XCTAssertEqual(row.word, "Asleep")
+        XCTAssertEqual(row.tint, .secondary)
+        XCTAssertEqual(row.subline, "Mirroring resumes when it wakes")
+    }
+
+    func testAnUnreachableDeviceSaysHowToReachIt() {
+        let row = row(.unreachable)
+        XCTAssertEqual(row.word, "Not reachable")
+        XCTAssertEqual(row.subline, "Plug it in, or open Design Canvas on it on the same WiFi")
+    }
+
+    func testADeviceAnotherMacTookIsInUse() {
+        let row = row(.inUseElsewhere)
+        XCTAssertEqual(row.word, "In use")
+        XCTAssertEqual(row.tint, .orange)
+        XCTAssertEqual(row.subline, "Another Mac is mirroring to it")
+    }
+
+    func testAVersionMismatchIsRed_andSaysWhatToInstall() {
+        let row = row(.needsUpdate)
+        XCTAssertEqual(row.word, "Update needed")
+        XCTAssertEqual(row.tint, .red, "a red state has a way out (D7): the sub-line")
+        XCTAssertEqual(row.subline, "Install the same Design Canvas version on it and on this Mac")
+    }
+
+    func testEveryStateCanBeDisconnected() {
+        let states: [EngineDevice.State] = [.connecting, .pairing, .notPaired, .awaitingApproval, .mirroring,
+                                            .waitingForApp, .asleep, .unreachable, .inUseElsewhere, .needsUpdate]
+        for state in states where state != .notPaired {
+            XCTAssertEqual(row(state).action, .disconnect, "\(state)")
+        }
+        XCTAssertEqual(Set(states.map { row($0).word }).count, states.count, "every state stays distinguishable (D7)")
+    }
+
+    func testOnlyAMirroringDeviceCountsAsConnected() {
+        XCTAssertTrue(EngineDevice(id: "d1", name: "iPad", state: .mirroring, onUSB: true).connected)
+        XCTAssertFalse(EngineDevice(id: "d1", name: "iPad", state: .waitingForApp, onUSB: true).connected)
     }
 
     func testDiscoveredDeviceIsAvailable() {
@@ -162,11 +303,11 @@ final class MenuPresentationTests: XCTestCase {
     func testSummaryWaitsForAnIPad() {
         XCTAssertEqual(
             MenuPresentation.summary(screenRecordingGranted: true, iPadConnected: false, claude: claude(.ownedAttached)),
-            "Waiting for an iPad"
+            "Waiting for an iPad or iPhone"
         )
         XCTAssertEqual(
             MenuPresentation.summary(screenRecordingGranted: true, iPadConnected: false, claude: claude(.noDaemon)),
-            "Waiting for an iPad"
+            "Waiting for an iPad or iPhone"
         )
     }
 
@@ -184,7 +325,17 @@ final class MenuPresentationTests: XCTestCase {
         )
         XCTAssertEqual(
             MenuPresentation.summary(screenRecordingGranted: true, iPadConnected: false, claude: claude(.launchTimedOut)),
-            "Check the Terminal window"
+            "Claude Code \u{2014} Not connected"
+        )
+    }
+
+    /// The header reads as the whole app's state, so a server that stopped while the iPad
+    /// mirrors must still be named as Claude Code's, never stand alone as the title.
+    func testSummaryNamesClaudeCodeWhenItsServerStopped() {
+        XCTAssertEqual(
+            MenuPresentation.summary(screenRecordingGranted: true, iPadConnected: true,
+                                     claude: claude(.noDaemon, daemonGaveUp: true)),
+            "Claude Code \u{2014} Stopped"
         )
     }
 

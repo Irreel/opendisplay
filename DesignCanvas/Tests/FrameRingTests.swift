@@ -7,66 +7,67 @@ import Foundation
 
 final class FrameRingTests: XCTestCase {
 
+    private let at = Date(timeIntervalSince1970: 1_700_000_000)
+
     private func makeBuffer(color: TestImages.RGBA = TestImages.RGBA(1, 2, 3)) -> CVPixelBuffer {
         TestImages.solidBGRAPixelBuffer(width: 4, height: 4, color: color)
     }
 
     func test_emptyRing_returnsNil() {
         let ring = FrameRing()
-        XCTAssertNil(ring.frame(at: 1000))
+        XCTAssertNil(ring.frame(1))
     }
 
-    func test_exactMatch_wins() {
+    /// A freeze names the frame the iPad is showing by number; the ring
+    /// holds that frame or misses, it never offers a neighbour.
+    func test_onlyAnExactNumberMatches() {
         var ring = FrameRing()
-        ring.append(makeBuffer(), captureMs: 1000)
-        ring.append(makeBuffer(), captureMs: 2000)
+        ring.append(makeBuffer(), frame: 10, capturedAt: at)
+        ring.append(makeBuffer(), frame: 12, capturedAt: at.addingTimeInterval(1))
 
-        let found = ring.frame(at: 2000)
-        XCTAssertEqual(found?.captureMs, 2000)
+        XCTAssertEqual(ring.frame(12)?.capturedAt, at.addingTimeInterval(1))
+        XCTAssertNil(ring.frame(11))
+        XCTAssertTrue(ring.contains(10))
+        XCTAssertFalse(ring.contains(11))
     }
 
-    func test_nearestWithinTolerance_34ms() {
+    func test_keepsEachFramesCaptureTime() {
         var ring = FrameRing()
-        ring.append(makeBuffer(), captureMs: 1000)
-
-        let found = ring.frame(at: 1034)
-        XCTAssertEqual(found?.captureMs, 1000)
+        ring.append(makeBuffer(), frame: 1, capturedAt: at)
+        XCTAssertEqual(ring.frame(1)?.capturedAt, at)
     }
 
-    func test_35msAway_returnsNil() {
-        var ring = FrameRing()
-        ring.append(makeBuffer(), captureMs: 1000)
+    /// Several iPads encode the same captured frame; it is stored once.
+    func test_aFrameAlreadyHeld_isNotStoredAgain() {
+        var ring = FrameRing(capacity: 2)
+        ring.append(makeBuffer(color: TestImages.RGBA(10, 0, 0)), frame: 1, capturedAt: at)
+        ring.append(makeBuffer(color: TestImages.RGBA(20, 0, 0)), frame: 1, capturedAt: at)
+        ring.append(makeBuffer(), frame: 2, capturedAt: at)
 
-        XCTAssertNil(ring.frame(at: 1035))
+        XCTAssertEqual(ring.count, 2)
+        guard let stored = ring.frame(1)?.pixelBuffer else { return XCTFail("frame 1 was evicted") }
+        XCTAssertEqual(TestImages.pixel(inBGRA: stored, x: 0, y: 0), TestImages.RGBA(10, 0, 0))
     }
 
-    func test_tie_prefersOlder() {
-        var ring = FrameRing()
-        ring.append(makeBuffer(), captureMs: 1000) // older
-        ring.append(makeBuffer(), captureMs: 1020) // newer; both 10ms from 1010
-
-        let found = ring.frame(at: 1010)
-        XCTAssertEqual(found?.captureMs, 1000)
-    }
-
-    func test_capacity16_evictsOldest() {
-        var ring = FrameRing(capacity: 16)
-        for i in 0..<17 {
-            ring.append(makeBuffer(), captureMs: Int64(i))
+    func test_fullRing_evictsOldest() {
+        let capacity = FrameRing.defaultCapacity
+        var ring = FrameRing(capacity: capacity)
+        for i in 0...capacity {
+            ring.append(makeBuffer(), frame: UInt64(i), capturedAt: at)
         }
-        XCTAssertEqual(ring.count, 16)
-        XCTAssertNil(ring.frame(at: 0, toleranceMs: 0)) // frame 0 was evicted
-        XCTAssertEqual(ring.frame(at: 16, toleranceMs: 0)?.captureMs, 16)
+        XCTAssertEqual(ring.count, capacity)
+        XCTAssertNil(ring.frame(0), "frame 0 was evicted")
+        XCTAssertNotNil(ring.frame(UInt64(capacity)))
     }
 
     func test_append_deepCopies_BGRA() {
         var ring = FrameRing()
         let source = makeBuffer(color: TestImages.RGBA(10, 20, 30))
-        ring.append(source, captureMs: 1)
+        ring.append(source, frame: 1, capturedAt: at)
 
         TestImages.setPixel(inBGRA: source, x: 0, y: 0, color: TestImages.RGBA(200, 200, 200))
 
-        guard let stored = ring.frame(at: 1)?.pixelBuffer else {
+        guard let stored = ring.frame(1)?.pixelBuffer else {
             return XCTFail("expected a stored frame")
         }
         XCTAssertEqual(TestImages.pixel(inBGRA: stored, x: 0, y: 0), TestImages.RGBA(10, 20, 30))
@@ -75,24 +76,28 @@ final class FrameRingTests: XCTestCase {
     func test_append_deepCopies_NV12() {
         var ring = FrameRing()
         let source = TestImages.solidNV12PixelBuffer(width: 4, height: 4, gray: 100)
-        ring.append(source, captureMs: 1)
+        ring.append(source, frame: 1, capturedAt: at)
 
         TestImages.setLuma(inNV12: source, x: 0, y: 0, value: 250)
 
-        guard let stored = ring.frame(at: 1)?.pixelBuffer else {
+        guard let stored = ring.frame(1)?.pixelBuffer else {
             return XCTFail("expected a stored frame")
         }
         let expectedLuma = TestImages.luma(inNV12: TestImages.solidNV12PixelBuffer(width: 4, height: 4, gray: 100), x: 0, y: 0)
         XCTAssertEqual(TestImages.luma(inNV12: stored, x: 0, y: 0), expectedLuma)
     }
 
-    func test_removeAll() {
-        var ring = FrameRing()
-        ring.append(makeBuffer(), captureMs: 1)
-        ring.append(makeBuffer(), captureMs: 2)
-        ring.removeAll()
+    // MARK: - CleanFrameStore
 
-        XCTAssertEqual(ring.count, 0)
-        XCTAssertNil(ring.frame(at: 1))
+    func test_store_keepsACopy_andAnswersByNumber() {
+        let store = CleanFrameStore(capacity: 4)
+        let source = makeBuffer(color: TestImages.RGBA(10, 20, 30))
+        store.keep(source, frame: 5, capturedAt: at)
+        TestImages.setPixel(inBGRA: source, x: 0, y: 0, color: TestImages.RGBA(200, 200, 200))
+
+        guard let found = store.cleanFrame(5) else { return XCTFail("expected frame 5") }
+        XCTAssertEqual(found.capturedAt, at)
+        XCTAssertEqual(TestImages.pixel(inBGRA: found.pixelBuffer, x: 0, y: 0), TestImages.RGBA(10, 20, 30))
+        XCTAssertNil(store.cleanFrame(6))
     }
 }

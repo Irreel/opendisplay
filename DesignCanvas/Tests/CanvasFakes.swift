@@ -1,23 +1,35 @@
+import CoreVideo
 import Foundation
 import XCTest
 
-// NOTE: this hostless bundle compiles DesignCanvas/Mac/Engine and
-// Mac/SenderCanvasHooks.swift straight into it (see project.yml), so
+// NOTE: this hostless bundle compiles Shared, Mac/Engine, Mac/Stream and the
+// iPad's logic and receiver straight into it (see project.yml), so
 // CanvasSession, DaemonAPI and CanvasOutbound are available without an import.
 
-/// Records what a `CanvasSession` handed to the sender, and answers with the
-/// same synchronous rule `MacSender` uses: true means "serialisable and under
-/// the 32768-byte limit", never "delivered" (see `CanvasOutbound`).
+/// Records what a `CanvasSession` handed to its link, and answers with the
+/// same synchronous rule `MirrorLink` uses: true means "could be framed",
+/// never "delivered" (see `CanvasOutbound`).
 final class FakeOutbound: CanvasOutbound {
+    struct Sent {
+        let type: String
+        let object: [String: Any]
+        let attachment: Data
+    }
+
     private let lock = NSLock()
-    private var storedObjects: [[String: Any]] = []
-    private var storedPayloads: [Data] = []
+    private var storedSent: [Sent] = []
 
-    /// Objects passed to `sendCanvasJSON`, in order.
-    var objects: [[String: Any]] { lock.withLock { storedObjects } }
+    /// Everything sent, in order.
+    var sent: [Sent] { lock.withLock { storedSent } }
 
-    /// Byte payloads passed to `sendCanvasJSONData`, in order.
-    var payloads: [Data] { lock.withLock { storedPayloads } }
+    /// Every message as its JSON object, with `type` in it as on the wire.
+    var objects: [[String: Any]] {
+        sent.map { message in
+            var object = message.object
+            object["type"] = message.type
+            return object
+        }
+    }
 
     /// The objects whose `type` is `type`, in order.
     func objects(ofType type: String) -> [[String: Any]] {
@@ -25,19 +37,24 @@ final class FakeOutbound: CanvasOutbound {
     }
 
     @discardableResult
-    func sendCanvasJSON(_ object: [String: Any]) -> Bool {
-        guard JSONSerialization.isValidJSONObject(object),
-              let payload = try? JSONSerialization.data(withJSONObject: object),
-              payload.count > 0, payload.count < CanvasWire.senderJSONLimit else { return false }
-        lock.withLock { storedObjects.append(object) }
+    func send(_ type: String, _ object: [String: Any], attachment: Data) -> Bool {
+        guard WireCodec.message(type, object, attachment: attachment) != nil else { return false }
+        lock.withLock { storedSent.append(Sent(type: type, object: object, attachment: attachment)) }
         return true
     }
+}
 
-    @discardableResult
-    func sendCanvasJSONData(_ data: Data) -> Bool {
-        guard data.count > 0, data.count < CanvasWire.senderJSONLimit else { return false }
-        lock.withLock { storedPayloads.append(data) }
-        return true
+/// A frame ring a test fills by hand.
+final class FakeFrames: CleanFrameSource {
+    private let lock = NSLock()
+    private var frames: [UInt64: CleanFrame] = [:]
+
+    func put(_ pixelBuffer: CVPixelBuffer, frame: UInt64, capturedAt: Date = Date(timeIntervalSince1970: 1_700_000_000)) {
+        lock.withLock { frames[frame] = CleanFrame(pixelBuffer: pixelBuffer, capturedAt: capturedAt) }
+    }
+
+    func cleanFrame(_ frame: UInt64) -> CleanFrame? {
+        lock.withLock { frames[frame] }
     }
 }
 
@@ -125,6 +142,29 @@ final class FakeDaemon: DaemonAPI {
 
     /// Yields `.connected` at once, as `DaemonClient` does when a connection
     /// is established, then whatever `emit`/`emitConnected` push into it.
+    // MARK: - sessions (the Claude Code mod)
+
+    private var storedTargetCalls: [(instance: String, fromIPad: Bool)] = []
+    private var sessionsContinuation: AsyncStream<DaemonSessions>.Continuation?
+
+    /// Every `setTarget` call, in order.
+    var targetCalls: [(instance: String, fromIPad: Bool)] { lock.withLock { storedTargetCalls } }
+
+    func setTarget(instance: String, fromIPad: Bool) async throws {
+        lock.withLock { storedTargetCalls.append((instance, fromIPad)) }
+    }
+
+    func sessionUpdates() -> AsyncStream<DaemonSessions> {
+        AsyncStream { continuation in
+            lock.withLock { sessionsContinuation = continuation }
+        }
+    }
+
+    /// What the daemon's sessions stream would send.
+    func emitSessions(_ sessions: DaemonSessions) {
+        lock.withLock { sessionsContinuation }?.yield(sessions)
+    }
+
     func roundUpdates() -> AsyncStream<RoundStreamEvent> {
         AsyncStream { continuation in
             lock.withLock { updatesContinuation = continuation }
