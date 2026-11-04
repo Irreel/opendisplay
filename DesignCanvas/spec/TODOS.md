@@ -2,13 +2,13 @@
 
 ## Design Canvas
 
-### Encrypted WiFi transport with a pairing code (OpenDisplay #16)
+### Encrypted WiFi transport with a pairing step
 
-**What:** TLS on the OpenDisplay wire with a self-signed certificate exchanged at first pairing, so WiFi sessions cannot be spoofed or sniffed.
+**What:** TLS on the Mac-iPad link with keys exchanged once at pairing (over the cable, or with a code shown on one device and typed on the other), so WiFi sessions can be neither spoofed nor sniffed: e.g. `NWProtocolTLS` with a pre-shared key or pinned per-device certificates.
 
-**Why:** The MVP accepts OpenDisplay's trust-on-first-use, which leaves a LAN injection path: anyone who advertises the iPad's cleartext Bonjour id gets dialed and can push a sketch into the user's Claude Code session. The Claude Code Channels reference also requires an authenticated sender before the permission relay can be declared, so this blocks permission prompts on the iPad.
+**Why:** Nothing on the link is authenticated, which leaves LAN paths open. Anyone who advertises a trusted iPad's cleartext Bonjour id gets dialed, receives the Mac's screen, and can push a sketch into the user's Claude Code session. Any machine can ask the iPad to switch to it, which the user answers on the iPad without being able to tell who is asking. The resume token that lets a Mac back in after a dead link crosses WiFi in the clear. The Claude Code Channels reference also requires an authenticated sender before the permission relay can be declared, so this blocks permission prompts on the iPad.
 
-**Context:** OpenDisplay upstream tracks this as roadmap issue #16 (github.com/peetzweg/opendisplay/issues/16). Design Canvas consumes it once upstream or this fork ships it. Start at PROTOCOL.md sections 2.1 and 10 (two-phase migration rules); it is a protocol-version change on both apps. Eng review 2026-09-16, decision 3A.
+**Context:** The link is Design Canvas's own since 2026-11-03 (`wire-protocol.md`); OpenDisplay upstream tracks the same need for its own wire as roadmap issue #16. Both apps ship together, so this is a wire version bump with no migration. Start at `wire-protocol.md` sections 1, 5.1 and 5.6, `Mac/Stream/MirrorLink.swift` (dialing) and `iOS/Stream/CanvasReceiver.swift` (listening, adoption). With it, the switch question, the trust-on-first-use rules and the resume token's silence rule can all go. Eng review 2026-09-16, decision 3A.
 
 **Effort:** XL
 **Priority:** P1
@@ -54,9 +54,9 @@
 
 **What:** An additive `annotationAck {ok, reason?}` control message, sender to receiver: the Mac sends it once an `annotation` has been queued for upload (or refused), and the iPad leaves SENDING on that rather than on its own socket write completing.
 
-**Why:** "Sent" on the iPad means the socket write finished (plan ruling 5), which is not the same as the Mac having taken the round. The final-review fix for C1 closes the common case — a link drop no longer loses the held freeze capture, and a re-sent `annotation` is deduplicated by its `t` — but if the Mac *app itself* restarts between Done and the re-send, the parked capture is gone with it: the iPad shows the sketch as sent and no round ever appears. An ack is the only way to make "sent" mean "accepted".
+**Why:** "Sent" on the iPad means the socket write finished (plan ruling 5), which is not the same as the Mac having taken the round. The final-review fix for C1 closes the common case — a link drop no longer loses the held freeze capture, and a re-sent `annotation` is deduplicated by its `t` — but if the Mac *app itself* restarts between Done and the re-send, the held capture is gone with it: the iPad shows the sketch as sent and no round ever appears. An ack is the only way to make "sent" mean "accepted".
 
-**Context:** Deferred by the controller in the final fix wave (final-fix-findings.md, C1) to keep that wave free of new wire messages. Start at PROTOCOL.md section 11.2 (the message table) and 11.1 (the capability gate); then `DrawModeStateMachine` (a `.acked`/`.rejected` event beside `.sent`), `CanvasModel.sendAnnotation`, and `CanvasSession.handleAnnotation`, which is where accept/refuse is already decided. Additive, so no `pv` bump.
+**Context:** Deferred by the controller in the final fix wave (final-fix-findings.md, C1) to keep that wave free of new wire messages. Start at `wire-protocol.md` section 6 (the message table); then `DrawModeStateMachine` (a `.acked`/`.rejected` event beside `.sent`), `CanvasModel.sendAnnotation`, and `CanvasSession.handleAnnotation`, which is where accept/refuse is already decided. A wire change both apps ship together.
 
 **Effort:** M
 **Priority:** P2
@@ -64,11 +64,11 @@
 
 ### Frame ring per-frame cost (I6)
 
-**What:** Measure what `FrameRing`'s deep copy costs the capture path on real hardware, then reduce it: a `CVPixelBufferPool` instead of a fresh `CVPixelBufferCreate` per frame, the copy moved off the sender's queue, and `CVBufferPropagateAttachments` so the copy keeps the source's attachments.
+**What:** Measure what the frame ring's deep copy costs the capture path on real hardware, then reduce it: a `CVPixelBufferPool` instead of a fresh `CVPixelBufferCreate` per frame, the copy moved off the stream queue, and `CVBufferPropagateAttachments` so the copy keeps the source's attachments.
 
-**Why:** The ring copies every captured frame, at capture rate, on the sender's serial queue — the queue that also feeds the encoder. The cost is unmeasured, and a per-frame allocation plus a row-by-row memcpy of a full-resolution frame is exactly the kind of work that shows up as dropped frames on a 4K display.
+**Why:** The ring copies every frame handed to an encoder (once, however many iPads encode it), on the stream queue — the queue that also feeds the encoders. The cost is unmeasured, and a per-frame allocation plus a row-by-row memcpy of a full-resolution frame is exactly the kind of work that shows up as dropped frames on a 4K display.
 
-**Context:** Reviewed as I6 in the final fix wave and deferred for want of a measurement: the numbers decide whether any of this is worth the complexity. Measure frame drops (`MacSender`'s `drops`/`encDrops` counters, already on the `ping`) with and without a canvas delegate injected, on hardware, before changing anything. `DesignCanvas/Mac/Engine/FrameRing.swift`, `deepCopy(_:)`.
+**Context:** Reviewed as I6 in the final fix wave and deferred for want of a measurement: the numbers decide whether any of this is worth the complexity. Time `CleanFrameStore.keep` on hardware, and count how often a link's latest-frame mailbox replaces a waiting frame, before changing anything. `DesignCanvas/Mac/Engine/FrameRing.swift`, `deepCopy(_:)`; `Mac/Stream/MirrorLink.swift`, `submit`.
 
 **Effort:** M
 **Priority:** P2
@@ -134,13 +134,13 @@
 **Priority:** P2
 **Depends on:** None.
 
-### Parked freeze captures expire only when fetched
+### Held freeze captures expire only when used
 
-**What:** Sweep expired entries out of `CanvasCaptureParkingLot`, either on every `park` or on a timer.
+**What:** Drop a `CanvasSession`'s held freeze capture once it has expired, on a timer or when the iPad's link drops for good, instead of only when an `annotation` arrives.
 
-**Why:** A device that freezes once and never returns leaves a full-resolution frame retained for the life of the Mac app. The 10-minute expiry is only evaluated when the same device asks for its capture.
+**Why:** An iPad that freezes once and never returns leaves a full-resolution frame retained for the life of the Mac app. The 10-minute expiry (`CanvasSession.heldCaptureExpiry`) is only evaluated when the same iPad sends its sketch. (Until 2026-11-03 the frame waited in a parking lot with the same flaw; sessions now live per iPad and hold it themselves.)
 
-**Context:** Minor from the scoped re-review of the final fix wave (2026-09-17). Start at `DesignCanvas/Mac/Engine/CanvasCaptureParkingLot.swift`.
+**Context:** Minor from the scoped re-review of the final fix wave (2026-09-17). Start at `DesignCanvas/Mac/Engine/CanvasSession.swift`, `handleFreeze` and `handleAnnotation`.
 
 **Effort:** S
 **Priority:** P3
@@ -194,7 +194,7 @@ From a read of the Claude Code changelog on 2026-10-06. Backlog only, not priori
 
 **Why:** With more than one device the rows cannot be told apart.
 
-**Context:** Seen on the Mac on 2026-10-06, not traced. "iPhone / iPad" is the fallback when usbmuxd gives no name: `Mac/Usbmux.swift` (`label`) and `Mac/SenderController.swift`.
+**Context:** Seen on the Mac on 2026-10-06, not traced, with the OpenDisplay-based sender. Since 2026-11-03 the menu names a cabled iPad by its lockdown name, then the name in its hello, then its Bonjour name, and falls back to "iPad" (`MirrorEngine.publish`, `VisibleDevice.name`); whether usbmuxd's name lookup (`UsbmuxDeviceWatcher.resolveName`) is what fails is still to be seen on hardware.
 
 **Effort:** S
 **Priority:** Not set

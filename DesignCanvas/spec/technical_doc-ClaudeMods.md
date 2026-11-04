@@ -1,6 +1,6 @@
 # Design Canvas Claude Mods: Technical Specification
 
-**Status:** v0.3, 2026-10-05: Phase 1 is implemented on the `claude-mods` branch; section 13 says what was built, where it differs from the sections above it, and what was found once it ran (v0.2 followed the spike; v0.1 preceded it). Companion to [PRD-ClaudeMods.md](./PRD-ClaudeMods.md) v0.3. Requirement IDs (X), owner decisions (XG) and spike questions (SQ) are shared with that PRD; technical questions raised here are TQ.
+**Status:** v0.4, 2026-11-03: section 5 now points at `wire-protocol.md`, Design Canvas's own Mac-iPad link, where these messages live since the link stopped being OpenDisplay's; section 13 is left as the dated record of what was built on 2026-10-05. v0.3, 2026-10-05: Phase 1 is implemented on the `claude-mods` branch; section 13 says what was built, where it differs from the sections above it, and what was found once it ran (v0.2 followed the spike; v0.1 preceded it). Companion to [PRD-ClaudeMods.md](./PRD-ClaudeMods.md) v0.3. Requirement IDs (X), owner decisions (XG) and spike questions (SQ) are shared with that PRD; technical questions raised here are TQ.
 **Extends:** [technical_doc.md](./technical_doc.md) v0.5 and [technical_doc-BlankCanvas.md](./technical_doc-BlankCanvas.md) v0.2. Those documents own the engine, the store, the wire and the round up to the moment it is stored. This one specifies only the hop between the daemon and Claude Code, and what that hop adds to the two apps. It covers Phase 1; Phase 2 gets one section of notes.
 **How each API fact is known.** *Run*: observed in the spike of 2026-10-05 (section 10) or the earlier throwaway mod, on Claude Code v2.1.289. *Declared*: in the type declarations that version writes beside a mod. *Docs*: the mods pages read 2026-10-04. What is still not *run* is listed in section 12.
 
@@ -283,7 +283,7 @@ Each change is posted at once. The daemon passes it to the Mac app on the sessio
 
 ## 5. Wire additions
 
-Additive JSON control messages, no `pv` bump, under the existing `welcome.canvas` gate. Normative text belongs in `PROTOCOL.md` section 11 when built.
+Normative text: `wire-protocol.md` section 6 (since 2026-11-03; these were first built as additive messages on the OpenDisplay wire, PROTOCOL.md section 11, under its `welcome.canvas` gate).
 
 | Message | Direction | Fields | Purpose |
 |---|---|---|---|
@@ -293,10 +293,10 @@ Additive JSON control messages, no `pv` bump, under the existing `welcome.canvas
 
 The PRD's dependency table counts one message for X8 and two for the session list. `sessions` carries both, because "waiting" is a property of a session and the iPad needs the list anyway; the count is three additions either way.
 
-- **Size.** `sessions` obeys the 32768-byte rule (D23): at most 20 entries, `title` and `branch` cut to 80 characters, `folder` to 60.
+- **Size.** `sessions` carries at most 20 entries, `title` and `branch` cut to 80 characters, `folder` to 60. (On the OpenDisplay wire this kept it under the 32768-byte rule, D23; Design Canvas's own wire has no such limit, and the caps stay for the iPad's lists.)
 - **Binding (X23).** The engine passes `annotation.session` through in the upload's meta, and the daemon stamps `meta.session` from it when that session is still connected. An upload with no `session` (an older iPad) is stamped by the daemon with the target at the moment it arrives. An annotation naming a session that has since ended is stored and failed at once with `session_ended`, so the iPad shows an outcome instead of a round that never moves. A resend after a link loss carries the same `session`, since the pending annotation's bytes are kept.
 - **No target (X26).** `sessions` with several entries and no `target` disables Done on the iPad until one is picked. An older iPad still sends; the round is stored unbound and goes to whichever session becomes the target.
-- **`ping`.** `channel` keeps its values for older iPads: `attached` when a target exists, `detached` when the daemon is up with no session, `none` as today. `existing` is no longer sent, because X9 removes the state it named. `project` is the target's folder name.
+- **`status`** (`ping`'s extra fields on the OpenDisplay wire). `channel`: `attached` when a target exists, `detached` when the daemon is up with no session, `none` as today. `existing` is no longer sent, because X9 removes the state it named. `project` is the target's folder name.
 
 | iPad | Mac | Result |
 |---|---|---|

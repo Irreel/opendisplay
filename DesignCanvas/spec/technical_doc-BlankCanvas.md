@@ -1,7 +1,7 @@
 # Design Canvas, blank canvas surface: Technical Specification
 
-**Status:** Draft v0.3, 2026-11-03 (v0.2 was 2026-10-04; v0.1 was 2026-10-03). v0.3 follows the v3.1 interface: the window menu, the always-ready page and the question before a switch with ink (B6, B9). Companion to `PRD-BlankCanvas.md` v0.3. Requirement IDs (B) and gap numbers (BG) are shared with that PRD.
-**Extends:** `technical_doc.md` v0.4. That document owns the architecture, the store, the channel, and the mirror round. This one specifies only what the blank surface adds. The wire fields are normative in `PROTOCOL.md` section 11 and are described here, not redefined.
+**Status:** Draft v0.4, 2026-11-03 (v0.3 was earlier the same day; v0.2 was 2026-10-04; v0.1 was 2026-10-03). v0.4 follows Design Canvas onto its own Mac-iPad link: the blank surface needs no capability field any more (section 2), and the open question on the mirror stream no longer involves OpenDisplay (section 8). v0.3 follows the v3.1 interface: the window menu, the always-ready page and the question before a switch with ink (B6, B9). Companion to `PRD-BlankCanvas.md` v0.3. Requirement IDs (B) and gap numbers (BG) are shared with that PRD.
+**Extends:** `technical_doc.md` v0.9. That document owns the architecture, the store, the channel, and the mirror round. This one specifies only what the blank surface adds. The wire fields are normative in `wire-protocol.md` section 6 and are described here, not redefined.
 
 ## 1. Shape of the change
 
@@ -11,8 +11,8 @@ A mirror round's base image is a frame the Mac froze. A blank round's base image
 iPad                                          Mac
 surface = Blank (local choice, B1)
 Draw ── no freeze, no wait (B4)
-Done ── annotation {sketch, viewport,  ─────▶ CanvasSession.handleAnnotation
-        zoomRect: full, base: "blank"}          base == blank:
+Done ── annotation {viewport,          ─────▶ CanvasSession.handleAnnotation
+        base: "blank"} + sketch PNG             base == blank:
                                                   white page at viewport pixels
                                                   (no ring, no held capture)
                                                 UploadPipeline (unchanged)
@@ -21,32 +21,25 @@ Done ── annotation {sketch, viewport,  ─────▶ CanvasSession.hand
                                                 channel: "freehand sketch on a blank page"
 ```
 
-What does not change: `CaptureMode` (still fixed at `.mirror`), the sender (`Mac/MacSender.swift`), the menu-bar app, the frame ring, and the mirror round.
+What does not change: the capture (the main display, mirror only), the link (`Mac/Stream`), the menu-bar app, the frame ring, and the mirror round.
 
 ## 2. Wire
 
-Two additive fields, no `pv` bump. See `PROTOCOL.md` 11.2 and 11.3.
+One field, `annotation.base` (`wire-protocol.md` section 6):
 
 | Field | Direction | Meaning |
 |---|---|---|
 | `annotation.base` | iPad to Mac | `"blank"`: composite on a white page. Absent: composite on the frozen frame, as before. A blank annotation is not preceded by `freeze` |
-| `ping.blank` | Mac to iPad | `"1"`: this Mac accepts `base: "blank"`. Absent: it does not |
 
-**Why a capability (B3).** There is no ack for `annotation` (plan ruling 5): the iPad treats a completed socket write as sent. A Mac that predates this feature would drop a blank annotation for want of a freeze capture, and the iPad would show a round that never appears. The iPad therefore offers the Blank surface only while the connected Mac's `ping` carries `blank`. The field rides `ping` and not `welcome` because `ping`'s extra fields are already the canvas engine's to set (`SenderCanvasDelegate.canvasPingFields`), and `welcome` is built inside the shared sender, which this feature does not touch.
-
-| iPad | Mac | Result |
-|---|---|---|
-| new | new | Blank offered |
-| new | old | No `ping.blank`; the iPad stays on Mirror |
-| old | new | The iPad never sends `base`; `ping.blank` is ignored |
+**No capability flag (B3, since 2026-11-03).** There is no ack for `annotation` (plan ruling 5): the iPad treats a completed socket write as sent, so a Mac that could not composite a blank sketch would leave the iPad showing a round that never appears. On the OpenDisplay wire the Mac therefore advertised `ping.blank` and the iPad offered the page only to a Mac that did. Both apps now speak one wire version and every Mac accepts `base: "blank"`, so the flag is gone: the page is offered whenever a Mac is connected.
 
 ## 3. iPad
 
-**Surface (B1, B3).** `CanvasSurface` (`mirror`, `blank`) in `DesignCanvas/Shared/CanvasMessages.swift`. `CanvasModel` holds the designer's `preferredSurface` and the Mac's `macSupportsBlank`; the surface actually shown is Blank only when the preference is Blank, a Mac is connected, and it supports it. The preference is persisted by the screen (`@AppStorage`); the capability arrives through `CanvasReceiverState.handlePing` and is cleared on a new connection and on a link drop.
+**Surface (B1, B3).** `CanvasSurface` (`mirror`, `blank`) in `DesignCanvas/Shared/CanvasMessages.swift`. `CanvasModel` holds the designer's `preferredSurface`; the surface actually shown is Blank only when the preference is Blank and a Mac is connected (`whiteboardAvailable`). The preference is persisted by the screen (`@AppStorage`).
 
 **Draw Mode (B4, B5).** One new event on `DrawModeStateMachine`, `enterBlankDrawMode`: `LIVE → DRAWING` with no effects. No `pauseSync`, no `sendFreeze`, no deadline, so FREEZING is never entered. Every later transition is the existing machine, which is what keeps B5 true by construction: Done (Send), Discard, SENDING, RETRY and the resend after `hello` are the same code. The exits still emit `resumeSync`, which is a no-op when nothing was frozen.
 
-`CanvasModel.enterDrawMode` on the Blank surface does not require a displayed frame, and records the entry as `base: blank` with a full zoom rect. `done` stamps that into the pending annotation, so the bytes resent after a link loss are identical to the first attempt.
+`CanvasModel.enterDrawMode` on the Blank surface does not require a displayed frame, and records the entry as `base: blank`. `done` stamps that into the pending annotation, so the bytes resent after a link loss are identical to the first attempt.
 
 **Screen.** On the Blank surface the mirror layer shows a white page that fills the view, in place of the video (or of the waiting screen, when connected with no picture yet). The sketch surface and the reported `viewport` both use that same rect, so the sketch and the page the Mac builds have one aspect. Zoom does not apply to the page.
 
@@ -58,10 +51,10 @@ Two additive fields, no `pv` bump. See `PROTOCOL.md` 11.2 and 11.3.
 
 1. The `t` dedupe runs first, unchanged, so a resent blank annotation is dropped exactly like a resent mirror one.
 2. The page size is `CanvasSession.blankPageSize(for:)`: `viewport.w × scale` by `viewport.h × scale` pixels, each side clamped to 4096. A viewport with a non-positive side or scale is dropped with a log line. Only the size is decided on the sender's queue; the page itself (`Compositor.blankImage(width:height:)`, opaque white, sRGB) is allocated by `UploadPipeline` on its work queue, as `AnnotationJob.base = .blank(width:height:)`, so the sender's queue still does no image work.
-3. The held freeze capture and the parking lot's parked capture are neither read nor consumed. A mirror freeze that is still waiting for its own annotation is unaffected.
+3. The session's held freeze capture is neither read nor consumed. A mirror freeze that is still waiting for its own annotation is unaffected.
 4. The job goes to `UploadPipeline` as usual. No separate capture job is queued: `runAnnotation` already posts the capture when the job's has no id.
 
-The page's `capturedAt` is the moment the annotation arrived, since there is no frame time. `CanvasStatus.pingFields` always carries `blank`.
+The page's `capturedAt` is the moment the annotation arrived, since there is no frame time.
 
 `AnnotationUpload` gains `base`; the multipart `meta` part carries `"base": "blank"` for a blank round and omits the key otherwise.
 
@@ -101,8 +94,7 @@ All hostless.
 
 - `CanvasMessagesTests`: `base` round-trips; absent or unknown decodes as mirror; a mirror annotation's JSON has no `base` key.
 - `DrawModeStateMachineTests`: blank entry reaches DRAWING with no effects; Done, Cancel, Discard and link loss behave as from a frozen DRAWING.
-- `CanvasReceiverStateTests`: `ping.blank` sets the capability; an absent field clears it; a new connection resets it.
-- `CanvasModelTests`: no `freeze` is sent; no frame is required; the annotation carries `base: blank` and a full zoom rect; the resend is identical; without the capability the surface is Mirror.
+- `CanvasModelTests`: no `freeze` is sent; no frame is required; the annotation carries `base: blank` and the sketch as its attachment; the resend is identical; with no Mac connected the surface is Mirror.
 - `CompositorTests`: `blankImage` size and colour.
 - `CanvasSessionTests`: a blank annotation with no freeze uploads a white capture of the viewport's pixel size and the annotation with `base`; a resend is deduplicated; a held mirror capture survives a blank round.
 - `DaemonClientTests`: the meta part carries `base` only for a blank upload.
@@ -110,9 +102,9 @@ All hostless.
 
 ## 8. Decisions and open technical questions
 
-**Decided (owner, 2026-10-03).** Drawing is on the iPad. The page clears on send. The iPad renders the page; the Mac streams nothing new and its sender is untouched. The surface is chosen on the iPad and the Mac app has no UI for it.
+**Decided (owner, 2026-10-03).** Drawing is on the iPad. The page clears on send. The iPad renders the page; the Mac streams nothing new and its capture is untouched. The surface is chosen on the iPad and the Mac app has no UI for it.
 
 **Open.**
 
-- **BG1.** The mirror stream runs under the page. Stopping it means a second frame source or a stop/start path inside `MacSender`, which is shared with OpenDisplay.
+- **BG1.** The mirror stream runs under the page. The capture already starts and stops with the iPads that watch it (`ScreenCapture.setWanted`), so stopping it under the page is a matter of the iPad saying the page is up; it is not built.
 - **Page size cap.** 4096 px per side is above any current iPad's panel; the composite is scaled to 1568 px on the long side regardless.
