@@ -5,7 +5,7 @@ import Foundation
 enum CanvasWire {
     /// Bumped when the wire changes. Both apps ship together, so there is no
     /// negotiation: a peer that says another version is told so and dropped.
-    static let version = 1
+    static let version = 2
     /// The iPad listens here. Over USB the Mac dials this port through
     /// usbmuxd; over WiFi it finds the iPad by `serviceType`.
     static let port: UInt16 = 9100
@@ -36,11 +36,6 @@ enum CanvasWire {
     /// away unasked for this long, so a LAN neighbour cannot wear the user
     /// down with prompts.
     static let switchRequestCooldown: TimeInterval = 60
-    /// A resume token is honoured only once the session it belongs to has
-    /// been silent this long: a real reconnect comes after the old link
-    /// died, and the token crosses WiFi in the clear, so a copy of it must
-    /// not be able to take a session that is still alive.
-    static let resumeSilence: TimeInterval = 4
 
     // Link
     static let hello = "hello"
@@ -51,6 +46,16 @@ enum CanvasWire {
     static let status = "status"
     /// iPad to Mac: your hello is waiting on the iPad's user (section 5.6).
     static let asking = "asking"
+    /// iPad to Mac: you are the session; stream (section 5.1).
+    static let ready = "ready"
+    // Section 5.7: proving a paired peer, and pairing a new one.
+    static let verify = "verify"
+    static let pair = "pair"
+    static let pairCommit = "pairCommit"
+    static let pairNonce = "pairNonce"
+    static let pairConfirm = "pairConfirm"
+    /// How long pairing may wait on its users before either side gives up.
+    static let pairingTimeout: TimeInterval = 90
 
     // Canvas
     static let freeze = "freeze"

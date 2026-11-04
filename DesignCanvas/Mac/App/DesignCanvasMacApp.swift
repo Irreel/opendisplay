@@ -20,6 +20,9 @@ struct DesignCanvasMacApp: App {
             MenuBarView(model: model)
         } label: {
             Image(systemName: symbol(for: iconState))
+                // The menu-bar icon is always there, so it carries the pairing
+                // window: the menu itself may well be closed.
+                .onReceive(model.$pairingPrompt) { PairingPanel.shared.show($0, model: model) }
         }
         .menuBarExtraStyle(.window)
 

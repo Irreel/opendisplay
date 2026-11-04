@@ -54,6 +54,19 @@ struct DetailsView: View {
                 }
                 LabeledContent("Sketches waiting to send", value: String(model.pendingUploads))
             }
+            Section("Paired iPads") {
+                if model.pairedDevices.isEmpty {
+                    Text("None yet. An iPad pairs the first time it connects: both screens show a code to confirm.")
+                        .foregroundColor(.secondary)
+                }
+                ForEach(model.pairedDevices) { peer in
+                    HStack {
+                        LabeledContent(peer.name ?? "iPad",
+                                       value: "paired \(peer.pairedAt.formatted(date: .abbreviated, time: .omitted))")
+                        Button("Forget") { model.forgetPairedDevice(id: peer.id) }
+                    }
+                }
+            }
             if let warning = model.configWarning {
                 Section("Last error") {
                     Text(warning).foregroundColor(.red).textSelection(.enabled)

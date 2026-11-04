@@ -73,32 +73,17 @@ final class DeviceDirectoryTests: XCTestCase {
         XCTAssertFalse(ConnectPolicy().shouldAutoConnect(device(installID: "ID1", service: true)))
     }
 
-    func test_aWiFiClickTrustsTheIPadOverWiFi() {
+    /// Once paired (by cable or WiFi), the iPad reconnects over WiFi too: the
+    /// session proves its key, so an impostor with its id gets nothing.
+    func test_aPairedIPadReconnectsOverWiFi() {
         var policy = ConnectPolicy()
-        let wifiOnly = device(installID: "ID1", service: true)
-        policy.connected(wifiOnly)
-        XCTAssertTrue(policy.shouldAutoConnect(wifiOnly))
-    }
-
-    func test_aWiFiHelloTheUserAskedForTrustsTheIPad() {
-        var policy = ConnectPolicy()
-        policy.connectedOverWiFi(installID: "ID1")
+        policy.paired.insert("ID1")
         XCTAssertTrue(policy.shouldAutoConnect(device(installID: "ID1", service: true)))
-    }
-
-    /// The Bonjour id anything on the LAN can advertise; plugging an iPad in
-    /// must not make the Mac dial whatever claims that id over WiFi.
-    func test_aCableDoesNotTrustTheIPadOverWiFi() {
-        var policy = ConnectPolicy()
-        let cabled = device(installID: "ID1", udid: "U1", service: true)
-        XCTAssertTrue(policy.shouldAutoConnect(cabled))
-        policy.connected(cabled)
-        XCTAssertFalse(policy.trusted.contains("ID1"))
-        XCTAssertFalse(policy.shouldAutoConnect(device(installID: "ID1", service: true)))
     }
 
     func test_aClickUndoesADisconnect() {
         var policy = ConnectPolicy()
+        policy.paired.insert("ID1")
         policy.disconnected(installID: "ID1", udid: "U1")
         let both = device(installID: "ID1", udid: "U1", service: true)
         XCTAssertFalse(policy.shouldAutoConnect(both))
@@ -108,7 +93,7 @@ final class DeviceDirectoryTests: XCTestCase {
 
     func test_aDisconnectedIPadStaysOffOnEveryTransport() {
         var policy = ConnectPolicy()
-        policy.connectedOverWiFi(installID: "ID1")
+        policy.paired.insert("ID1")
         policy.disconnected(installID: "ID1", udid: "U1")
         XCTAssertFalse(policy.shouldAutoConnect(device(installID: "ID1", service: true)))
         XCTAssertFalse(policy.shouldAutoConnect(device(installID: "ID1", udid: "U1")))
@@ -117,7 +102,7 @@ final class DeviceDirectoryTests: XCTestCase {
 
     func test_aDeviceWithoutAPathIsNeverAutoConnected() {
         var policy = ConnectPolicy()
-        policy.connectedOverWiFi(installID: "ID1")
+        policy.paired.insert("ID1")
         XCTAssertFalse(policy.shouldAutoConnect(device(installID: "ID1")))
     }
 }

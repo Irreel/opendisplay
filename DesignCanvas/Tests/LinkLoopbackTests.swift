@@ -1,11 +1,13 @@
 import CoreVideo
+import CryptoKit
 import Network
 import XCTest
 
 /// Both ends of the link over a real loopback socket: the Mac's `MirrorLink`
 /// dials the iPad's `CanvasReceiver`, exactly as it would over WiFi, with no
 /// device and no screen capture. What only hardware can show (usbmuxd, the
-/// display layer on glass) is the device checklist's job.
+/// display layer on glass) is the device checklist's job. Each test's Macs
+/// are paired with its iPad up front unless the test is about pairing.
 final class LinkLoopbackTests: XCTestCase {
 
     private final class RecordingDelegate: MirrorLinkDelegate {
@@ -15,12 +17,18 @@ final class LinkLoopbackTests: XCTestCase {
         private var storedMessages: [WireMessage] = []
         private var storedDrops = 0
         private var storedLatest: CapturedFrame?
+        private var storedCodes: [String] = []
+        private var storedPaired = 0
+        /// When set, the link's pairing question is answered with it at once.
+        var answerPairing: Bool?
 
         var phases: [LinkPhase] { lock.withLock { storedPhases } }
         var phase: LinkPhase? { lock.withLock { storedPhases.last } }
         var hellos: [HelloMessage] { lock.withLock { storedHellos } }
         var messages: [WireMessage] { lock.withLock { storedMessages } }
         var drops: Int { lock.withLock { storedDrops } }
+        var codes: [String] { lock.withLock { storedCodes } }
+        var pairedCount: Int { lock.withLock { storedPaired } }
         var latest: CapturedFrame? {
             get { lock.withLock { storedLatest } }
             set { lock.withLock { storedLatest = newValue } }
@@ -38,6 +46,15 @@ final class LinkLoopbackTests: XCTestCase {
             lock.withLock { storedMessages.append(message) }
         }
 
+        func link(_ link: MirrorLink, confirmPairing code: String, with peer: HelloMessage) {
+            lock.withLock { storedCodes.append(code) }
+            if let answerPairing { link.answerPairing(accept: answerPairing) }
+        }
+
+        func link(_ link: MirrorLink, didPair peer: HelloMessage) {
+            lock.withLock { storedPaired += 1 }
+        }
+
         func linkDidDrop(_ link: MirrorLink) {
             lock.withLock { storedDrops += 1 }
         }
@@ -50,6 +67,8 @@ final class LinkLoopbackTests: XCTestCase {
     private var receivers: [CanvasReceiver] = []
     private var links: [MirrorLink] = []
     private let queue = DispatchQueue(label: "test.stream")
+    /// The iPad's identity and the Macs it knows.
+    private var ipadStore = InMemoryPairingStore()
 
     override func tearDown() {
         links.forEach { $0.stop() }
@@ -62,13 +81,11 @@ final class LinkLoopbackTests: XCTestCase {
     // MARK: - Helpers
 
     /// A receiver listening on a free port, and that port.
-    private func startReceiver(name: String = "Test iPad",
-                               transportOf: ((NWConnection) -> String)? = nil,
-                               resumeSilence: TimeInterval? = nil) throws -> (CanvasReceiver, UInt16) {
-        var configuration = CanvasReceiver.Configuration(port: 0, serviceType: nil, installID: "INSTALL-1",
-                                                         deviceKind: "iPad", name: name)
+    private func startReceiver(name: String = "Test iPad", installID: String = "INSTALL-1",
+                               transportOf: ((NWConnection) -> String)? = nil) throws -> (CanvasReceiver, UInt16) {
+        var configuration = CanvasReceiver.Configuration(port: 0, serviceType: nil, installID: installID,
+                                                         deviceKind: "iPad", name: name, pairing: ipadStore)
         if let transportOf { configuration.transportOf = transportOf }
-        if let resumeSilence { configuration.resumeSilence = resumeSilence }
         let receiver = CanvasReceiver(configuration: configuration)
         var port: UInt16?
         receiver.onListening = { port = $0 }
@@ -80,10 +97,24 @@ final class LinkLoopbackTests: XCTestCase {
         return (receiver, port)
     }
 
+    /// A Mac's store, paired both ways with the test's iPad.
+    private func pairedMacStore(name: String = "Test Mac", installID: String = "INSTALL-1") -> InMemoryPairingStore {
+        let mac = InMemoryPairingStore()
+        mac.pin(PairedPeer(id: installID, publicKey: ipadStore.identity.publicKey, name: "Test iPad", pairedAt: Date()))
+        ipadStore.pin(PairedPeer(id: PairingCrypto.fingerprint(mac.identity.publicKey), publicKey: mac.identity.publicKey,
+                                 name: name, pairedAt: Date()))
+        return mac
+    }
+
+    /// `userAsked`: as if the user clicked Connect, which is what lets a WiFi
+    /// link pair.
     private func startLink(to port: UInt16, macName: String = "Test Mac", advertisedID: String? = nil,
+                           pairing: PairingStore? = nil, userAsked: Bool = false,
                            delegate: RecordingDelegate, frames: CleanFrameStore = CleanFrameStore()) -> MirrorLink {
-        let link = MirrorLink(queue: queue, macName: macName, frames: frames, quality: .fast)
+        let link = MirrorLink(queue: queue, macName: macName, pairing: pairing ?? pairedMacStore(name: macName),
+                              frames: frames, quality: .fast)
         link.delegate = delegate
+        if userAsked { link.allowPairing() }
         links.append(link)
         let endpoint = NWEndpoint.hostPort(host: "127.0.0.1", port: NWEndpoint.Port(rawValue: port)!)
         link.start(paths: LinkPaths(usbUDID: nil, wifi: endpoint, wifiInstallID: advertisedID))
@@ -227,13 +258,7 @@ final class LinkLoopbackTests: XCTestCase {
 
     /// A hello that names no id at all fails the check too.
     func test_aWiFiHelloWithoutTheExpectedIdIsNotStreamedTo() throws {
-        let receiver = CanvasReceiver(configuration: .init(port: 0, serviceType: nil, installID: "",
-                                                           deviceKind: "iPad", name: "Test iPad"))
-        var port: UInt16?
-        receiver.onListening = { port = $0 }
-        receiver.start()
-        receivers.append(receiver)
-        guard waitUntil("the receiver to listen", { port != nil }), let port else { return }
+        let (_, port) = try startReceiver(installID: "")
         let delegate = RecordingDelegate()
         _ = startLink(to: port, advertisedID: "INSTALL-1", delegate: delegate)
         waitUntil("the link to refuse it") { delegate.phase == .retrying(.network("identity mismatch")) }
@@ -369,75 +394,132 @@ final class LinkLoopbackTests: XCTestCase {
         waitUntil("the first Mac to stand aside") { first.phase == .yielded }
     }
 
-    /// A Mac spoken by hand, so a test can hold one connection open while
-    /// another arrives — which a real link never does to itself.
-    private final class RawMac {
-        let connection: NWConnection
-        private let lock = NSLock()
-        private var reader = FrameReader()
-        private var stored: [WireMessage] = []
+    /// The Mac being mirrored, back on a new connection (a WiFi blip, its
+    /// watchdog), proves the same key and is let straight in: it is not
+    /// another Mac.
+    func test_theSameMacReconnectingIsRecognisedByItsKey() throws {
+        let (receiver, port) = try startReceiver(transportOf: { _ in "WiFi" })
+        let macStore = pairedMacStore()
+        let before = RecordingDelegate()
+        _ = startLink(to: port, pairing: macStore, delegate: before)
+        guard waitUntil("the Mac", { isStreaming(before.phase) && receiver.connected }) else { return }
 
-        init(port: UInt16, queue: DispatchQueue) {
-            connection = NWConnection(host: "127.0.0.1", port: NWEndpoint.Port(rawValue: port)!, using: .tcp)
-            connection.start(queue: queue)
-            read()
-        }
-
-        var messages: [WireMessage] { lock.withLock { stored } }
-
-        func first(_ type: String) -> WireMessage? { messages.first { $0.type == type } }
-
-        func sayHello(name: String, resume: String?) {
-            let hello = HelloMessage(version: CanvasWire.version, role: .mac, name: name, resume: resume)
-            connection.send(content: WireCodec.message(CanvasWire.hello, hello.json), completion: .contentProcessed { _ in })
-        }
-
-        private func read() {
-            connection.receive(minimumIncompleteLength: 1, maximumLength: 65536) { [weak self] data, _, isComplete, error in
-                guard let self else { return }
-                self.lock.withLock {
-                    if let data { self.reader.append(data) }
-                    while let frame = try? self.reader.next() {
-                        if frame.kind == FrameKind.message.rawValue, let message = try? WireCodec.message(from: frame.body) {
-                            self.stored.append(message)
-                        }
-                    }
-                }
-                if error == nil, !isComplete { self.read() }
-            }
-        }
+        let again = RecordingDelegate()
+        _ = startLink(to: port, pairing: macStore, delegate: again)
+        waitUntil("the reconnect to stream") { isStreaming(again.phase) }
+        XCTAssertFalse(again.phases.contains(.awaitingApproval(.wifi)))
+        XCTAssertNil(receiver.switchRequest)
     }
 
-    /// A WiFi session's own Mac, back on a new connection after the old one
-    /// went silent (a WiFi blip, its watchdog) with the token the iPad gave
-    /// it, is let straight in — and the token works once: what a sniffer
-    /// copies is spent. (A Mac spoken by hand never pings, so the old session
-    /// goes silent on its own; the silence needed is shortened here.)
-    func test_theSessionsOwnMacComesBackWithItsTokenUnasked_andTheTokenWorksOnce() throws {
-        let (receiver, port) = try startReceiver(transportOf: { _ in "WiFi" }, resumeSilence: 0.3)
-        let first = RawMac(port: port, queue: queue)
-        defer { first.connection.cancel() }
-        first.sayHello(name: "Zhao's Mac", resume: nil)
-        guard waitUntil("the first hello back", { first.first(CanvasWire.hello) != nil }) else { return }
-        let token = try XCTUnwrap(first.first(CanvasWire.hello).flatMap { HelloMessage(json: $0.object) }?.resume)
-        let silent = Date().addingTimeInterval(0.5)
-        while Date() < silent { RunLoop.current.run(until: Date().addingTimeInterval(0.01)) }
+    // MARK: - Pairing
 
-        let back = RawMac(port: port, queue: queue)
-        defer { back.connection.cancel() }
-        back.sayHello(name: "Zhao's Mac", resume: token)
-        waitUntil("the reconnect to be adopted") { back.first(CanvasWire.hello) != nil }
-        XCTAssertNil(back.first(CanvasWire.asking))
-        XCTAssertNil(receiver.switchRequest)
-        waitUntil("the old connection to be told") { first.first(CanvasWire.bye) != nil }
+    /// The first time: both sides show the same code, both users confirm, and
+    /// each pins the other's key; the session then starts.
+    func test_aFirstConnectionPairs_whenBothSidesConfirmTheSameCode() throws {
+        let (receiver, port) = try startReceiver()
+        let macStore = InMemoryPairingStore()
+        let delegate = RecordingDelegate()
+        delegate.answerPairing = true
+        _ = startLink(to: port, pairing: macStore, userAsked: true, delegate: delegate)
 
-        let quiet = Date().addingTimeInterval(0.5)
-        while Date() < quiet { RunLoop.current.run(until: Date().addingTimeInterval(0.01)) }
-        let replay = RawMac(port: port, queue: queue)
-        defer { replay.connection.cancel() }
-        replay.sayHello(name: "Zhao's Mac", resume: token)
-        waitUntil("the spent token to get a question") { replay.first(CanvasWire.asking) != nil }
-        XCTAssertNil(replay.first(CanvasWire.hello))
+        guard waitUntil("the iPad to ask", { receiver.pairingRequest != nil }) else { return }
+        let request = try XCTUnwrap(receiver.pairingRequest)
+        waitUntil("the Mac to ask") { !delegate.codes.isEmpty }
+        XCTAssertEqual(delegate.codes.first, request.code, "both screens show the same code")
+        XCTAssertFalse(isStreaming(delegate.phase), "nothing streams before the user confirms on the iPad")
+
+        receiver.answerPairing(id: request.id, accept: true)
+        waitUntil("the session to start") { isStreaming(delegate.phase) && receiver.connected }
+        XCTAssertEqual(delegate.pairedCount, 1)
+        XCTAssertEqual(macStore.peer("INSTALL-1")?.publicKey, ipadStore.identity.publicKey)
+        XCTAssertEqual(ipadStore.peer(PairingCrypto.fingerprint(macStore.identity.publicKey))?.publicKey,
+                       macStore.identity.publicKey)
+        XCTAssertNil(receiver.pairingRequest)
+    }
+
+    func test_cancellingOnTheIPadPairsNothing_andTheMacStandsAside() throws {
+        let (receiver, port) = try startReceiver()
+        let macStore = InMemoryPairingStore()
+        let delegate = RecordingDelegate()
+        delegate.answerPairing = true
+        _ = startLink(to: port, pairing: macStore, userAsked: true, delegate: delegate)
+        guard waitUntil("the iPad to ask", { receiver.pairingRequest != nil }) else { return }
+        receiver.answerPairing(id: try XCTUnwrap(receiver.pairingRequest).id, accept: false)
+        waitUntil("the Mac to stop") { delegate.phase == .notPaired }
+        XCTAssertTrue(macStore.peers.isEmpty)
+        XCTAssertTrue(ipadStore.peers.isEmpty)
+        XCTAssertFalse(receiver.connected)
+    }
+
+    func test_cancellingOnTheMacTakesTheIPadsQuestionDown() throws {
+        let (receiver, port) = try startReceiver()
+        let delegate = RecordingDelegate()
+        delegate.answerPairing = false
+        _ = startLink(to: port, pairing: InMemoryPairingStore(), userAsked: true, delegate: delegate)
+        waitUntil("the Mac to stop") { delegate.phase == .notPaired }
+        waitUntil("the iPad's question to go") { receiver.pairingRequest == nil && receiver.status.contains("cancelled") }
+        XCTAssertTrue(ipadStore.peers.isEmpty)
+    }
+
+    /// A Mac whose pin for this iPad is another key (an impostor answering
+    /// for the iPad, or the iPad reinstalled) does not stream, and does not
+    /// put a pairing question to anyone on its own over WiFi: that takes a
+    /// Connect click (or the cable).
+    func test_anIPadThatCannotProveThePinnedKeyIsNotPairedUnasked() throws {
+        let (receiver, port) = try startReceiver()
+        let macStore = InMemoryPairingStore()
+        macStore.pin(PairedPeer(id: "INSTALL-1", publicKey: DeviceIdentity.generate().publicKey, name: nil, pairedAt: Date()))
+        let delegate = RecordingDelegate()
+        _ = startLink(to: port, pairing: macStore, delegate: delegate)
+        waitUntil("the Mac to stand down") { delegate.phase == .notPaired }
+        XCTAssertTrue(delegate.codes.isEmpty)
+        XCTAssertNil(receiver.pairingRequest)
+        XCTAssertFalse(receiver.connected)
+    }
+
+    func test_whenTheUserAsks_anIPadThatCannotProveThePinnedKeyPairsAgain() throws {
+        let (receiver, port) = try startReceiver()
+        let macStore = InMemoryPairingStore()
+        macStore.pin(PairedPeer(id: "INSTALL-1", publicKey: DeviceIdentity.generate().publicKey, name: nil, pairedAt: Date()))
+        let delegate = RecordingDelegate()
+        _ = startLink(to: port, pairing: macStore, userAsked: true, delegate: delegate)
+        waitUntil("pairing to start") {
+            if case .pairing = delegate.phase { return true } else { return false }
+        }
+        waitUntil("the iPad to ask") { receiver.pairingRequest != nil }
+        XCTAssertFalse(isStreaming(delegate.phase))
+    }
+
+    /// After a cancelled pairing, a WiFi Mac asking again within the minute is
+    /// turned away without a question: no wearing the user down with prompts.
+    func test_afterACancelledPairing_theNextWiFiAskIsTurnedAwayUnasked() throws {
+        let (receiver, port) = try startReceiver(transportOf: { _ in "WiFi" })
+        let first = RecordingDelegate()
+        first.answerPairing = true
+        _ = startLink(to: port, pairing: InMemoryPairingStore(), userAsked: true, delegate: first)
+        guard waitUntil("the first question", { receiver.pairingRequest != nil }) else { return }
+        receiver.answerPairing(id: try XCTUnwrap(receiver.pairingRequest).id, accept: false)
+        guard waitUntil("the first Mac to stand down", { first.phase == .notPaired }) else { return }
+
+        let again = RecordingDelegate()
+        again.answerPairing = true
+        _ = startLink(to: port, pairing: InMemoryPairingStore(), userAsked: true, delegate: again)
+        waitUntil("the second Mac to be turned away") { again.phase == .notPaired }
+        XCTAssertNil(receiver.pairingRequest)
+    }
+
+    /// Forgetting the Mac on the iPad ends its session; the Mac needs pairing
+    /// again.
+    func test_forgettingTheMacOnTheIPadEndsItsSession() throws {
+        let (receiver, port) = try startReceiver()
+        let macStore = pairedMacStore()
+        let delegate = RecordingDelegate()
+        _ = startLink(to: port, pairing: macStore, delegate: delegate)
+        guard waitUntil("the session", { isStreaming(delegate.phase) && receiver.connected }) else { return }
+        receiver.forgetMac(id: PairingCrypto.fingerprint(macStore.identity.publicKey))
+        waitUntil("the Mac to stop") { delegate.phase == .notPaired }
+        waitUntil("the iPad to let go") { !receiver.connected }
+        XCTAssertTrue(ipadStore.peers.isEmpty)
     }
 
     // MARK: - Leaving

@@ -46,33 +46,35 @@ final class LinkMessagesTests: XCTestCase {
         XCTAssertNil(StatusMessage(json: [:]))
     }
 
-    /// A LAN neighbour can say hello as a Mac, so another Mac over WiFi
-    /// waits for the user whatever the session runs on. Plugging a cable in
-    /// takes over, and the Mac being mirrored comes back without a question.
+    /// Every Mac here has proven its key. A cable is physical intent, so
+    /// plugging one in takes over; the Mac being mirrored, back on a new
+    /// connection, is recognised by its key; another Mac over WiFi waits for
+    /// the user, whatever the session runs on.
     func test_whoTakesTheSessionAtOnceAndWhoIsAskedAbout() {
-        func admit(_ current: String, _ currentToken: String?, _ newcomer: String, _ newcomerToken: String?,
-                   silentFor silence: TimeInterval = 10) -> CanvasReceiver.Admission {
-            CanvasReceiver.admission(currentTransport: current, currentResumeToken: currentToken,
-                                     currentSilence: silence,
-                                     newcomerTransport: newcomer, newcomerResumeToken: newcomerToken)
+        let a = Data(repeating: 1, count: 32), b = Data(repeating: 2, count: 32)
+        func admit(_ current: String, _ currentKey: Data?, _ newcomer: String, _ newcomerKey: Data?) -> CanvasReceiver.Admission {
+            CanvasReceiver.admission(currentTransport: current, currentMacKey: currentKey,
+                                     newcomerTransport: newcomer, newcomerMacKey: newcomerKey)
         }
-        XCTAssertEqual(admit("WiFi", "T1", "WiFi", "T1"), .adopt, "the session's own Mac, reconnecting")
-        XCTAssertEqual(admit("WiFi", "T1", "WiFi", "T1", silentFor: 1), .ask,
-                       "a copied token cannot take a session that is still alive")
-        XCTAssertEqual(admit("WiFi", "T1", "WiFi", "T2"), .ask)
-        XCTAssertEqual(admit("WiFi", "T1", "WiFi", nil), .ask)
-        XCTAssertEqual(admit("WiFi", nil, "WiFi", nil), .ask)
-        XCTAssertEqual(admit("USB", "T1", "WiFi", "T1"), .ask, "a cabled session is never taken from WiFi unasked")
-        XCTAssertEqual(admit("USB", "T1", "WiFi", nil), .ask)
-        XCTAssertEqual(admit("WiFi", "T1", "USB", nil), .adopt, "plugging a cable in takes over")
+        XCTAssertEqual(admit("WiFi", a, "WiFi", a), .adopt, "the session's own Mac, reconnecting")
+        XCTAssertEqual(admit("USB", a, "WiFi", a), .adopt, "the same Mac, off its cable")
+        XCTAssertEqual(admit("WiFi", a, "WiFi", b), .ask)
+        XCTAssertEqual(admit("USB", a, "WiFi", b), .ask)
+        XCTAssertEqual(admit("WiFi", a, "USB", b), .adopt, "plugging a cable in takes over")
     }
 
-    func test_resumeTokensAreFreshAndRoundTrip() {
-        let first = HelloMessage.makeResumeToken()
-        XCTAssertEqual(first.count, 32)
-        XCTAssertNotEqual(first, HelloMessage.makeResumeToken())
-        let hello = HelloMessage(version: 1, role: .ipad, name: nil, installID: "ID", device: "iPad", resume: first)
-        XCTAssertEqual(HelloMessage(json: hello.json)?.resume, first)
+    func test_aHelloCarriesItsKeysAndRefusesTheWrongLengths() {
+        let key = Data(repeating: 7, count: 32), eph = Data(repeating: 8, count: 32), sig = Data(repeating: 9, count: 64)
+        let hello = HelloMessage(version: 2, role: .ipad, name: "iPad", installID: "ID", device: "iPad",
+                                 key: key, ephemeral: eph, signature: sig)
+        XCTAssertEqual(HelloMessage(json: hello.json), hello)
+        var json = hello.json
+        json["key"] = Data(repeating: 7, count: 31).base64EncodedString()
+        json["sig"] = "not base64"
+        let damaged = HelloMessage(json: json)
+        XCTAssertNil(damaged?.key)
+        XCTAssertNil(damaged?.signature)
+        XCTAssertEqual(damaged?.ephemeral, eph)
     }
 
     func test_byeRoundTripsAndAnUnknownReasonIsQuit() {

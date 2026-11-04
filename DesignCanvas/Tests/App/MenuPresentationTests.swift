@@ -227,6 +227,15 @@ final class MenuPresentationTests: XCTestCase {
         XCTAssertEqual(row.subline, "Tap Switch on the iPad to mirror this Mac")
     }
 
+    func testPairingSaysWhereToLook_andNotPairedOffersAnotherTry() {
+        let pairing = row(.pairing)
+        XCTAssertEqual(pairing.word, "Pairing\u{2026}")
+        XCTAssertEqual(pairing.subline, "Check the code on the iPad and on this Mac")
+        let notPaired = row(.notPaired)
+        XCTAssertEqual(notPaired.word, "Not paired")
+        XCTAssertEqual(notPaired.action, .connect)
+    }
+
     func testAFoundDeviceGetsTheNextStepUnderneath() {
         let row = row(.waitingForApp)
         XCTAssertEqual(row.word, "Found")
@@ -262,9 +271,9 @@ final class MenuPresentationTests: XCTestCase {
     }
 
     func testEveryStateCanBeDisconnected() {
-        let states: [EngineDevice.State] = [.connecting, .awaitingApproval, .mirroring, .waitingForApp,
-                                            .asleep, .unreachable, .inUseElsewhere, .needsUpdate]
-        for state in states {
+        let states: [EngineDevice.State] = [.connecting, .pairing, .notPaired, .awaitingApproval, .mirroring,
+                                            .waitingForApp, .asleep, .unreachable, .inUseElsewhere, .needsUpdate]
+        for state in states where state != .notPaired {
             XCTAssertEqual(row(state).action, .disconnect, "\(state)")
         }
         XCTAssertEqual(Set(states.map { row($0).word }).count, states.count, "every state stays distinguishable (D7)")

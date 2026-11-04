@@ -5,9 +5,10 @@ import Foundation
 
 // MARK: - Hello (both ways)
 
-/// The first message each side sends. The Mac speaks first; the iPad answers
-/// once it has adopted the connection. `version` mismatched on either end
-/// ends the link with a `bye` that says so.
+/// The first message each side sends, in the clear. The Mac speaks first; the
+/// iPad answers with its own, and the two then either prove who they are to
+/// each other (`verify`) or pair (`pair`…), section 5.7. `version` mismatched
+/// on either end ends the link with a `bye` that says so.
 struct HelloMessage: Equatable {
     enum Role: String {
         case mac
@@ -24,11 +25,13 @@ struct HelloMessage: Equatable {
     var installID: String?
     /// iPad only: "iPad" or "iPhone", for copy that names the device.
     var device: String?
-    /// iPad: a fresh random token for this session, sent only on its own
-    /// connection. Mac: the token from the iPad's last hello, when it dials
-    /// that iPad again, so the iPad knows the newcomer is the Mac it was
-    /// mirroring and lets it back in without asking (section 5.6).
-    var resume: String? = nil
+    /// The sender's long-term Ed25519 public key (`DeviceIdentity`).
+    var key: Data? = nil
+    /// The sender's X25519 key for this connection only.
+    var ephemeral: Data? = nil
+    /// iPad only, when it has this Mac paired: its signature over the verify
+    /// transcript, which the Mac checks against the key it pinned.
+    var signature: Data? = nil
 }
 
 extension HelloMessage {
@@ -40,13 +43,15 @@ extension HelloMessage {
         self.name = (json["name"] as? String).flatMap(Self.displayName)
         self.installID = (json["id"] as? String).flatMap { $0.isEmpty ? nil : $0 }
         self.device = (json["device"] as? String).flatMap { $0.isEmpty ? nil : $0 }
-        self.resume = (json["resume"] as? String).flatMap { $0.isEmpty ? nil : String($0.prefix(64)) }
+        self.key = Self.bytes(json["key"], count: 32)
+        self.ephemeral = Self.bytes(json["eph"], count: 32)
+        self.signature = Self.bytes(json["sig"], count: 64)
     }
 
-    /// 128 random bits, hex.
-    static func makeResumeToken() -> String {
-        var generator = SystemRandomNumberGenerator()
-        return (0..<4).map { _ in String(format: "%08x", UInt32.random(in: .min ... .max, using: &generator)) }.joined()
+    /// Base64 of exactly `count` bytes, or nil.
+    static func bytes(_ value: Any?, count: Int) -> Data? {
+        guard let text = value as? String, let data = Data(base64Encoded: text), data.count == count else { return nil }
+        return data
     }
 
     /// The peer's name as something safe to show: control and formatting
@@ -78,7 +83,9 @@ extension HelloMessage {
         if let name { dict["name"] = String(name.prefix(CanvasWire.macNameMaxCharacters)) }
         if let installID { dict["id"] = installID }
         if let device { dict["device"] = device }
-        if let resume { dict["resume"] = resume }
+        if let key { dict["key"] = key.base64EncodedString() }
+        if let ephemeral { dict["eph"] = ephemeral.base64EncodedString() }
+        if let signature { dict["sig"] = signature.base64EncodedString() }
         return dict
     }
 }
@@ -125,9 +132,12 @@ struct ByeMessage: Equatable {
         case version
         /// The iPad adopted a newer connection in this one's place.
         case replaced
-        /// The iPad is mirroring a Mac over its cable; a WiFi hello does not
-        /// take that over.
+        /// The iPad's user kept the Mac it mirrors, or another request was open.
         case inUse
+        /// Pairing was declined or cancelled on either side, or it timed out.
+        case notPaired
+        /// The other side could not prove the identity it was paired with.
+        case authFailed
     }
 
     var reason: Reason

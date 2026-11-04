@@ -40,7 +40,7 @@ struct SetupGuideCard: View {
             }
             Divider().padding(.leading, 58)
             SetupStep(number: 3, title: "Connect this \(deviceKind)") {
-                Text("Plug this \(deviceKind) into your Mac, or, on the same WiFi, click Connect next to it in the Design Canvas menu. Mirroring starts on its own; keep this app open. Then run `claude` in your project, or click Start in that menu, and sketches go to that session.")
+                Text("Plug this \(deviceKind) into your Mac, or, on the same WiFi, click Connect next to it in the Design Canvas menu. The first time, both screens show a code: check they match and tap Pair on both. Mirroring starts on its own; keep this app open. Then run `claude` in your project, or click Start in that menu, and sketches go to that session.")
                     .stepDetail()
             }
         }

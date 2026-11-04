@@ -61,6 +61,10 @@ final class AppModel: ObservableObject {
     /// offers each one a Connect, which is how a WiFi iPad is started the first time — the engine
     /// connects one on its own only once the user has connected it (I1, PRD D1).
     @Published private(set) var discoveredDevices: [DiscoveredDevice] = []
+    /// The pairing waiting for this Mac's user to compare codes (the iPad shows the same one).
+    @Published private(set) var pairingPrompt: PairingPrompt?
+    /// The iPads this Mac is paired with, for the Details window.
+    @Published private(set) var pairedDevices: [PairedPeer] = []
     /// Sketches the engine has accepted and not yet delivered to the daemon, refreshed on every
     /// health poll. Nothing reported this before, so a daemon that was down looked like a sketch
     /// that had vanished (I3).
@@ -183,10 +187,13 @@ final class AppModel: ObservableObject {
 
         devices = engine?.devices ?? []
         discoveredDevices = engine?.discovered ?? []
+        pairedDevices = engine?.pairedDevices ?? []
         engine?.onDevicesChanged = { [weak self, weak engine] in
             guard let self, let engine else { return }
             self.devices = engine.devices
             self.discoveredDevices = engine.discovered
+            if self.pairingPrompt != engine.pairingPrompt { self.pairingPrompt = engine.pairingPrompt }
+            self.pairedDevices = engine.pairedDevices
         }
         engine?.start()
 
@@ -205,10 +212,22 @@ final class AppModel: ObservableObject {
 
     // MARK: - Devices
 
-    /// Dial a discovered device (a menu tap). A WiFi device connected this way is remembered by
-    /// the sender, so later launches auto-reconnect it.
+    /// Dial a discovered device (a menu tap). The first time, the Mac and the iPad pair: both
+    /// show a code to confirm, and from then on the Mac reconnects the iPad on its own.
     func connectDevice(id: String) {
         engine?.connect(id: id)
+    }
+
+    /// The user compared the codes: pair, or cancel.
+    func answerPairing(accept: Bool) {
+        guard let prompt = pairingPrompt else { return }
+        pairingPrompt = nil
+        engine?.answerPairing(id: prompt.id, accept: accept)
+    }
+
+    /// Forget a paired iPad: it has to pair again before it can connect.
+    func forgetPairedDevice(id: String) {
+        engine?.forgetPairedDevice(id: id)
     }
 
     /// Stop serving a connected device, and stop auto-connecting it.

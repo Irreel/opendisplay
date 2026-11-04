@@ -153,6 +153,12 @@ enum MenuPresentation {
             return RowPresentation(word: "Mirroring", tint: .green, subline: nil, action: .disconnect)
         case .connecting:
             return RowPresentation(word: "Connecting\u{2026}", tint: .orange, subline: nil, action: .disconnect)
+        case .pairing:
+            return RowPresentation(word: "Pairing\u{2026}", tint: .orange,
+                                   subline: "Check the code on the iPad and on this Mac", action: .disconnect)
+        case .notPaired:
+            return RowPresentation(word: "Not paired", tint: .secondary,
+                                   subline: "Pairing was cancelled. Connect to try again", action: .connect)
         case .awaitingApproval:
             return RowPresentation(word: "Asking\u{2026}", tint: .orange,
                                    subline: "Tap Switch on the iPad to mirror this Mac", action: .disconnect)

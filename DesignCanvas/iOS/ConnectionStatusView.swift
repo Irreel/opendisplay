@@ -144,7 +144,24 @@ struct ConnectionDetailView: View {
                 } header: {
                     Text("Connection")
                 } footer: {
-                    Text("Over USB your Mac connects through the cable on its own. On WiFi it finds this \(deviceKind) by its service and connects after one click in its menu.")
+                    Text("Over USB your Mac connects through the cable on its own; on WiFi, after one click in its menu. Every connection is encrypted and proves both devices are the ones that paired.")
+                }
+
+                Section {
+                    if receiver.pairedMacs.isEmpty {
+                        Text("None yet").foregroundStyle(.secondary)
+                    }
+                    ForEach(receiver.pairedMacs) { mac in
+                        HStack {
+                            Text(mac.name ?? "Mac")
+                            Spacer()
+                            Button("Forget", role: .destructive) { receiver.forgetMac(id: mac.id) }
+                        }
+                    }
+                } header: {
+                    Text("Paired Macs")
+                } footer: {
+                    Text("A Mac pairs the first time it connects: it and this \(deviceKind) show the same code to confirm. A Mac you forget has to pair again.")
                 }
 
                 Section {

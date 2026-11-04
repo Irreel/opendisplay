@@ -21,6 +21,10 @@ final class FakeSenderEngine: SenderEngine {
     var onDevicesChanged: (() -> Void)?
     var pendingUploads = 0
     var isCapturing = false
+    var pairingPrompt: PairingPrompt?
+    var pairedDevices: [PairedPeer] = []
+    private(set) var pairingAnswers: [(id: String, accept: Bool)] = []
+    private(set) var forgotten: [String] = []
 
     private(set) var startCount = 0
     private(set) var stopCount = 0
@@ -33,6 +37,8 @@ final class FakeSenderEngine: SenderEngine {
     func setChannelState(_ state: ChannelState) { channelStates.append(state) }
     func connect(id: String) { connected.append(id) }
     func disconnect(id: String) { disconnected.append(id) }
+    func answerPairing(id: String, accept: Bool) { pairingAnswers.append((id, accept)) }
+    func forgetPairedDevice(id: String) { forgotten.append(id) }
 
     /// What the real engine does when its links or what it can see change.
     func publish(_ devices: [EngineDevice], discovered: [DiscoveredDevice] = []) {

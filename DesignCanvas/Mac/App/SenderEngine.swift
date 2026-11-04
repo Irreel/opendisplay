@@ -10,8 +10,12 @@ import Foundation
 /// One device the engine is serving (or trying to), flattened to what the menu draws.
 struct EngineDevice: Equatable, Identifiable {
     enum State: Equatable {
-        /// Dialing, or connected and waiting for the iPad's hello.
+        /// Dialing, or connected and proving identities.
         case connecting
+        /// The first time with this iPad: both screens show a code to confirm.
+        case pairing
+        /// Pairing was declined, cancelled or timed out; Connect tries again.
+        case notPaired
         /// The iPad is asking its user whether to switch to this Mac over
         /// WiFi, away from the Mac it is cabled to.
         case awaitingApproval
@@ -35,6 +39,14 @@ struct EngineDevice: Equatable, Identifiable {
     let onUSB: Bool
 
     var connected: Bool { state == .mirroring }
+}
+
+/// The code to confirm while the Mac pairs with an iPad (the iPad shows the
+/// same one). `id` is the device row's, which `answerPairing` takes back.
+struct PairingPrompt: Equatable, Identifiable {
+    let id: String
+    let deviceName: String
+    let code: String
 }
 
 /// One device the engine can see but is not serving: a Bonjour service on the LAN, or a cabled
@@ -78,4 +90,13 @@ protocol SenderEngine: AnyObject {
 
     /// The menu's verdict on the Claude Code hop, as of the last health poll (`ChannelState`).
     func setChannelState(_ state: ChannelState)
+
+    /// The pairing waiting for this Mac's user to compare codes, if any.
+    var pairingPrompt: PairingPrompt? { get }
+    /// Pair (the codes match) or cancel.
+    func answerPairing(id: String, accept: Bool)
+    /// The iPads this Mac is paired with.
+    var pairedDevices: [PairedPeer] { get }
+    /// Forget a paired iPad: it is disconnected, and has to pair again.
+    func forgetPairedDevice(id: String)
 }

@@ -34,7 +34,8 @@ final class ReceiverController: ObservableObject {
         let name = (saved?.isEmpty == false) ? saved! : UIDevice.current.name
         receiver = CanvasReceiver(configuration: .init(installID: Self.installID,
                                                        deviceKind: deviceKind,
-                                                       name: name))
+                                                       name: name,
+                                                       pairing: KeychainPairingStore(service: "com.designcanvas.pairing.ipad")))
         receiver.objectWillChange
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in self?.objectWillChange.send() }

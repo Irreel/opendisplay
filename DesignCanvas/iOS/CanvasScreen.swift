@@ -175,6 +175,16 @@ struct CanvasScreen: View {
         } message: {
             Text("It hasn\u{2019}t reached Claude Code yet. If you discard it, it won\u{2019}t be sent and can\u{2019}t be brought back.")
         }
+        // Pairing a Mac, the first time it connects: both screens show the
+        // same code, and the user confirms on both (numeric comparison).
+        .alert("Pair with \u{201C}\(receiver.pairingRequest?.macName ?? "this Mac")\u{201D}?", isPresented: Binding(
+            get: { receiver.pairingRequest != nil },
+            set: { _ in }), presenting: receiver.pairingRequest) { request in
+            Button("Cancel", role: .cancel) { receiver.answerPairing(id: request.id, accept: false) }
+            Button("Pair") { receiver.answerPairing(id: request.id, accept: true) }
+        } message: { request in
+            Text("Code \(request.code)\n\nCheck that your Mac shows the same code, then tap Pair on both. If the codes differ, cancel.")
+        }
         // A Mac asking over WiFi to take over from the one on the cable. The
         // iPad cannot tell who is asking, so the person holding it decides;
         // no answer keeps the cable.

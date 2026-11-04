@@ -15,6 +15,9 @@ import Foundation
 enum FrameKind: UInt8 {
     case message = 1
     case video = 2
+    /// A message or video frame sealed with the session's key (Pairing.swift);
+    /// the only kind either side accepts once the handshake is done.
+    case sealed = 3
 }
 
 /// One frame off the wire, before its body is interpreted.
