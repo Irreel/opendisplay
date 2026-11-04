@@ -333,6 +333,18 @@ final class LinkLoopbackTests: XCTestCase {
         XCTAssertNil(receiver.switchRequest)
     }
 
+    /// Leaving before the answer is no way around the cooldown.
+    func test_aMacThatLeavesMidQuestionStillStartsTheCooldown() throws {
+        let (receiver, port, _, _) = try startSwitchRequest()
+        links.last?.stop()
+        guard waitUntil("the question to close", { receiver.switchRequest == nil }) else { return }
+        let again = RecordingDelegate()
+        _ = startLink(to: port, macName: "Returning Mac", delegate: again)
+        waitUntil("the next ask to be turned away") { again.phase == .yielded }
+        XCTAssertFalse(again.phases.contains(.awaitingApproval(.wifi)))
+        XCTAssertNil(receiver.switchRequest)
+    }
+
     // MARK: - Leaving
 
     func test_quittingTheAppSaysBye_andTheMacWaitsForItToReturn() throws {

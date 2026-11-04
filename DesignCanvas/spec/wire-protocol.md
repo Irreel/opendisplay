@@ -146,8 +146,8 @@ up to 45 s. The answer is the iPad's `hello` (switch: the cabled Mac is sent
 `bye` reason `replaced`) or `bye` reason `inUse` (keep the cable). With no
 answer from the user within 30 s the iPad keeps the cable. One request is
 open at a time; another Mac asking meanwhile is sent `bye` reason `inUse` at
-once, and so is any Mac asking within 60 s of the user keeping the cable (or
-of a request timing out). The iPad shows the asking Mac's `name` only as a
+once, and so is any Mac asking within 60 s of a request that ended without a
+switch (the user kept the cable, it timed out, or the asking Mac left). The iPad shows the asking Mac's `name` only as a
 claim, with control and formatting characters removed.
 
 ## 6. Canvas messages

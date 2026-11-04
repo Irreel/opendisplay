@@ -87,7 +87,9 @@ final class CanvasReceiver: ObservableObject {
     private var formatDescription: CMVideoFormatDescription?
     private var parameterSets: [Data] = []
     private var lastKeyframeRequest = Date.distantPast
-    /// When the user last kept the cable, or let a request time out.
+    /// When a prompt last ended without a Switch: the user kept the cable,
+    /// it timed out, or the asking Mac left before the answer. Any of them
+    /// starts the cooldown, so dropping the connection is no way around it.
     private var lastDeclinedAt = Date.distantPast
     private var framesThisWindow = 0
     private var bytesThisWindow = 0
@@ -558,6 +560,7 @@ final class CanvasReceiver: ObservableObject {
             if let id = peer.requestID {
                 Log.info("receiver: the Mac asking to switch went away (\(reason))")
                 clearSwitchRequest(id: id)
+                lastDeclinedAt = Date()
             }
             if peer.sawLegacyFrame {
                 setStatus("A Mac with an older Design Canvas tried to connect — update it there")
