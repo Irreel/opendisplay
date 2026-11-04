@@ -97,9 +97,9 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      # No version here: pnpm/action-setup takes it from package.json's
+      # packageManager, and naming both fails the job.
       - uses: pnpm/action-setup@v4
-        with:
-          version: 10
 
       - uses: actions/setup-node@v4
         with:
