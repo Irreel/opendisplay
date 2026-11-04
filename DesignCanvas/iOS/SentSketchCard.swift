@@ -100,11 +100,14 @@ struct SentSketchCard: View {
         RoundedRectangle(cornerRadius: lifted ? (sketch.frozen ? 6 : 28) : 0, style: .continuous)
     }
 
-    /// The print's border, as the held picture's paper is: a share of the
-    /// picture's width, deeper at the bottom.
+    /// The print's border, as shares of the picture's width: even on three
+    /// sides and deeper at the bottom, as on a Polaroid.
+    private static let borderSide: CGFloat = 0.02
+    private static let borderBottom: CGFloat = 0.0667
+
     private var border: EdgeInsets {
-        let side = sketch.rect.width * ZoomModel.printSide * printed
-        let bottom = sketch.rect.width * ZoomModel.printBottom * printed
+        let side = sketch.rect.width * Self.borderSide * printed
+        let bottom = sketch.rect.width * Self.borderBottom * printed
         return EdgeInsets(top: side, leading: side, bottom: bottom, trailing: side)
     }
 

@@ -8,10 +8,10 @@
 // ink stays on the part of the frame it was drawn on.
 //
 // While the mirror is held (Draw Mode on the mirror, Figma v3.2) the picture
-// is a print: it rests a little smaller, in paper that fills the view, and the
-// paper around it is part of the photo. So the print's margin is a share of
-// the picture's own width, and grows and goes off the screen with the zoom
-// like a real photo's border, instead of being laid over the picture.
+// is a print: it rests at 96% of its fit, centred, in paper that fills the
+// view, and the paper is part of the photo. It zooms and pans with the
+// picture, so the margin grows and goes off the screen like a real photo's
+// border, instead of being laid over the picture.
 //
 // Foundation + CoreGraphics only: this file is compiled into the hostless test
 // bundle as well as the app (see project.yml).
@@ -33,23 +33,18 @@ struct ZoomModel: Equatable {
     /// picture right and down, which reveals its top-left.
     private(set) var offset = CGSize.zero
 
-    /// The print's resting zoom while the picture is held; nil while it is
+    /// The print's resting scale while the picture is held; nil while it is
     /// live. Zooming out stops there, and a double tap goes back to it.
-    private(set) var rest: Rest?
+    private(set) var rest: Double?
 
     /// How much of the view around the picture is paper: 0 live, 1 held, in
     /// between only while the picture goes into its print or out of it.
     private(set) var paper = 0.0
 
-    struct Rest: Equatable {
-        var scale: Double
-        var offset: CGSize
-    }
-
-    /// The print's margin, as shares of the picture's width: even on three
-    /// sides and deeper at the bottom, as on a Polaroid.
-    static let printSide = 0.02
-    static let printBottom = 0.0667
+    /// The held picture's size at rest, as a share of its fit: on an iPad in
+    /// landscape, 24 points of paper at the sides and 59 at the top and
+    /// bottom. At rest the paper is exactly the view.
+    static let printScale = 0.96
 
     // MARK: - Gestures
 
@@ -60,7 +55,7 @@ struct ZoomModel: Equatable {
         let fitted = Self.fittedRect(videoSize: videoSize, in: viewSize)
         guard fitted.width > 0, fitted.height > 0 else { return }
 
-        let newScale = min(max(scale * factor, rest?.scale ?? Self.minScale), Self.maxScale)
+        let newScale = min(max(scale * factor, rest ?? Self.minScale), Self.maxScale)
         guard newScale != scale else { return }
 
         // Where the anchor sits in the video, as a fraction of it, before the
@@ -89,65 +84,31 @@ struct ZoomModel: Equatable {
     /// Back to the fitted, centred picture, or, while it is held, to the
     /// print at rest.
     mutating func reset() {
-        scale = rest?.scale ?? 1
-        offset = rest?.offset ?? .zero
+        scale = rest ?? 1
+        offset = .zero
     }
 
     // MARK: - The print
 
-    /// Hold the picture as a print. At the fit it goes straight to the
-    /// print's rest; zoomed in, it keeps its zoom, in the print's terms.
+    /// Hold the picture as a print. At the fit it goes to the print's rest;
+    /// zoomed in, it keeps its zoom, in the print's terms.
     mutating func hold(viewSize: CGSize, videoSize: CGSize) {
-        let printRest = Self.printRest(videoSize: videoSize, in: viewSize)
-        rest = printRest
+        rest = Self.printScale
         paper = 1
-        if scale <= Self.minScale {
-            scale = printRest.scale
-            offset = printRest.offset
-        } else {
-            scale *= printRest.scale
-            offset = CGSize(width: offset.width * printRest.scale, height: offset.height * printRest.scale)
-            clampOffset(fitted: Self.fittedRect(videoSize: videoSize, in: viewSize), viewSize: viewSize)
-        }
+        scale *= Self.printScale
+        offset = CGSize(width: offset.width * Self.printScale, height: offset.height * Self.printScale)
+        clampOffset(fitted: Self.fittedRect(videoSize: videoSize, in: viewSize), viewSize: viewSize)
     }
 
     /// Let the print go: the live picture at the zoom the print was at, which
     /// at the print's rest is the fit.
     mutating func release(viewSize: CGSize, videoSize: CGSize) {
-        let printScale = rest?.scale ?? 1
+        let held = rest ?? 1
         rest = nil
         paper = 0
-        scale = max(Self.minScale, scale / printScale)
-        offset = CGSize(width: offset.width / printScale, height: offset.height / printScale)
+        scale = max(Self.minScale, scale / held)
+        offset = CGSize(width: offset.width / held, height: offset.height / held)
         clampOffset(fitted: Self.fittedRect(videoSize: videoSize, in: viewSize), viewSize: viewSize)
-    }
-
-    /// Where the print rests: the picture and its margin fitted inside the
-    /// view with a margin of the view's own to spare, centred, so the picture
-    /// sits a little above the middle.
-    static func printRest(videoSize: CGSize, in viewSize: CGSize) -> Rest {
-        let fitted = fittedRect(videoSize: videoSize, in: viewSize)
-        guard fitted.width > 0, fitted.height > 0 else { return Rest(scale: 1, offset: .zero) }
-        let room = Double(printMargin(in: viewSize))
-        let across = (Double(viewSize.width) - 2 * room) / (Double(fitted.width) * (1 + 2 * printSide))
-        let down = (Double(viewSize.height) - 2 * room)
-            / (Double(fitted.height) + Double(fitted.width) * (printSide + printBottom))
-        let scale = min(1, across, down)
-        return Rest(scale: scale, offset: CGSize(width: 0, height: -lift(pictureWidth: Double(fitted.width) * scale)))
-    }
-
-    /// The paper the print leaves around itself at rest: more on a larger
-    /// screen.
-    static func printMargin(in viewSize: CGSize) -> CGFloat {
-        min(viewSize.width, viewSize.height) >= 600 ? 24 : 16
-    }
-
-    /// The print's rect for a picture drawn at `picture`.
-    static func printRect(around picture: CGRect) -> CGRect {
-        let side = picture.width * printSide
-        let bottom = picture.width * printBottom
-        return CGRect(x: picture.minX - side, y: picture.minY - side,
-                      width: picture.width + 2 * side, height: picture.height + side + bottom)
     }
 
     /// `from` on the way to `to`, `progress` of the way: the picture going
@@ -160,12 +121,6 @@ struct ZoomModel: Equatable {
                              height: from.offset.height + (to.offset.height - from.offset.height) * t)
         zoom.paper = from.paper + (to.paper - from.paper) * t
         return zoom
-    }
-
-    /// How far the picture's centre sits above the print's: half the extra
-    /// depth of the bottom margin.
-    private static func lift(pictureWidth: Double) -> Double {
-        pictureWidth * (printBottom - printSide) / 2
     }
 
     // MARK: - Geometry
@@ -233,25 +188,20 @@ struct ZoomModel: Equatable {
     /// outside the view; on one where it is smaller (the letterbox bars at low
     /// zoom), keep it centred. Either way the user cannot drag the picture off
     /// the part of the view it is able to cover. While it is held the same
-    /// holds for the print, margin and all: panning stops at the paper's
-    /// edge, and a print smaller than the view stays where it rests.
+    /// holds for the print, margin and all: the paper is the view at the
+    /// print's rest, zoomed about the picture's centre, so panning stops at
+    /// the paper's edge and the print at rest stays where it is.
     private mutating func clampOffset(fitted: CGRect, viewSize: CGSize) {
-        guard rest != nil else {
-            let slackX = max(0, (fitted.width * scale - viewSize.width) / 2)
-            let slackY = max(0, (fitted.height * scale - viewSize.height) / 2)
-            offset = CGSize(width: min(max(offset.width, -slackX), slackX),
-                            height: min(max(offset.height, -slackY), slackY))
-            return
+        let extent: CGSize
+        if let rest {
+            let zoom = CGFloat(scale / rest)
+            extent = CGSize(width: viewSize.width * zoom, height: viewSize.height * zoom)
+        } else {
+            extent = CGSize(width: fitted.width * scale, height: fitted.height * scale)
         }
-        let width = Double(fitted.width) * scale
-        let side = width * Self.printSide
-        let printWidth = width + 2 * side
-        let printHeight = Double(fitted.height) * scale + side + width * Self.printBottom
-        let slackX = CGFloat(max(0, (printWidth - Double(viewSize.width)) / 2))
-        let slackY = CGFloat(max(0, (printHeight - Double(viewSize.height)) / 2))
-        // The print's centre is the picture's, lowered by the deeper bottom.
-        let lift = CGFloat(Self.lift(pictureWidth: width))
+        let slackX = max(0, (extent.width - viewSize.width) / 2)
+        let slackY = max(0, (extent.height - viewSize.height) / 2)
         offset = CGSize(width: min(max(offset.width, -slackX), slackX),
-                        height: min(max(offset.height, -slackY - lift), slackY - lift))
+                        height: min(max(offset.height, -slackY), slackY))
     }
 }
