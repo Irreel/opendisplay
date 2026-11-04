@@ -62,9 +62,12 @@ final class LinkLoopbackTests: XCTestCase {
     // MARK: - Helpers
 
     /// A receiver listening on a free port, and that port.
-    private func startReceiver(name: String = "Test iPad") throws -> (CanvasReceiver, UInt16) {
-        let receiver = CanvasReceiver(configuration: .init(port: 0, serviceType: nil, installID: "INSTALL-1",
-                                                           deviceKind: "iPad", name: name))
+    private func startReceiver(name: String = "Test iPad",
+                               transportOf: ((NWConnection) -> String)? = nil) throws -> (CanvasReceiver, UInt16) {
+        var configuration = CanvasReceiver.Configuration(port: 0, serviceType: nil, installID: "INSTALL-1",
+                                                         deviceKind: "iPad", name: name)
+        if let transportOf { configuration.transportOf = transportOf }
+        let receiver = CanvasReceiver(configuration: configuration)
         var port: UInt16?
         receiver.onListening = { port = $0 }
         receiver.start()
@@ -240,6 +243,71 @@ final class LinkLoopbackTests: XCTestCase {
         let delegate = RecordingDelegate()
         _ = startLink(to: port, advertisedID: "INSTALL-1", delegate: delegate)
         waitUntil("the link to stream") { isStreaming(delegate.phase) }
+    }
+
+    // MARK: - Switching from the cable
+
+    /// Counts connections on the receiver's queue: the first stands in for
+    /// the cable, every later one for WiFi.
+    private final class CableThenWiFi {
+        private var seen = 0
+        func transport(_ connection: NWConnection) -> String {
+            seen += 1
+            return seen == 1 ? "USB" : "WiFi"
+        }
+    }
+
+    /// A cabled session and a Mac asking over WiFi: the iPad asks its user,
+    /// and the asking Mac waits rather than timing its handshake out.
+    private func startSwitchRequest() throws -> (CanvasReceiver, port: UInt16, cabled: RecordingDelegate,
+                                                 asking: RecordingDelegate) {
+        let order = CableThenWiFi()
+        let (receiver, port) = try startReceiver(transportOf: order.transport)
+        let cabled = RecordingDelegate()
+        _ = startLink(to: port, macName: "Cabled Mac", delegate: cabled)
+        guard waitUntil("the cabled Mac", { isStreaming(cabled.phase) && receiver.macName == "Cabled Mac" }) else {
+            throw XCTSkip("the cabled session never came up")
+        }
+        let asking = RecordingDelegate()
+        _ = startLink(to: port, macName: "WiFi Mac", delegate: asking)
+        waitUntil("the WiFi Mac to wait for an answer") { asking.phase == .awaitingApproval(.wifi) }
+        waitUntil("the iPad to ask") { receiver.switchRequest != nil }
+        return (receiver, port, cabled, asking)
+    }
+
+    func test_aWiFiMacAsksBeforeTakingACabledSession() throws {
+        let (receiver, _, cabled, _) = try startSwitchRequest()
+        XCTAssertEqual(receiver.switchRequest?.macName, "WiFi Mac")
+        XCTAssertEqual(receiver.switchRequest?.currentMacName, "Cabled Mac")
+        XCTAssertTrue(isStreaming(cabled.phase))
+        XCTAssertEqual(receiver.macName, "Cabled Mac")
+    }
+
+    func test_switchingGivesTheWiFiMacTheIPad_andTheCabledOneStandsAside() throws {
+        let (receiver, _, cabled, asking) = try startSwitchRequest()
+        receiver.answerSwitchRequest(switchTo: true)
+        waitUntil("the WiFi Mac to stream") { isStreaming(asking.phase) }
+        waitUntil("the cabled Mac to stand aside") { cabled.phase == .yielded }
+        waitUntil("the iPad to show the WiFi Mac") { receiver.macName == "WiFi Mac" }
+        XCTAssertNil(receiver.switchRequest)
+    }
+
+    func test_keepingTheCableTurnsTheWiFiMacAway() throws {
+        let (receiver, _, cabled, asking) = try startSwitchRequest()
+        receiver.answerSwitchRequest(switchTo: false)
+        waitUntil("the WiFi Mac to stand aside") { asking.phase == .yielded }
+        waitUntil("the request to close") { receiver.switchRequest == nil }
+        XCTAssertTrue(isStreaming(cabled.phase))
+        XCTAssertEqual(receiver.macName, "Cabled Mac")
+        XCTAssertTrue(asking.hellos.isEmpty)
+    }
+
+    func test_aSecondAskWhileOneIsOpenIsTurnedAway() throws {
+        let (receiver, port, _, _) = try startSwitchRequest()
+        let third = RecordingDelegate()
+        _ = startLink(to: port, macName: "Third Mac", delegate: third)
+        waitUntil("the third Mac to be turned away") { third.phase == .yielded }
+        XCTAssertEqual(receiver.switchRequest?.macName, "WiFi Mac")
     }
 
     // MARK: - Leaving

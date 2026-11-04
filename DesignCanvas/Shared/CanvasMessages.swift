@@ -26,6 +26,11 @@ enum CanvasWire {
     /// byte at all for `silenceTimeout`.
     static let pingInterval: TimeInterval = 2
     static let silenceTimeout: TimeInterval = 6
+    /// How long the iPad leaves "switch to this Mac over WiFi?" up before it
+    /// answers for the user: keep the cable. The asking Mac waits a little
+    /// longer, so the iPad's answer is the one that lands.
+    static let switchRequestTimeout: TimeInterval = 30
+    static let switchRequestMacWait: TimeInterval = 45
 
     // Link
     static let hello = "hello"
@@ -34,6 +39,8 @@ enum CanvasWire {
     static let keyframe = "keyframe"
     static let bye = "bye"
     static let status = "status"
+    /// iPad to Mac: your hello is waiting on the iPad's user (section 5.6).
+    static let asking = "asking"
 
     // Canvas
     static let freeze = "freeze"

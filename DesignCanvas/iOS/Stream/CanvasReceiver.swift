@@ -34,6 +34,21 @@ final class CanvasReceiver: ObservableObject {
         var deviceKind: String
         /// The name the Mac shows, and the Bonjour service name.
         var name: String
+        /// "USB" or "WiFi" for an accepted connection. usbmuxd delivers
+        /// cable connections from loopback; tests swap this to stand in for
+        /// a cable and a network on one machine.
+        var transportOf: (NWConnection) -> String = CanvasReceiver.transport(of:)
+    }
+
+    /// A Mac asking over WiFi to take over from the one on the cable. The iPad
+    /// asks its user rather than deciding: nothing on the link proves who is
+    /// asking, and a cable is the one thing a LAN neighbour cannot fake.
+    struct SwitchRequest: Equatable, Identifiable {
+        let id = UUID()
+        /// The Mac asking, as it names itself.
+        let macName: String?
+        /// The cabled Mac it would replace.
+        let currentMacName: String?
     }
 
     @Published private(set) var status = "Starting…"
@@ -46,6 +61,8 @@ final class CanvasReceiver: ObservableObject {
     @Published private(set) var rttMs: Double?
     /// "USB" or "WiFi", for the connection screen.
     @Published private(set) var transport = "—"
+    /// Up while a WiFi Mac waits for the user's answer (`answerSwitchRequest`).
+    @Published private(set) var switchRequest: SwitchRequest?
 
     /// The Mac's hello, once per adopted connection. Main queue.
     var onMacHello: ((HelloMessage) -> Void)?
@@ -88,14 +105,22 @@ final class CanvasReceiver: ObservableObject {
         /// Frames shaped like the old OpenDisplay-based wire (JSON right after
         /// the length): a Mac app that predates this one.
         var sawLegacyFrame = false
+        /// The hello this peer was adopted with, once it is the session.
+        var hello: HelloMessage?
+        /// A WiFi hello held while the user is asked whether to switch to it.
+        var heldHello: HelloMessage?
+        var askedAt: Date?
 
-        init(connection: NWConnection) {
+        init(connection: NWConnection, transport: String) {
             self.connection = connection
-            let remote = String(describing: connection.endpoint)
-            // usbmuxd delivers cable connections from loopback.
-            transport = remote.hasPrefix("127.0.0.1") || remote.hasPrefix("::1")
-                || remote.hasPrefix("localhost") ? "USB" : "WiFi"
+            self.transport = transport
         }
+    }
+
+    static func transport(of connection: NWConnection) -> String {
+        let remote = String(describing: connection.endpoint)
+        return remote.hasPrefix("127.0.0.1") || remote.hasPrefix("::1")
+            || remote.hasPrefix("localhost") ? "USB" : "WiFi"
     }
 
     init(configuration: Configuration, displayLayer: AVSampleBufferDisplayLayer = AVSampleBufferDisplayLayer()) {
@@ -286,7 +311,7 @@ final class CanvasReceiver: ObservableObject {
     /// speaks, so waiting for the hello is what keeps it from evicting the
     /// winner — or a live session.
     private func accept(_ connection: NWConnection) {
-        let peer = Peer(connection: connection)
+        let peer = Peer(connection: connection, transport: configuration.transportOf(connection))
         candidates.append(peer)
         Log.info("receiver: connection from \(connection.endpoint) (\(peer.transport))")
         connection.stateUpdateHandler = { [weak self, weak peer] state in
@@ -362,7 +387,12 @@ final class CanvasReceiver: ObservableObject {
     }
 
     private func handleCandidateMessage(_ message: WireMessage, from peer: Peer) {
-        guard message.type == CanvasWire.hello else { return }
+        // A held Mac is still connected and pinging while the user decides.
+        if message.type == CanvasWire.ping, peer.heldHello != nil {
+            sendLinkMessage(CanvasWire.pong, ["t": message.object["t"] ?? 0], on: peer.connection)
+            return
+        }
+        guard message.type == CanvasWire.hello, peer.heldHello == nil else { return }
         guard let hello = HelloMessage(json: message.object), hello.role == .mac else {
             lost(peer, reason: "the peer's hello was not a Mac's")
             return
@@ -379,14 +409,54 @@ final class CanvasReceiver: ObservableObject {
             return
         }
         if let current = session, !Self.mayReplace(current: current.transport, with: peer.transport) {
-            Log.info("receiver: \(hello.name ?? "a Mac") said hello over WiFi while a cabled Mac is connected — turned away")
-            sendLinkMessage(CanvasWire.bye, ByeMessage(reason: .inUse).json, on: peer.connection)
-            candidates.removeAll { $0 === peer }
-            let connection = peer.connection
-            queue.asyncAfter(deadline: .now() + 0.5) { connection.cancel() }
+            // One question at a time: a second Mac asking meanwhile is told
+            // the iPad is in use.
+            guard !candidates.contains(where: { $0.heldHello != nil }) else {
+                Log.info("receiver: \(hello.name ?? "a Mac") asked over WiFi while another request is open — turned away")
+                refuse(peer)
+                return
+            }
+            Log.info("receiver: \(hello.name ?? "a Mac") asked over WiFi while a cabled Mac is connected — asking the user")
+            peer.heldHello = hello
+            peer.askedAt = Date()
+            sendLinkMessage(CanvasWire.asking, [:], on: peer.connection)
+            let request = SwitchRequest(macName: hello.name, currentMacName: current.hello?.name)
+            DispatchQueue.main.async { self.switchRequest = request }
             return
         }
         adopt(peer, hello: hello)
+    }
+
+    /// The user's answer to `switchRequest`. Switching adopts the WiFi Mac,
+    /// which tells the cabled one it was replaced; keeping the cable tells
+    /// the asking Mac the iPad is in use.
+    func answerSwitchRequest(switchTo: Bool) {
+        queue.async {
+            self.clearSwitchRequest()
+            guard let peer = self.candidates.first(where: { $0.heldHello != nil }),
+                  let hello = peer.heldHello else { return }
+            if switchTo {
+                Log.info("receiver: the user switched to \(hello.name ?? "the Mac") over WiFi")
+                peer.heldHello = nil
+                self.adopt(peer, hello: hello)
+            } else {
+                Log.info("receiver: the user kept the cable")
+                self.refuse(peer)
+            }
+        }
+    }
+
+    private func refuse(_ peer: Peer) {
+        sendLinkMessage(CanvasWire.bye, ByeMessage(reason: .inUse).json, on: peer.connection)
+        candidates.removeAll { $0 === peer }
+        let connection = peer.connection
+        queue.asyncAfter(deadline: .now() + 0.5) { connection.cancel() }
+    }
+
+    private func clearSwitchRequest() {
+        DispatchQueue.main.async {
+            if self.switchRequest != nil { self.switchRequest = nil }
+        }
     }
 
     /// Whether a newcomer may take the session from the connection it has.
@@ -408,6 +478,7 @@ final class CanvasReceiver: ObservableObject {
             queue.asyncAfter(deadline: .now() + 0.5) { connection.cancel() }
         }
         session = peer
+        peer.hello = hello
         resetStream()
         let me = HelloMessage(version: CanvasWire.version, role: .ipad, name: configuration.name,
                               installID: configuration.installID, device: configuration.deviceKind)
@@ -461,6 +532,10 @@ final class CanvasReceiver: ObservableObject {
         } else if let index = candidates.firstIndex(where: { $0 === peer }) {
             candidates.remove(at: index)
             peer.connection.cancel()
+            if peer.heldHello != nil {
+                Log.info("receiver: the Mac asking to switch went away (\(reason))")
+                clearSwitchRequest()
+            }
             if peer.sawLegacyFrame {
                 setStatus("A Mac with an older Design Canvas tried to connect — update it there")
             }
@@ -492,6 +567,9 @@ final class CanvasReceiver: ObservableObject {
                 guard let self, !finished else { return }
                 finished = true
                 if let session = self.session { self.endSession(session) }
+                self.candidates.forEach { $0.connection.cancel() }
+                self.candidates.removeAll()
+                self.clearSwitchRequest()
                 self.listener?.cancel()
                 self.listener = nil
                 self.listenerHealthy = false
@@ -531,8 +609,18 @@ final class CanvasReceiver: ObservableObject {
 
     private func tick() {
         let now = Date()
-        for candidate in candidates where now.timeIntervalSince(candidate.acceptedAt) > CanvasWire.silenceTimeout {
-            lost(candidate, reason: "no hello")
+        for candidate in candidates {
+            if let askedAt = candidate.askedAt {
+                if now.timeIntervalSince(askedAt) > CanvasWire.switchRequestTimeout {
+                    Log.info("receiver: no answer to the switch request — keeping the cable")
+                    clearSwitchRequest()
+                    refuse(candidate)
+                } else if now.timeIntervalSince(candidate.lastReceived) > CanvasWire.silenceTimeout {
+                    lost(candidate, reason: "silent while waiting")
+                }
+            } else if now.timeIntervalSince(candidate.acceptedAt) > CanvasWire.silenceTimeout {
+                lost(candidate, reason: "no hello")
+            }
         }
         guard let session else { return }
         if now.timeIntervalSince(session.lastReceived) > CanvasWire.silenceTimeout {

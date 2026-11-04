@@ -88,6 +88,16 @@ struct CanvasScreen: View {
         }
     }
 
+    private var switchTitle: String {
+        "Switch to \(receiver.switchRequest?.macName ?? "another Mac")?"
+    }
+
+    private var switchMessage: String {
+        let asking = receiver.switchRequest?.macName ?? "A Mac"
+        let current = receiver.switchRequest?.currentMacName ?? "the Mac"
+        return "\(asking) wants to mirror to this \(deviceKind) over WiFi, instead of \(current) on the cable. Only switch if you were expecting it."
+    }
+
     /// The blank page is up in place of the mirror.
     private var isBlank: Bool { canvas.surface == .blank }
 
@@ -156,6 +166,17 @@ struct CanvasScreen: View {
             Button("Discard", role: .destructive) { canvas.discard() }
         } message: {
             Text("It hasn\u{2019}t reached Claude Code yet. If you discard it, it won\u{2019}t be sent and can\u{2019}t be brought back.")
+        }
+        // A Mac asking over WiFi to take over from the one on the cable. The
+        // iPad cannot tell who is asking, so the person holding it decides;
+        // no answer keeps the cable.
+        .alert(switchTitle, isPresented: Binding(
+            get: { receiver.switchRequest != nil },
+            set: { _ in })) {
+            Button("Keep the Cable", role: .cancel) { receiver.answerSwitchRequest(switchTo: false) }
+            Button("Switch") { receiver.answerSwitchRequest(switchTo: true) }
+        } message: {
+            Text(switchMessage)
         }
         // The freeze deadline only needs a clock while the freeze is
         // outstanding.

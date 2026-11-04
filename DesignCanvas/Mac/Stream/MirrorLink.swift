@@ -46,6 +46,9 @@ enum LinkPhase: Equatable {
     case dialing(LinkTransport)
     /// Connected; waiting for the iPad's hello.
     case handshaking(LinkTransport)
+    /// The iPad is mirroring another Mac over its cable and is asking its
+    /// user whether to switch to this one.
+    case awaitingApproval(LinkTransport)
     case streaming(LinkTransport)
     /// Between attempts, with why the last one ended.
     case retrying(RetryReason)
@@ -170,7 +173,7 @@ final class MirrorLink: CanvasOutbound, @unchecked Sendable {
             case .idle, .retrying, .yielded:
                 self.attempts = 0
                 self.dialIfPossible()
-            case .streaming(.wifi), .handshaking(.wifi), .dialing(.wifi):
+            case .streaming(.wifi), .handshaking(.wifi), .awaitingApproval(.wifi), .dialing(.wifi):
                 if newPaths.usbUDID != nil {
                     Log.info("link \(self.label): cable attached — moving to USB")
                     self.reconnectNow()
@@ -512,6 +515,10 @@ final class MirrorLink: CanvasOutbound, @unchecked Sendable {
             break
         case CanvasWire.keyframe:
             sendKeyframe()
+        case CanvasWire.asking:
+            guard case .handshaking(let transport) = phase else { return }
+            Log.info("link \(label): the iPad is asking its user whether to switch to this Mac")
+            phase = .awaitingApproval(transport)
         case CanvasWire.bye:
             let bye = ByeMessage(json: message.object)
             Log.info("link \(label): the iPad said bye (\(bye.reason.rawValue))")
@@ -536,7 +543,11 @@ final class MirrorLink: CanvasOutbound, @unchecked Sendable {
     }
 
     private func handleHello(_ object: [String: Any]) {
-        guard case .handshaking(let transport) = phase else { return }
+        let transport: LinkTransport
+        switch phase {
+        case .handshaking(let current), .awaitingApproval(let current): transport = current
+        default: return
+        }
         guard let hello = HelloMessage(json: object), hello.role == .ipad else {
             dropConnection("the peer's hello was not an iPad's")
             return
@@ -580,7 +591,12 @@ final class MirrorLink: CanvasOutbound, @unchecked Sendable {
 
     private func tick() {
         guard connection != nil else { return }
-        if case .handshaking = phase, Date().timeIntervalSince(connectedAt) > CanvasWire.silenceTimeout {
+        if case .awaitingApproval = phase {
+            if Date().timeIntervalSince(connectedAt) > CanvasWire.switchRequestMacWait {
+                dropConnection("no answer on the iPad")
+                return
+            }
+        } else if case .handshaking = phase, Date().timeIntervalSince(connectedAt) > CanvasWire.silenceTimeout {
             if sawLegacyFrame {
                 Log.info("link \(label): the iPad speaks the old OpenDisplay-based wire — its app needs updating")
                 closeConnection()

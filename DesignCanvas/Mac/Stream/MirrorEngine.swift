@@ -266,6 +266,7 @@ final class MirrorEngine: SenderEngine {
         switch phase {
         case .idle, .stopped: return .unreachable
         case .dialing, .handshaking: return .connecting
+        case .awaitingApproval: return .awaitingApproval
         case .streaming: return .mirroring
         case .retrying(.appNotOpen): return .waitingForApp
         case .retrying(.asleep): return .asleep
@@ -277,7 +278,8 @@ final class MirrorEngine: SenderEngine {
 
     private static func onUSB(_ phase: LinkPhase, device: VisibleDevice?) -> Bool {
         switch phase {
-        case .dialing(let transport), .handshaking(let transport), .streaming(let transport):
+        case .dialing(let transport), .handshaking(let transport), .awaitingApproval(let transport),
+             .streaming(let transport):
             return transport == .usb
         default:
             return device?.usb != nil

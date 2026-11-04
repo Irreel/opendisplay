@@ -12,6 +12,9 @@ struct EngineDevice: Equatable, Identifiable {
     enum State: Equatable {
         /// Dialing, or connected and waiting for the iPad's hello.
         case connecting
+        /// The iPad is asking its user whether to switch to this Mac over
+        /// WiFi, away from the Mac it is cabled to.
+        case awaitingApproval
         /// The iPad said hello and is showing the screen.
         case mirroring
         /// The iPad is reachable but nothing answers: the app is not open.

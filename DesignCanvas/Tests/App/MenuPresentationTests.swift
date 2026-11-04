@@ -220,6 +220,13 @@ final class MenuPresentationTests: XCTestCase {
         XCTAssertNil(row.subline)
     }
 
+    func testADeviceAskingItsUserSaysWhereToAnswer() {
+        let row = row(.awaitingApproval)
+        XCTAssertEqual(row.word, "Asking\u{2026}")
+        XCTAssertEqual(row.tint, .orange)
+        XCTAssertEqual(row.subline, "Tap Switch on the iPad to mirror this Mac")
+    }
+
     func testAFoundDeviceGetsTheNextStepUnderneath() {
         let row = row(.waitingForApp)
         XCTAssertEqual(row.word, "Found")
@@ -255,8 +262,8 @@ final class MenuPresentationTests: XCTestCase {
     }
 
     func testEveryStateCanBeDisconnected() {
-        let states: [EngineDevice.State] = [.connecting, .mirroring, .waitingForApp, .asleep,
-                                            .unreachable, .inUseElsewhere, .needsUpdate]
+        let states: [EngineDevice.State] = [.connecting, .awaitingApproval, .mirroring, .waitingForApp,
+                                            .asleep, .unreachable, .inUseElsewhere, .needsUpdate]
         for state in states {
             XCTAssertEqual(row(state).action, .disconnect, "\(state)")
         }
